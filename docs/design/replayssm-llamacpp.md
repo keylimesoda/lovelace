@@ -1,6 +1,15 @@
 # ReplaySSM for llama.cpp: record + fold rollback for Gated DeltaNet
 
-Status: design brief, not implemented yet. Target: Qwen3.5/3.8-family hybrid models (`LLM_ARCH_QWEN35`,
+Status: implemented on `feat/replayssm` (engine/). Deviations from the brief below:
+- `LLM_ARCH_QWEN3NEXT` is **not** in replay mode and is not added to `llm_arch_supports_rs_rollback`: qwen3next repeats
+  q/k heads interleaved (`h / (H_v/H_k)`), while the kernels broadcast `h % H_k`, so it cannot skip the repeat and its
+  records would need H_v key heads. Replay covers `LLM_ARCH_QWEN35` and `LLM_ARCH_QWEN35MOE`.
+- Moved (extra) rows take their records along with a gather *before* and a scatter *after* the op that records the
+  ubatch rows (`build_rs_rec_extra_get/_set`), because an extra row's source can be a ubatch row and a ubatch row's
+  source can be an extra row (the plain `build_rs` copy order would clobber one or the other).
+- Replay mode requires `offload_kqv` when the recurrent layers are on a GPU (probe in `llama_rs_replay_supported`).
+
+Original target: Qwen3.5/3.8-family hybrid models (`LLM_ARCH_QWEN35`,
 `LLM_ARCH_QWEN35MOE`; `LLM_ARCH_QWEN3NEXT` comes for free) serving 4–6 concurrent agents on one RTX 4090,
 with MTP (n_draft 3) or DFlash2 (n_draft 3..7) speculative decoding.
 

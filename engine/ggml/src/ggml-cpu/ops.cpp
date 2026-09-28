@@ -10892,6 +10892,49 @@ void ggml_compute_forward_solve_tri(const struct ggml_compute_params * params, s
 }
 
 // ggml_compute_forward_gated_delta_net
+
+// one transition of the transposed state s (s[j*S_v + i] = S[i][j], so row j of s is column j of S).
+// the verify loops of gated_delta_net(_rr) and the replay loop of gated_delta_net_rr all run exactly this
+// sequence of operations, so a folded state matches the verify trajectory bit for bit
+static inline void ggml_gated_delta_net_step_f32(
+        const int64_t S_v, float * s, float * delta,
+        const float * k, const float * v, const float * g, const float beta, const bool kda) {
+    if (kda) {
+        // precompute exp(g) into delta scratch (reused below)
+        for (int64_t i = 0; i < S_v; ++i) {
+            delta[i] = expf(g[i]);
+        }
+        // S[i][:] *= exp(g[i]) => for each row j of M: M[j][i] *= exp(g[i])
+        for (int64_t j = 0; j < S_v; ++j) {
+            ggml_vec_mul_f32(S_v, &s[j * S_v], &s[j * S_v], delta);
+        }
+    } else {
+        ggml_vec_scale_f32(S_v * S_v, s, expf(g[0]));
+    }
+
+    // delta[j] = sum_i S[i][j] * k[i] = dot(row j of M, k)
+    for (int64_t j = 0; j < S_v; ++j) {
+        float sum = 0.0f;
+        ggml_vec_dot_f32(S_v, &sum, 0, &s[j * S_v], 0, k, 0, 1);
+        delta[j] = (v[j] - sum) * beta;
+    }
+
+    // outer product: S[i][j] += k[i] * delta[j] => M[j][i] += delta[j] * k[i]
+    for (int64_t j = 0; j < S_v; ++j) {
+        ggml_vec_mad_f32(S_v, &s[j * S_v], k, delta[j]);
+    }
+}
+
+// attn_out[j] = sum_i S[i][j] * q[i] = dot(row j of M, q)
+static inline void ggml_gated_delta_net_readout_f32(
+        const int64_t S_v, const float * s, const float * q, const float scale, float * out) {
+    for (int64_t j = 0; j < S_v; ++j) {
+        float sum = 0.0f;
+        ggml_vec_dot_f32(S_v, &sum, 0, &s[j * S_v], 0, q, 0, 1);
+        out[j] = sum * scale;
+    }
+}
+
 static void ggml_compute_forward_gated_delta_net_one_chunk(
     const ggml_compute_params * params,
     ggml_tensor * dst,
@@ -10996,40 +11039,8 @@ static void ggml_compute_forward_gated_delta_net_one_chunk(
             const float beta_val = *(const float *)((const char *)src_beta->data + iv3 * nbb3 + t * nbb2 + iv1 * nbb1);
             const float * g_d    =  (const float *)((const char *)src_g->data    + iv3 * nbg3 + t * nbg2 + iv1 * nbg1);
 
-            // state is stored transposed: s_out[j*S_v + i] = S[i][j]
-            // so row j of s_out = column j of S (contiguous access)
-
-            if (kda) {
-                // precompute exp(g) into delta scratch (reused below)
-                for (int64_t i = 0; i < S_v; ++i) {
-                    delta[i] = expf(g_d[i]);
-                }
-                // S[i][:] *= exp(g[i]) => for each row j of M: M[j][i] *= exp(g[i])
-                for (int64_t j = 0; j < S_v; ++j) {
-                    ggml_vec_mul_f32(S_v, &s_out[j * S_v], &s_out[j * S_v], delta);
-                }
-            } else {
-                ggml_vec_scale_f32(S_v * S_v, s_out, expf(g_d[0]));
-            }
-
-            // delta[j] = sum_i S[i][j] * k[i] = dot(row j of M, k)
-            for (int64_t j = 0; j < S_v; ++j) {
-                float sum = 0.0f;
-                ggml_vec_dot_f32(S_v, &sum, 0, &s_out[j * S_v], 0, k_d, 0, 1);
-                delta[j] = (v_d[j] - sum) * beta_val;
-            }
-
-            // outer product: S[i][j] += k[i] * delta[j] => M[j][i] += delta[j] * k[i]
-            for (int64_t j = 0; j < S_v; ++j) {
-                ggml_vec_mad_f32(S_v, &s_out[j * S_v], k_d, delta[j]);
-            }
-
-            // attn_out[j] = sum_i S[i][j] * q[i] = dot(row j of M, q)
-            for (int64_t j = 0; j < S_v; ++j) {
-                float sum = 0.0f;
-                ggml_vec_dot_f32(S_v, &sum, 0, &s_out[j * S_v], 0, q_d, 0, 1);
-                attn_data[j] = sum * scale;
-            }
+            ggml_gated_delta_net_step_f32(S_v, s_out, delta, k_d, v_d, g_d, beta_val, kda);
+            ggml_gated_delta_net_readout_f32(S_v, s_out, q_d, scale, attn_data);
 
             attn_data += S_v * H; // advance to next token
 
@@ -11096,6 +11107,295 @@ void ggml_compute_forward_gated_delta_net(
         case GGML_TYPE_F32:
             {
                 ggml_compute_forward_gated_delta_net_f32(params, dst);
+            } break;
+        default:
+            {
+                GGML_ABORT("fatal error");
+            }
+    }
+}
+
+// ggml_compute_forward_gated_delta_net_rr
+
+// the ReplaySSM ops write records into a src tensor, which only persists if that tensor is the arena
+// itself rather than a scheduler-allocated copy in a compute buffer
+static void ggml_cpu_assert_rec_buffer(const ggml_tensor * rec) {
+    GGML_ASSERT(rec->buffer == nullptr || (ggml_backend_buffer_is_host(rec->buffer) &&
+                ggml_backend_buffer_get_usage(rec->buffer) != GGML_BACKEND_BUFFER_USAGE_COMPUTE));
+}
+
+// phase 1: replay the pending records of each (head, seq), store the committed state, run the new tokens
+static void ggml_compute_forward_gated_delta_net_rr_one_chunk(
+    const ggml_compute_params * params,
+    ggml_tensor * dst,
+    int64_t ir0,
+    int64_t ir1) {
+
+    const ggml_tensor * src_q     = dst->src[0];
+    const ggml_tensor * src_k     = dst->src[1];
+    const ggml_tensor * src_v     = dst->src[2];
+    const ggml_tensor * src_g     = dst->src[3];
+    const ggml_tensor * src_beta  = dst->src[4];
+    const ggml_tensor * src_state = dst->src[5];
+    const ggml_tensor * src_rec   = dst->src[6];
+    const ggml_tensor * src_rs    = dst->src[7];
+
+    GGML_TENSOR_LOCALS(int64_t, neq, src_q, ne);
+    GGML_TENSOR_LOCALS(size_t,  nbq, src_q, nb);
+    GGML_TENSOR_LOCALS(int64_t, nek, src_k, ne);
+    GGML_TENSOR_LOCALS(size_t,  nbk, src_k, nb);
+    GGML_TENSOR_LOCALS(int64_t, nev, src_v, ne);
+    GGML_TENSOR_LOCALS(size_t,  nbv, src_v, nb);
+    GGML_TENSOR_LOCALS(int64_t, neg, src_g, ne);
+    GGML_TENSOR_LOCALS(size_t,  nbg, src_g, nb);
+    GGML_TENSOR_LOCALS(size_t,  nbb, src_beta, nb);
+
+    const int64_t S_v      = nev0;
+    const int64_t H        = nev1;
+    const int64_t n_tokens = nev2;
+    const int64_t n_seqs   = nev3;
+    const int64_t S_k      = nek0;
+    const int64_t G        = neg0;
+    const bool    kda      = (G == S_v);
+
+    const int64_t K        = ggml_get_op_params_i32(dst, 0);
+    const int64_t j_commit = n_tokens - std::min(n_tokens, K);
+
+    // record layout: [k (S_k*H_k) | v (S_v*H) | g (G*H) | beta (H)]
+    const int64_t off_v = S_k * nek1;
+    const int64_t off_g = off_v + S_v * H;
+    const int64_t off_b = off_g + G * H;
+
+    float * delta = (float *) params->wdata + params->ith * (S_v + S_v * S_v) + CACHE_LINE_SIZE_F32;
+    float * s     = delta + S_v;
+
+    const int64_t state_seq_stride = src_state->nb[3] / sizeof(float);
+    const float * state_in_base    = (const float *) src_state->data;
+    float *       attn_out_base    = (float *) dst->data;
+    float *       state_out_base   = (float *) dst->data + S_v * H * n_tokens * n_seqs;
+
+    const int64_t rq3 = nev3 / neq3;
+    const int64_t rk3 = nev3 / nek3;
+
+    const float scale = 1.0f / sqrtf((float) S_v);
+
+    for (int64_t ir = ir0; ir < ir1; ++ir) {
+        const int64_t iv1 = ir % H; // head_index
+        const int64_t iv3 = ir / H; // sequence
+
+        const int64_t iq1 = iv1 % neq1;
+        const int64_t ik1 = iv1 % nek1;
+
+        const int64_t iq3 = iv3 / rq3;
+        const int64_t ik3 = iv3 / rk3;
+
+        const int32_t * rs_s    = (const int32_t *) ((const char *) src_rs->data + iv3 * src_rs->nb[1]);
+        const int32_t   m       = rs_s[0];
+        const int32_t   src_row = rs_s[1];
+        GGML_ASSERT(m >= 0 && m <= K);
+        GGML_ASSERT(m == 0 || (src_row >= 0 && src_row < src_rec->ne[2]));
+
+        memcpy(s, state_in_base + iv3 * state_seq_stride + iv1 * S_v * S_v, S_v * S_v * sizeof(float));
+
+        // replay the accepted records of the source row (no readout)
+        for (int32_t u = 0; u < m; ++u) {
+            const float * r = (const float *) ((const char *) src_rec->data + src_row * src_rec->nb[2] + u * src_rec->nb[1]);
+            ggml_gated_delta_net_step_f32(S_v, s, delta, r + ik1 * S_k, r + off_v + iv1 * S_v, r + off_g + iv1 * G, r[off_b + iv1], kda);
+        }
+
+        float * attn_data = attn_out_base + (iv3 * n_tokens * H + iv1) * S_v;
+
+        for (int64_t t = 0; t < n_tokens; t++) {
+            if (t == j_commit) {
+                memcpy(state_out_base + (iv3 * H + iv1) * S_v * S_v, s, S_v * S_v * sizeof(float));
+            }
+
+            const float * q_d = (const float *)((const char *)src_q->data + iq3 * nbq3 + t * nbq2 + iq1 * nbq1);
+            const float * k_d = (const float *)((const char *)src_k->data + ik3 * nbk3 + t * nbk2 + ik1 * nbk1);
+            const float * v_d = (const float *)((const char *)src_v->data + iv3 * nbv3 + t * nbv2 + iv1 * nbv1);
+
+            const float beta_val = *(const float *)((const char *)src_beta->data + iv3 * nbb3 + t * nbb2 + iv1 * nbb1);
+            const float * g_d    =  (const float *)((const char *)src_g->data    + iv3 * nbg3 + t * nbg2 + iv1 * nbg1);
+
+            ggml_gated_delta_net_step_f32(S_v, s, delta, k_d, v_d, g_d, beta_val, kda);
+            ggml_gated_delta_net_readout_f32(S_v, s, q_d, scale, attn_data);
+
+            attn_data += S_v * H; // advance to next token
+        }
+    }
+}
+
+// phase 2: record the inputs of the last min(n_tokens, K) tokens of each seq into rec row dst_row0 + s
+static void ggml_compute_forward_gated_delta_net_rr_record(
+    const ggml_compute_params * params,
+    ggml_tensor * dst) {
+
+    const ggml_tensor * src_k    = dst->src[1];
+    const ggml_tensor * src_v    = dst->src[2];
+    const ggml_tensor * src_g    = dst->src[3];
+    const ggml_tensor * src_beta = dst->src[4];
+    ggml_tensor       * src_rec  = dst->src[6];
+
+    GGML_TENSOR_LOCALS(int64_t, nek, src_k, ne);
+    GGML_TENSOR_LOCALS(size_t,  nbk, src_k, nb);
+    GGML_TENSOR_LOCALS(int64_t, nev, src_v, ne);
+    GGML_TENSOR_LOCALS(size_t,  nbv, src_v, nb);
+    GGML_TENSOR_LOCALS(size_t,  nbg, src_g, nb);
+    GGML_TENSOR_LOCALS(size_t,  nbb, src_beta, nb);
+
+    const int64_t S_k      = nek0;
+    const int64_t H_k      = nek1;
+    const int64_t S_v      = nev0;
+    const int64_t H        = nev1;
+    const int64_t n_tokens = nev2;
+    const int64_t n_seqs   = nev3;
+    const int64_t G        = src_g->ne[0];
+
+    const int64_t K        = ggml_get_op_params_i32(dst, 0);
+    const int64_t dst_row0 = ggml_get_op_params_i32(dst, 1);
+    const int64_t n_rec    = std::min(n_tokens, K);
+    const int64_t j_commit = n_tokens - n_rec;
+
+    const int64_t off_v = S_k * H_k;
+    const int64_t off_g = off_v + S_v * H;
+    const int64_t off_b = off_g + G * H;
+
+    const int64_t rk3 = nev3 / nek3;
+
+    for (int64_t it = params->ith; it < n_seqs * n_rec; it += params->nth) {
+        const int64_t s = it / n_rec;
+        const int64_t u = it % n_rec;
+        const int64_t t = j_commit + u;
+
+        float * r = (float *) ((char *) src_rec->data + (dst_row0 + s) * src_rec->nb[2] + u * src_rec->nb[1]);
+
+        for (int64_t hk = 0; hk < H_k; ++hk) {
+            memcpy(r + hk * S_k, (const char *) src_k->data + (s / rk3) * nbk3 + t * nbk2 + hk * nbk1, S_k * sizeof(float));
+        }
+        for (int64_t h = 0; h < H; ++h) {
+            memcpy(r + off_v + h * S_v, (const char *) src_v->data + s * nbv3 + t * nbv2 + h * nbv1, S_v * sizeof(float));
+            memcpy(r + off_g + h * G,   (const char *) src_g->data + s * nbg3 + t * nbg2 + h * nbg1, G * sizeof(float));
+            r[off_b + h] = *(const float *) ((const char *) src_beta->data + s * nbb3 + t * nbb2 + h * nbb1);
+        }
+    }
+}
+
+static void ggml_compute_forward_gated_delta_net_rr_f32(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+
+    // the records are written in place: rec must be the arena itself, not a scheduler copy
+    ggml_cpu_assert_rec_buffer(dst->src[6]);
+
+    const ggml_tensor * V = dst->src[2];
+    const int64_t nr = V->ne[1] * V->ne[3];
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    const int64_t dr  = (nr + nth - 1) / nth;
+    const int64_t ir0 = dr * ith;
+    const int64_t ir1 = MIN(ir0 + dr, nr);
+
+    if (ir0 < ir1) {
+        ggml_compute_forward_gated_delta_net_rr_one_chunk(params, dst, ir0, ir1);
+    }
+
+    // all records of the source rows are read before any record is written
+    ggml_barrier(params->threadpool);
+
+    ggml_compute_forward_gated_delta_net_rr_record(params, dst);
+}
+
+void ggml_compute_forward_gated_delta_net_rr(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    switch (dst->src[0]->type) {
+        case GGML_TYPE_F32:
+            {
+                ggml_compute_forward_gated_delta_net_rr_f32(params, dst);
+            } break;
+        default:
+            {
+                GGML_ABORT("fatal error");
+            }
+    }
+}
+
+// ggml_compute_forward_ssm_conv_fold
+
+static void ggml_compute_forward_ssm_conv_fold_f32(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    const ggml_tensor * src_cs   = dst->src[0]; // [n_hist, C, n_seqs]
+    ggml_tensor       * src_recx = dst->src[1]; // [C, K, n_rows]
+    const ggml_tensor * src_x    = dst->src[2]; // [C, n_tokens, n_seqs]
+    const ggml_tensor * src_rs   = dst->src[3]; // [2, n_seqs]
+
+    ggml_cpu_assert_rec_buffer(src_recx);
+
+    const int64_t n_hist   = src_cs->ne[0];
+    const int64_t C        = src_cs->ne[1];
+    const int64_t n_seqs   = src_cs->ne[2];
+    const int64_t n_tokens = src_x->ne[1];
+
+    const int64_t K        = ggml_get_op_params_i32(dst, 0);
+    const int64_t dst_row0 = ggml_get_op_params_i32(dst, 1);
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    // phase 1: out = tail_{n_hist}(conv_state || recx[src][0:m]), a pure gather
+    const int64_t nr  = C * n_seqs;
+    const int64_t dr  = (nr + nth - 1) / nth;
+    const int64_t ir0 = dr * ith;
+    const int64_t ir1 = MIN(ir0 + dr, nr);
+
+    for (int64_t ir = ir0; ir < ir1; ++ir) {
+        const int64_t c = ir % C;
+        const int64_t s = ir / C;
+
+        const int32_t * rs_s    = (const int32_t *) ((const char *) src_rs->data + s * src_rs->nb[1]);
+        const int32_t   m       = rs_s[0];
+        const int32_t   src_row = rs_s[1];
+        GGML_ASSERT(m >= 0 && m <= K);
+        GGML_ASSERT(m == 0 || (src_row >= 0 && src_row < src_recx->ne[2]));
+
+        const float * cs  = (const float *) ((const char *) src_cs->data + s * src_cs->nb[2] + c * src_cs->nb[1]);
+        float       * out = (float *) ((char *) dst->data + s * dst->nb[2] + c * dst->nb[1]);
+
+        for (int64_t i = 0; i < n_hist; ++i) {
+            const int64_t idx = i + m;
+            out[i] = idx < n_hist
+                ? cs[idx]
+                : *(const float *) ((const char *) src_recx->data + src_row * src_recx->nb[2] + (idx - n_hist) * src_recx->nb[1] + c * sizeof(float));
+        }
+    }
+
+    // all records of the source rows are read before any record is written
+    ggml_barrier(params->threadpool);
+
+    // phase 2: record the last min(n_tokens, K) input columns of each seq
+    const int64_t n_rec    = std::min(n_tokens, K);
+    const int64_t j_commit = n_tokens - n_rec;
+
+    for (int64_t it = ith; it < n_seqs * n_rec; it += nth) {
+        const int64_t s = it / n_rec;
+        const int64_t u = it % n_rec;
+
+        memcpy((char *) src_recx->data + (dst_row0 + s) * src_recx->nb[2] + u * src_recx->nb[1],
+               (const char *) src_x->data + s * src_x->nb[2] + (j_commit + u) * src_x->nb[1],
+               C * sizeof(float));
+    }
+}
+
+void ggml_compute_forward_ssm_conv_fold(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    switch (dst->src[0]->type) {
+        case GGML_TYPE_F32:
+            {
+                ggml_compute_forward_ssm_conv_fold_f32(params, dst);
             } break;
         default:
             {

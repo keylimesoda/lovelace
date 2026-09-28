@@ -581,6 +581,8 @@ extern "C" {
         GGML_OP_RWKV_WKV7,
         GGML_OP_SOLVE_TRI,
         GGML_OP_GATED_DELTA_NET,
+        GGML_OP_GATED_DELTA_NET_RR,
+        GGML_OP_SSM_CONV_FOLD,
         GGML_OP_LIGHTNING_INDEXER,
         GGML_OP_DSV4_HC_COMB,
         GGML_OP_DSV4_HC_PRE,
@@ -2658,6 +2660,49 @@ extern "C" {
             struct ggml_tensor  * beta,
             struct ggml_tensor  * state,
             int64_t               K);
+
+    // ReplaySSM variant of ggml_gated_delta_net, for record + fold speculative rollback
+    //
+    //   q, k, v, g, beta : as ggml_gated_delta_net
+    //   state : [S_v, S_v, H_v, n_seqs] -- committed state of each sequence's source row
+    //   rec   : [n_embd_rec, K, n_rows] -- record arena, one record per (row, slot):
+    //           [k (S_k*H_k) | v (S_v*H_v) | g (G*H_v) | beta (H_v)], G = g->ne[0]
+    //   rs    : I32 [2, n_seqs] -- rs[0][s] = m (0..K) records of row rs[1][s] to replay first
+    //
+    // the output packs the attention scores [S_v, H_v, n_tokens, n_seqs] followed by one state per
+    // sequence: the state after the m replayed records and the first n_tokens - min(n_tokens, K) tokens.
+    // after all reads of rec, the inputs of the last min(n_tokens, K) tokens of sequence s are written
+    // into rec row dst_row0 + s, so rec must live in a buffer of the backend that runs the op.
+    GGML_API struct ggml_tensor * ggml_gated_delta_net_rr(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * k,
+            struct ggml_tensor  * v,
+            struct ggml_tensor  * g,
+            struct ggml_tensor  * beta,
+            struct ggml_tensor  * state,
+            struct ggml_tensor  * rec,
+            struct ggml_tensor  * rs,
+            int32_t               K,
+            int32_t               dst_row0);
+
+    // ReplaySSM conv history fold
+    //
+    //   conv_state : [W-1, C, n_seqs]      -- committed conv history of each sequence's source row
+    //   recx       : [C, K, n_rows]        -- recorded input columns
+    //   x          : [C, n_tokens, n_seqs] -- new input columns
+    //   rs         : I32 [2, n_seqs]       -- as ggml_gated_delta_net_rr
+    //
+    // result: [W-1, C, n_seqs], the last W-1 columns of (conv_state || recx[rs[1][s]][0 .. rs[0][s]])
+    // after all reads of recx, the last min(n_tokens, K) columns of x are written into recx row dst_row0 + s
+    GGML_API struct ggml_tensor * ggml_ssm_conv_fold(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * conv_state,
+            struct ggml_tensor  * recx,
+            struct ggml_tensor  * x,
+            struct ggml_tensor  * rs,
+            int32_t               K,
+            int32_t               dst_row0);
 
     // DSA lightning indexer
     //

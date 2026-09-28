@@ -7,13 +7,20 @@
 
 #define LLAMA_MAX_SEQ 256
 
+// how partial rollback of recurrent state (n_rs_seq > 0) is implemented
+enum llama_rs_mode {
+    LLAMA_RS_MODE_NONE,     // no partial rollback
+    LLAMA_RS_MODE_SNAPSHOT, // one full state plane per rollback position
+    LLAMA_RS_MODE_REPLAY,   // one committed plane plus per-token transition records, folded lazily (ReplaySSM)
+};
+
 struct llama_cparams {
     uint32_t n_ctx;           // context size used during inference
     uint32_t n_ctx_seq;       // context for a single sequence
     uint32_t n_batch;
     uint32_t n_ubatch;
     uint32_t n_seq_max;
-    uint32_t n_rs_seq;        // number of recurrent-state snapshots per seq for rollback
+    uint32_t n_rs_seq;        // max number of tokens a recurrent seq can roll back after a ubatch
     uint32_t n_outputs_max;   // max outputs supported by the context
     uint32_t n_outputs_max_per_seq;
     int32_t  n_threads;       // number of threads to use for generation
@@ -57,6 +64,7 @@ struct llama_cparams {
     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
 
     enum llama_context_type ctx_type;
+    enum llama_rs_mode      rs_mode;
     enum llama_rope_scaling_type rope_scaling_type;
     enum llama_pooling_type pooling_type;
 

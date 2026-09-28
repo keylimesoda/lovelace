@@ -1129,6 +1129,18 @@ bool llm_arch_supports_rs_rollback(const llm_arch & arch) {
     }
 }
 
+bool llm_arch_supports_rs_replay(const llm_arch & arch) {
+    // the arch builds its GDN layers with the shared build_conv_state + build_recurrent_attn, broadcasting q/k
+    // heads as h % H_k (qwen3next repeats them interleaved instead, so it is not covered)
+    switch (arch) {
+        case LLM_ARCH_QWEN35:
+        case LLM_ARCH_QWEN35MOE:
+            return true;
+        default:
+            return false;
+    }
+}
+
 bool llm_arch_supports_sm_tensor(const llm_arch & arch) {
     switch (arch) {
         case LLM_ARCH_GROK:

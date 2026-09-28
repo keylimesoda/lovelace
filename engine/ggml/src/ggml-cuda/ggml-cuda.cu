@@ -2379,6 +2379,12 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         case GGML_OP_GATED_DELTA_NET:
             ggml_cuda_op_gated_delta_net(ctx, dst);
             break;
+        case GGML_OP_GATED_DELTA_NET_RR:
+            ggml_cuda_op_gated_delta_net_rr(ctx, dst);
+            break;
+        case GGML_OP_SSM_CONV_FOLD:
+            ggml_cuda_op_ssm_conv_fold(ctx, dst);
+            break;
         case GGML_OP_DSV4_HC_COMB:
             ggml_cuda_op_dsv4_hc_comb(ctx, dst);
             break;
@@ -2752,7 +2758,7 @@ static int ggml_cuda_try_gdn_cache_fusion(
         const ggml_cgraph * cgraph, int node_idx, ggml_cuda_gated_delta_net_fused_cache & fused_state_cpy) {
     const ggml_tensor * gdn = cgraph->nodes[node_idx];
     // the kernel skips the snapshot tail, so the gdn output must not be a graph output
-    if (gdn->op != GGML_OP_GATED_DELTA_NET || gdn->type != GGML_TYPE_F32 ||
+    if ((gdn->op != GGML_OP_GATED_DELTA_NET && gdn->op != GGML_OP_GATED_DELTA_NET_RR) || gdn->type != GGML_TYPE_F32 ||
         (gdn->flags & GGML_TENSOR_FLAG_OUTPUT)) {
         return 0;
     }
@@ -2763,7 +2769,8 @@ static int ggml_cuda_try_gdn_cache_fusion(
     const int64_t       n_tokens  = src_v->ne[2];
     const int64_t       n_seqs    = src_v->ne[3];
     const int64_t       D         = S_v * S_v * H;
-    const int64_t       K         = ggml_get_op_params_i32(gdn, 0); // snapshot slot count
+    // snapshot slot count; the ReplaySSM op outputs only the committed state (its op param 0 is the record count)
+    const int64_t       K         = gdn->op == GGML_OP_GATED_DELTA_NET_RR ? 1 : ggml_get_op_params_i32(gdn, 0);
     const int64_t       n_written = std::min<int64_t>(n_tokens, K); // newest n_written slots are written
 
     // snapshot tail starts right after the attention scores
@@ -3460,8 +3467,8 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         }
     }
 
-    // gated_delta_net -> cpy: scatter recurrent-state snapshots into the cache
-    if (node->op == GGML_OP_GATED_DELTA_NET) {
+    // gated_delta_net(_rr) -> cpy: scatter recurrent-state snapshots into the cache
+    if (node->op == GGML_OP_GATED_DELTA_NET || node->op == GGML_OP_GATED_DELTA_NET_RR) {
         ggml_cuda_gated_delta_net_fused_cache fused_state_cpy;
         const int nodes_to_skip = ggml_cuda_try_gdn_cache_fusion(cgraph, i, fused_state_cpy);
         if (nodes_to_skip > 0) {
@@ -3469,7 +3476,11 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
             GGML_LOG_INFO("%s: fused gated_delta_net snapshot copies for %s (skipped %d nodes)\n",
                           __func__, node->name, nodes_to_skip);
 #endif
-            ggml_cuda_op_gated_delta_net_fused_cache(*cuda_ctx, node, fused_state_cpy);
+            if (node->op == GGML_OP_GATED_DELTA_NET_RR) {
+                ggml_cuda_op_gated_delta_net_rr_fused_cache(*cuda_ctx, node, fused_state_cpy);
+            } else {
+                ggml_cuda_op_gated_delta_net_fused_cache(*cuda_ctx, node, fused_state_cpy);
+            }
             return nodes_to_skip;
         }
     }
@@ -5576,6 +5587,17 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
             return true;
         case GGML_OP_GATED_DELTA_NET:
             return true;
+        case GGML_OP_GATED_DELTA_NET_RR:
+            {
+                // the kernels write the records into src[6] in place, so it must live on this device
+                const int64_t S_v = op->src[2]->ne[0];
+                return (S_v == 16 || S_v == 32 || S_v == 64 || S_v == 128) &&
+                    ggml_are_same_stride(op->src[0], op->src[1]) &&
+                    (op->src[6]->buffer == nullptr || ggml_backend_buft_is_cuda(op->src[6]->buffer->buft));
+            }
+        case GGML_OP_SSM_CONV_FOLD:
+            return ggml_is_contiguous(op) &&
+                (op->src[1]->buffer == nullptr || ggml_backend_buft_is_cuda(op->src[1]->buffer->buft));
         case GGML_OP_DSV4_HC_COMB:
             return op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F32 &&
                 op->src[2]->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32;

@@ -326,6 +326,22 @@ void llm_graph_input_cls::set_input(const llama_ubatch * ubatch) {
     }
 }
 
+// [ReplaySSM] (records to fold, source row) of each row in [head, head + n_rs)
+static void set_input_rs_fold(ggml_tensor * rs_fold, const llama_memory_recurrent_context * mctx) {
+    if (rs_fold == nullptr) {
+        return;
+    }
+
+    GGML_ASSERT(ggml_backend_buffer_is_host(rs_fold->buffer));
+    int32_t * data = (int32_t *) rs_fold->data;
+
+    const int64_t n_rs = mctx->get_n_rs();
+    for (int64_t i = 0; i < n_rs; ++i) {
+        data[2*i + 0] = mctx->rs_fold_m  (i);
+        data[2*i + 1] = mctx->rs_fold_src(i);
+    }
+}
+
 void llm_graph_input_rs::set_input(const llama_ubatch * ubatch) {
     GGML_UNUSED(ubatch);
 
@@ -340,6 +356,8 @@ void llm_graph_input_rs::set_input(const llama_ubatch * ubatch) {
             data[i] = mctx->s_copy(i);
         }
     }
+
+    set_input_rs_fold(rs_fold, mctx);
 }
 
 bool llm_graph_input_rs::can_reuse(const llm_graph_params & params) {
@@ -353,6 +371,8 @@ bool llm_graph_input_rs::can_reuse(const llm_graph_params & params) {
 
     res &= s_copy_main->ne[0]  == params.ubatch.n_seqs;
     res &= s_copy_extra->ne[0] == mctx->get_n_rs() - params.ubatch.n_seqs;
+
+    res &= rs_fold == nullptr || rs_fold->ne[1] == mctx->get_n_rs();
 
     res &= head == mctx->get_head();
     res &= rs_z == mctx->get_rs_z();
@@ -1111,6 +1131,8 @@ void llm_graph_input_mem_hybrid::set_input(const llama_ubatch * ubatch) {
             data[i] = mctx->get_recr()->s_copy(i);
         }
     }
+
+    set_input_rs_fold(inp_rs->rs_fold, mctx->get_recr());
 }
 
 bool llm_graph_input_mem_hybrid::can_reuse(const llm_graph_params & params) {
@@ -1129,6 +1151,8 @@ bool llm_graph_input_mem_hybrid::can_reuse(const llm_graph_params & params) {
 
     res &= inp_rs->s_copy_main->ne[0]  == params.ubatch.n_seqs;
     res &= inp_rs->s_copy_extra->ne[0] == mctx->get_recr()->get_n_rs() - params.ubatch.n_seqs;
+
+    res &= inp_rs->rs_fold == nullptr || inp_rs->rs_fold->ne[1] == mctx->get_recr()->get_n_rs();
 
     res &= inp_rs->head == mctx->get_recr()->get_head();
     res &= inp_rs->rs_z == mctx->get_recr()->get_rs_z();
@@ -1155,6 +1179,8 @@ void llm_graph_input_mem_hybrid_k::set_input(const llama_ubatch * ubatch) {
             data[i] = mctx->get_recr()->s_copy(i);
         }
     }
+
+    set_input_rs_fold(inp_rs->rs_fold, mctx->get_recr());
 }
 
 bool llm_graph_input_mem_hybrid_k::can_reuse(const llm_graph_params & params) {
@@ -1172,6 +1198,8 @@ bool llm_graph_input_mem_hybrid_k::can_reuse(const llm_graph_params & params) {
 
     res &= inp_rs->s_copy_main->ne[0]  == params.ubatch.n_seqs;
     res &= inp_rs->s_copy_extra->ne[0] == mctx->get_recr()->get_n_rs() - params.ubatch.n_seqs;
+
+    res &= inp_rs->rs_fold == nullptr || inp_rs->rs_fold->ne[1] == mctx->get_recr()->get_n_rs();
 
     res &= inp_rs->head == mctx->get_recr()->get_head();
     res &= inp_rs->rs_z == mctx->get_recr()->get_rs_z();
@@ -1229,6 +1257,8 @@ void llm_graph_input_mem_hybrid_iswa::set_input(const llama_ubatch * ubatch) {
             data[i] = mctx->get_recr()->s_copy(i);
         }
     }
+
+    set_input_rs_fold(inp_rs->rs_fold, mctx->get_recr());
 }
 
 bool llm_graph_input_mem_hybrid_iswa::can_reuse(const llm_graph_params & params) {
@@ -1260,6 +1290,8 @@ bool llm_graph_input_mem_hybrid_iswa::can_reuse(const llm_graph_params & params)
 
     res &= inp_rs->s_copy_main->ne[0]  == params.ubatch.n_seqs;
     res &= inp_rs->s_copy_extra->ne[0] == mctx->get_recr()->get_n_rs() - params.ubatch.n_seqs;
+
+    res &= inp_rs->rs_fold == nullptr || inp_rs->rs_fold->ne[1] == mctx->get_recr()->get_n_rs();
 
     res &= inp_rs->head == mctx->get_recr()->get_head();
     res &= inp_rs->rs_z == mctx->get_recr()->get_rs_z();
@@ -3536,6 +3568,14 @@ static std::unique_ptr<llm_graph_input_rs> build_rs_inp_impl(
 
     inp->s_copy_main  = ggml_view_1d(ctx0, inp->s_copy, n_seqs, 0);
     inp->s_copy_extra = ggml_view_1d(ctx0, inp->s_copy, n_rs - n_seqs, n_seqs * inp->s_copy->nb[0]);
+
+    if (mctx_cur->get_rs_replay()) {
+        inp->rs_fold = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, 2, n_rs);
+        ggml_set_input(inp->rs_fold);
+        ggml_set_name(inp->rs_fold, "rs_fold");
+
+        inp->rs_fold_main = ggml_view_2d(ctx0, inp->rs_fold, 2, n_seqs, inp->rs_fold->nb[1], 0);
+    }
 
     inp->head = mctx_cur->get_head();
     inp->rs_z = mctx_cur->get_rs_z();

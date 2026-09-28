@@ -24,6 +24,7 @@ public:
                      uint32_t   mem_size,
                      uint32_t   n_seq_max,
                      uint32_t   n_rs_seq,
+                         bool   rs_replay,
         const layer_filter_cb & filter);
 
     ~llama_memory_recurrent() = default;
@@ -70,8 +71,18 @@ public:
     uint32_t size = 0; // total number of cells, shared across all sequences
     uint32_t used = 0; // used cells (i.e. at least one seq_id)
 
-    // number of recurrent-state snapshots per seq for rollback; tensors are widened to (1 + n_rs_seq) groups
+    // max number of tokens a seq can roll back after a ubatch
+    //   snapshot mode: r_l/s_l are widened to (1 + n_rs_seq) planes, rs_idx selects the plane to restore
+    //   replay mode (ReplaySSM): one committed plane per cell; the last (1 + n_rs_seq) transitions of every
+    //     ubatch are recorded in rec_l/recx_l and folded by the next ubatch that touches the row
     uint32_t n_rs_seq = 0;
+    bool     rs_replay = false;
+
+    // [ReplaySSM] number of pending (not yet folded) records of each physical row
+    std::vector<uint32_t> rec_m;
+
+    // [ReplaySSM] set by find_slot(): (records to fold, source row) of each row in [head, head + n)
+    std::vector<int32_t> rs_fold_in;
 
     // per-seq rollback index
     std::vector<uint32_t> rs_idx;
@@ -113,6 +124,10 @@ public:
     std::vector<ggml_tensor *> s_l;
     // a second conv history that must stay replicated across devices, so it cannot share the r row
     std::vector<ggml_tensor *> p_l;
+    // [ReplaySSM] transition records F32 [n_embd_rec, 1 + n_rs_seq, size] and conv input records
+    // F32 [n_embd_recx, 1 + n_rs_seq, size]
+    std::vector<ggml_tensor *> rec_l;
+    std::vector<ggml_tensor *> recx_l;
 
 private:
     //const llama_model & model;
@@ -128,6 +143,7 @@ private:
     size_t size_r_bytes() const;
     size_t size_s_bytes() const;
     size_t size_p_bytes() const;
+    size_t size_rec_bytes() const;
 
     void state_write_meta(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges, llama_seq_id seq_id = -1) const;
     void state_write_data(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges) const;
@@ -177,7 +193,17 @@ public:
     ggml_tensor * get_s_l(int32_t il) const;
     ggml_tensor * get_p_l(int32_t il) const;
 
+    // [ReplaySSM]
+    bool          get_rs_replay() const;
+    uint32_t      get_n_rec()     const; // record slots per row (1 + n_rs_seq)
+    ggml_tensor * get_rec_l (int32_t il) const;
+    ggml_tensor * get_recx_l(int32_t il) const;
+
     int32_t s_copy(int i) const;
+
+    // [ReplaySSM] number of records to fold into row head + i, and the physical row they are read from
+    int32_t rs_fold_m  (int i) const;
+    int32_t rs_fold_src(int i) const;
 
 private:
     const llama_memory_status status;

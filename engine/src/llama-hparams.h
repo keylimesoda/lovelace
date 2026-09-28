@@ -450,6 +450,12 @@ struct llama_hparams {
     // dimension of the recurrent state embeddings
     uint32_t n_embd_s() const;
 
+    // [ReplaySSM] dimension of one gated delta net transition record: k (H_k heads) | v | g | beta
+    uint32_t n_embd_rec() const;
+
+    // [ReplaySSM] number of conv channels, i.e. the size of one recorded conv input column
+    uint32_t n_embd_recx() const;
+
     uint32_t n_pos_per_embd() const;
 
     // note: currently only support if either all or none of the layers are MLA

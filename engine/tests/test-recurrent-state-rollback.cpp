@@ -10,8 +10,12 @@
 #include <clocale>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
+#include <random>
 #include <set>
+#include <string>
 #include <vector>
 
 static bool decode_tokens(llama_context * ctx, const std::vector<llama_token> & tokens, uint32_t count) {
@@ -171,7 +175,7 @@ static bool test_multi_seq_split_replay(const common_params & params, llama_mode
 
         ok = ok && llama_memory_seq_rm(llama_get_memory(ctx_roll), (llama_seq_id) s, p0, -1);
 
-        // a second partial removal while one is pending must be refused
+        // removing more than the last ubatch can restore must be refused
         ok = ok && !llama_memory_seq_rm(llama_get_memory(ctx_roll), (llama_seq_id) s, p0 - 1, -1);
     }
     if (!ok) {
@@ -300,6 +304,301 @@ static bool test_multi_seq_split_replay(const common_params & params, llama_mode
     fprintf(stderr, "%s : seq-1-only decode independent of seq 0 (max diff %g, nmse %g)\n", __func__, (double) diff_tail, nmse_tail);
     cleanup();
     return true;
+}
+
+//
+// [ReplaySSM] replay vs snapshot rollback
+//
+
+// creates a context with the rollback mode forced through LLAMA_RS_ROLLBACK (read at context creation)
+static llama_context * make_ctx_mode(const common_params & params, llama_model * model, uint8_t fill, const char * mode,
+        uint32_t n_seq_max, uint32_t n_rs_seq, bool kv_unified) {
+    const char * env = getenv("LLAMA_RS_ROLLBACK");
+    const std::string env_old = env ? env : "";
+
+    setenv("LLAMA_RS_ROLLBACK", mode, 1);
+
+    auto cparams = common_context_params_to_llama(params);
+    cparams.n_seq_max  = n_seq_max;
+    cparams.n_rs_seq   = n_rs_seq;
+    cparams.n_ctx      = 1024;
+    cparams.n_batch    = 256;
+    cparams.n_ubatch   = 64;
+    cparams.kv_unified = kv_unified;
+    llama_context * ctx = init_ctx(model, cparams, fill);
+
+    if (env) {
+        setenv("LLAMA_RS_ROLLBACK", env_old.c_str(), 1);
+    } else {
+        unsetenv("LLAMA_RS_ROLLBACK");
+    }
+    return ctx;
+}
+
+// bitwise comparison of the first n_outputs logits rows
+static bool logits_same(llama_context * a, llama_context * b, int n_outputs, int n_vocab, const std::string & what) {
+    for (int i = 0; i < n_outputs; ++i) {
+        const float * la = llama_get_logits_ith(a, i);
+        const float * lb = llama_get_logits_ith(b, i);
+        if (la == nullptr || lb == nullptr) {
+            fprintf(stderr, "%s : %s: missing logits at output %d\n", __func__, what.c_str(), i);
+            return false;
+        }
+        if (memcmp(la, lb, n_vocab*sizeof(float)) != 0) {
+            fprintf(stderr, "%s : %s: logits differ at output %d (nmse %g)\n", __func__, what.c_str(), i, nmse(la, lb, n_vocab));
+            return false;
+        }
+    }
+    return true;
+}
+
+// Six sequences verify drafts of changing length in one batch, with changing subsets of active sequences (so inactive
+// cells get moved around) and a different rollback depth per sequence. Replay and snapshot mode run identical ubatch
+// shapes and must produce bitwise-equal logits.
+static bool test_ab_multi_seq(const common_params & params, llama_model * model, int n_vocab, uint8_t fill, bool kv_unified) {
+    constexpr uint32_t n_seqs   = 6;
+    constexpr uint32_t n_rs_seq = 7;
+    constexpr uint32_t K        = n_rs_seq + 1;
+    const std::string  tag      = std::string("kv_unified=") + (kv_unified ? "1" : "0");
+
+    llama_context * ctx_rep  = make_ctx_mode(params, model, fill, "replay",   n_seqs, n_rs_seq, kv_unified);
+    llama_context * ctx_snap = make_ctx_mode(params, model, fill, "snapshot", n_seqs, n_rs_seq, kv_unified);
+    if (ctx_rep == nullptr || ctx_snap == nullptr) {
+        fprintf(stderr, "%s : failed to init contexts\n", __func__);
+        return false;
+    }
+
+    const auto cleanup = [&]() {
+        llama_free(ctx_rep);
+        llama_free(ctx_snap);
+    };
+
+    const auto tok = [&](uint32_t seq, llama_pos pos) {
+        return (llama_token) ((13*(uint32_t) pos + 29*seq + 3) % (uint32_t) n_vocab);
+    };
+
+    std::vector<llama_pos> pos(n_seqs, 0);
+    llama_batch batch = llama_batch_init(256, 0, 1);
+
+    const auto decode_both = [&](const std::string & what) {
+        if (llama_decode(ctx_rep, batch) != 0 || llama_decode(ctx_snap, batch) != 0) {
+            fprintf(stderr, "%s : %s %s: decode failed\n", __func__, tag.c_str(), what.c_str());
+            return false;
+        }
+        return logits_same(ctx_rep, ctx_snap, batch.n_tokens, n_vocab, tag + " " + what);
+    };
+
+    // prefill with different lengths per seq
+    common_batch_clear(batch);
+    for (uint32_t s = 0; s < n_seqs; ++s) {
+        for (uint32_t i = 0; i < 5 + 3*s; ++i) {
+            common_batch_add(batch, tok(s, pos[s]), pos[s], { (llama_seq_id) s }, true);
+            pos[s]++;
+        }
+    }
+    bool ok = decode_both("prefill");
+
+    std::mt19937 rng(7);
+    const std::vector<std::vector<uint32_t>> subsets = { { 0, 1, 2, 3, 4, 5 }, { 0, 2, 4 }, { 1, 2, 5 }, { 3 }, { 5, 0 } };
+
+    for (int round = 0; ok && round < 30; ++round) {
+        const auto & active = subsets[round % subsets.size()];
+        const uint32_t T = 1 + (uint32_t) round % K;
+
+        common_batch_clear(batch);
+        for (uint32_t s : active) {
+            for (uint32_t i = 0; i < T; ++i) {
+                common_batch_add(batch, tok(s, pos[s] + i), pos[s] + i, { (llama_seq_id) s }, true);
+            }
+        }
+        ok = decode_both("round " + std::to_string(round));
+
+        // accept a different number of tokens per seq, roll back the rest
+        for (uint32_t s : active) {
+            const uint32_t r = (uint32_t) (rng() % T);
+            if (ok && r > 0) {
+                const llama_pos p0 = pos[s] + (llama_pos) (T - r);
+                const bool ok_rep  = llama_memory_seq_rm(llama_get_memory(ctx_rep),  (llama_seq_id) s, p0, -1);
+                const bool ok_snap = llama_memory_seq_rm(llama_get_memory(ctx_snap), (llama_seq_id) s, p0, -1);
+                if (!ok_rep || !ok_snap) {
+                    fprintf(stderr, "%s : %s round %d: rollback of %u failed (replay %d, snapshot %d)\n",
+                            __func__, tag.c_str(), round, r, ok_rep, ok_snap);
+                    ok = false;
+                }
+            }
+            pos[s] += (llama_pos) (T - r);
+        }
+    }
+
+    if (ok) {
+        common_batch_clear(batch);
+        for (uint32_t s = 0; s < n_seqs; ++s) {
+            common_batch_add(batch, tok(s, pos[s]), pos[s], { (llama_seq_id) s }, true);
+        }
+        ok = decode_both("final");
+    }
+
+    llama_batch_free(batch);
+    cleanup();
+
+    if (ok) {
+        fprintf(stderr, "%s : %s replay and snapshot logits bitwise equal\n", __func__, tag.c_str());
+    }
+    return ok;
+}
+
+// replay mode only: stacked rollbacks compose, and removals beyond the pending records are refused
+static bool test_replay_rollback_rules(const common_params & params, llama_model * model, int n_vocab, uint8_t fill) {
+    constexpr uint32_t n_seqs   = 2;
+    constexpr uint32_t n_rs_seq = 7;
+    constexpr uint32_t T        = n_rs_seq + 1;
+
+    llama_context * ctx_a = make_ctx_mode(params, model, fill, "replay", n_seqs, n_rs_seq, true);
+    llama_context * ctx_b = make_ctx_mode(params, model, fill, "replay", n_seqs, n_rs_seq, true);
+    if (ctx_a == nullptr || ctx_b == nullptr) {
+        fprintf(stderr, "%s : failed to init contexts\n", __func__);
+        return false;
+    }
+
+    const auto tok = [&](uint32_t seq, llama_pos pos) {
+        return (llama_token) ((17*(uint32_t) pos + 5*seq + 11) % (uint32_t) n_vocab);
+    };
+
+    llama_batch batch = llama_batch_init(64, 0, 1);
+
+    const auto decode_range = [&](llama_context * ctx, llama_pos p0, llama_pos p1) {
+        common_batch_clear(batch);
+        for (uint32_t s = 0; s < n_seqs; ++s) {
+            for (llama_pos p = p0; p < p1; ++p) {
+                common_batch_add(batch, tok(s, p), p, { (llama_seq_id) s }, true);
+            }
+        }
+        return llama_decode(ctx, batch) == 0;
+    };
+
+    // prompt of 12 tokens, then a verify of T tokens for both seqs
+    bool ok = true;
+    for (llama_context * ctx : { ctx_a, ctx_b }) {
+        ok = ok && decode_range(ctx, 0, 12) && decode_range(ctx, 12, 12 + T);
+    }
+
+    auto * mem_a = llama_get_memory(ctx_a);
+    auto * mem_b = llama_get_memory(ctx_b);
+    const llama_pos p_end = 12 + T;
+
+    // seq 0: 2 + 3 stacked in ctx_a vs 5 at once in ctx_b; seq 1: 1 in both
+    ok = ok && llama_memory_seq_rm(mem_a, 0, p_end - 2, -1);
+    ok = ok && llama_memory_seq_rm(mem_a, 0, p_end - 5, -1);
+    ok = ok && llama_memory_seq_rm(mem_b, 0, p_end - 5, -1);
+    ok = ok && llama_memory_seq_rm(mem_a, 1, p_end - 1, -1);
+    ok = ok && llama_memory_seq_rm(mem_b, 1, p_end - 1, -1);
+    if (!ok) {
+        fprintf(stderr, "%s : stacked rollback failed\n", __func__);
+    }
+
+    // 3 of the T recorded tokens of seq 0 remain; 4 more cannot be removed, and the refusal changes nothing
+    if (ok && llama_memory_seq_rm(mem_a, 0, p_end - 9, -1)) {
+        fprintf(stderr, "%s : rollback beyond the pending records was accepted\n", __func__);
+        ok = false;
+    }
+
+    const llama_pos pos[n_seqs] = { p_end - 5, p_end - 1 };
+    for (int step = 0; ok && step < 3; ++step) {
+        common_batch_clear(batch);
+        for (uint32_t s = 0; s < n_seqs; ++s) {
+            for (llama_pos p = pos[s] + 2*step; p < pos[s] + 2*step + 2; ++p) {
+                common_batch_add(batch, tok(s, p + 1000), p, { (llama_seq_id) s }, true);
+            }
+        }
+        ok = llama_decode(ctx_a, batch) == 0 && llama_decode(ctx_b, batch) == 0;
+        ok = ok && logits_same(ctx_a, ctx_b, batch.n_tokens, n_vocab, "stacked vs single rollback step " + std::to_string(step));
+    }
+
+    llama_batch_free(batch);
+    llama_free(ctx_a);
+    llama_free(ctx_b);
+
+    if (ok) {
+        fprintf(stderr, "%s : stacked rollback and refused over-rollback OK\n", __func__);
+    }
+    return ok;
+}
+
+// full state save/restore while rollbacks are pending: the restored replay and snapshot contexts must continue with
+// bitwise-equal logits. (a full restore compacts the attention KV cells, so restored vs original is not bitwise equal
+// in either mode; the per-seq checkpoint restore in test_rollback covers that with pending records.)
+static bool test_ab_state_restore(const common_params & params, llama_model * model, int n_vocab, uint8_t fill) {
+    constexpr uint32_t n_seqs   = 3;
+    constexpr uint32_t n_rs_seq = 7;
+    constexpr uint32_t T        = n_rs_seq + 1;
+
+    const char * modes[2] = { "replay", "snapshot" };
+    llama_context * orig[2] = {};
+    llama_context * rest[2] = {};
+
+    const auto tok = [&](uint32_t seq, llama_pos pos) {
+        return (llama_token) ((19*(uint32_t) pos + 7*seq + 2) % (uint32_t) n_vocab);
+    };
+
+    llama_batch batch = llama_batch_init(64, 0, 1);
+    const llama_pos p_end = 10 + T;
+    const llama_pos rollback[n_seqs] = { 5, 1, 7 };
+
+    bool ok = true;
+    for (int i = 0; ok && i < 2; ++i) {
+        orig[i] = make_ctx_mode(params, model, fill, modes[i], n_seqs, n_rs_seq, true);
+        rest[i] = make_ctx_mode(params, model, fill, modes[i], n_seqs, n_rs_seq, true);
+        ok = orig[i] != nullptr && rest[i] != nullptr;
+
+        for (llama_pos p0 : { (llama_pos) 0, (llama_pos) 10 }) {
+            common_batch_clear(batch);
+            for (uint32_t s = 0; s < n_seqs; ++s) {
+                for (llama_pos p = p0; p < (p0 == 0 ? 10 : p_end); ++p) {
+                    common_batch_add(batch, tok(s, p), p, { (llama_seq_id) s }, true);
+                }
+            }
+            ok = ok && llama_decode(orig[i], batch) == 0;
+        }
+        for (uint32_t s = 0; ok && s < n_seqs; ++s) {
+            ok = llama_memory_seq_rm(llama_get_memory(orig[i]), (llama_seq_id) s, p_end - rollback[s], -1);
+        }
+
+        if (ok) {
+            std::vector<uint8_t> state(llama_state_get_size(orig[i]));
+            ok = llama_state_get_data(orig[i], state.data(), state.size()) == state.size() &&
+                 llama_state_set_data(rest[i], state.data(), state.size()) == state.size();
+        }
+        if (!ok) {
+            fprintf(stderr, "%s : %s save/restore failed\n", __func__, modes[i]);
+        }
+    }
+
+    for (int step = 0; ok && step < 3; ++step) {
+        common_batch_clear(batch);
+        for (uint32_t s = 0; s < n_seqs; ++s) {
+            const llama_pos p0 = p_end - rollback[s] + 2*step;
+            for (llama_pos p = p0; p < p0 + 2; ++p) {
+                common_batch_add(batch, tok(s, p + 1000), p, { (llama_seq_id) s }, true);
+            }
+        }
+        for (int i = 0; ok && i < 2; ++i) {
+            ok = llama_decode(orig[i], batch) == 0 && llama_decode(rest[i], batch) == 0;
+        }
+        const std::string t = " step " + std::to_string(step);
+        ok = ok && logits_same(orig[0], orig[1], batch.n_tokens, n_vocab, "original replay vs snapshot" + t);
+        ok = ok && logits_same(rest[0], rest[1], batch.n_tokens, n_vocab, "restored replay vs snapshot" + t);
+    }
+
+    llama_batch_free(batch);
+    for (int i = 0; i < 2; ++i) {
+        llama_free(orig[i]);
+        llama_free(rest[i]);
+    }
+
+    if (ok) {
+        fprintf(stderr, "%s : restore with pending rollbacks bitwise equal across modes\n", __func__);
+    }
+    return ok;
 }
 
 static int test_rollback(const common_params & params, llama_model * model, uint8_t fill) {
@@ -477,6 +776,23 @@ static int test_rollback(const common_params & params, llama_model * model, uint
 
     if (!test_multi_seq_split_replay(params, model, n_vocab, fill)) {
         return 1;
+    }
+
+    // [ReplaySSM] only the qwen35 family implements the replay mode
+    char arch[64] = {};
+    llama_model_meta_val_str(model, "general.architecture", arch, sizeof(arch));
+    if (strcmp(arch, "qwen35") == 0 || strcmp(arch, "qwen35moe") == 0) {
+        for (bool kv_unified : { false, true }) {
+            if (!test_ab_multi_seq(params, model, n_vocab, fill, kv_unified)) {
+                return 1;
+            }
+        }
+        if (!test_replay_rollback_rules(params, model, n_vocab, fill)) {
+            return 1;
+        }
+        if (!test_ab_state_restore(params, model, n_vocab, fill)) {
+            return 1;
+        }
     }
 
     return 0;

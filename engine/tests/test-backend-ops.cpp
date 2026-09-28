@@ -4857,6 +4857,196 @@ struct test_gated_delta_net_cache_fusion : public test_case {
     }
 };
 
+// [ReplaySSM] per-seq (m, source row) of the rr/fold tests: m cycles through {0, 1, K/2, K} starting at m_first,
+// the sources are the seq's own destination row, the reversed destination rows (swaps) or rows outside of them
+enum test_rr_src { TEST_RR_SRC_SAME, TEST_RR_SRC_SWAP, TEST_RR_SRC_OUTSIDE };
+
+static std::vector<int32_t> test_rr_fold_rows(int64_t n_seqs, int64_t K, int m_first, test_rr_src src, int64_t dst_row0, int64_t n_rows) {
+    const int32_t m_cycle[4] = { 0, 1, (int32_t) (K/2), (int32_t) K };
+    std::vector<int32_t> rs(2*n_seqs);
+    for (int64_t s = 0; s < n_seqs; ++s) {
+        rs[2*s + 0] = m_cycle[(m_first + s) % 4];
+        switch (src) {
+            case TEST_RR_SRC_SAME:    rs[2*s + 1] = dst_row0 + s;                break;
+            case TEST_RR_SRC_SWAP:    rs[2*s + 1] = dst_row0 + (n_seqs - 1 - s); break;
+            case TEST_RR_SRC_OUTSIDE: rs[2*s + 1] = (s % 2 == 0) ? 0 : n_rows - 1; break;
+        }
+    }
+    return rs;
+}
+
+// GGML_OP_GATED_DELTA_NET_RR
+// the output is (scores | committed states) followed by the record arena after the op wrote it
+struct test_gated_delta_net_rr : public test_case {
+    const int64_t head_count_k;
+    const int64_t v_repeat;
+    const int64_t head_size;
+    const int64_t n_seq_tokens;
+    const int64_t n_seqs;
+    const int64_t K;
+    const int     m_first;
+    const test_rr_src src;
+    const bool    kda;
+    const bool    permuted; // v is a strided view, as in the qwen35 graph
+
+    static constexpr int64_t dst_row0 = 1;
+
+    std::string vars() override {
+        return VARS_TO_STR10(head_count_k, v_repeat, head_size, n_seq_tokens, n_seqs, K, m_first, (int) src, kda, permuted);
+    }
+
+    std::string op_desc(ggml_tensor * t) override {
+        GGML_UNUSED(t);
+        return "GATED_DELTA_NET_RR";
+    }
+
+    test_gated_delta_net_rr(int64_t head_count_k = 4, int64_t v_repeat = 1, int64_t head_size = 32,
+            int64_t n_seq_tokens = 4, int64_t n_seqs = 1, int64_t K = 4, int m_first = 0,
+            test_rr_src src = TEST_RR_SRC_SAME, bool kda = false, bool permuted = false)
+        : head_count_k(head_count_k), v_repeat(v_repeat), head_size(head_size), n_seq_tokens(n_seq_tokens),
+          n_seqs(n_seqs), K(K), m_first(m_first), src(src), kda(kda), permuted(permuted) {}
+
+    int64_t n_rows() const { return n_seqs + 2; }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        const int64_t S   = head_size;
+        const int64_t H_k = head_count_k;
+        const int64_t H_v = head_count_k * v_repeat;
+        const int64_t G   = kda ? S : 1;
+
+        ggml_tensor * q     = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, S, H_k, n_seq_tokens, n_seqs);
+        ggml_tensor * k     = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, S, H_k, n_seq_tokens, n_seqs);
+        ggml_tensor * v     = permuted
+            ? ggml_permute(ctx, ggml_new_tensor_4d(ctx, GGML_TYPE_F32, S, n_seq_tokens, H_v, n_seqs), 0, 2, 1, 3)
+            : ggml_new_tensor_4d(ctx, GGML_TYPE_F32, S, H_v, n_seq_tokens, n_seqs);
+        ggml_tensor * g     = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, G, H_v, n_seq_tokens, n_seqs);
+        ggml_tensor * beta  = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, 1, H_v, n_seq_tokens, n_seqs);
+        ggml_tensor * state = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, S, S, H_v, n_seqs);
+        ggml_tensor * rec   = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, S*H_k + S*H_v + G*H_v + H_v, K, n_rows());
+        ggml_tensor * rs    = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 2, n_seqs);
+        ggml_set_name(q,     "q");
+        ggml_set_name(k,     "k");
+        ggml_set_name(v,     "v");
+        ggml_set_name(g,     "g");
+        ggml_set_name(beta,  "beta");
+        ggml_set_name(state, "state");
+        ggml_set_name(rec,   "rec");
+        ggml_set_name(rs,    "rs");
+
+        q = ggml_l2_norm(ctx, q, 1e-6f);
+        k = ggml_l2_norm(ctx, k, 1e-6f);
+
+        ggml_tensor * out = ggml_gated_delta_net_rr(ctx, q, k, v, g, beta, state, rec, rs, K, dst_row0);
+
+        // read the arena after the op, so the records it wrote are compared too
+        ggml_tensor * rec_after = ggml_scale(ctx, rec, 1.0f);
+        return ggml_concat(ctx, ggml_reshape_1d(ctx, out, ggml_nelements(out)), ggml_reshape_1d(ctx, rec_after, ggml_nelements(rec_after)), 0);
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        std::mt19937 rng(1234);
+        std::uniform_real_distribution<float> u01(0.0f, 1.0f);
+
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
+            if (ggml_is_view_op(t->op)) { continue; }
+            if (strcmp(t->name, "g") == 0) {
+                init_tensor_uniform(t, -20.0f, -1e-4f);
+            } else if (strcmp(t->name, "beta") == 0) {
+                init_tensor_uniform(t, 0.0f, 1.0f);
+            } else if (strcmp(t->name, "v") == 0) {
+                init_tensor_uniform(t, -0.3f, 5.0f);
+            } else if (strcmp(t->name, "rs") == 0) {
+                const std::vector<int32_t> rs = test_rr_fold_rows(n_seqs, K, m_first, src, dst_row0, n_rows());
+                ggml_backend_tensor_set(t, rs.data(), 0, ggml_nbytes(t));
+            } else if (strcmp(t->name, "rec") == 0) {
+                // records hold what the op consumes: unit-norm k, v, g <= 0, beta in [0, 1]
+                const int64_t S   = head_size;
+                const int64_t H_k = head_count_k;
+                const int64_t H_v = head_count_k * v_repeat;
+                const int64_t G   = kda ? S : 1;
+                std::vector<float> data(ggml_nelements(t));
+                for (int64_t r = 0; r < t->ne[1]*t->ne[2]; ++r) {
+                    float * p = data.data() + r*t->ne[0];
+                    for (int64_t h = 0; h < H_k; ++h) {
+                        double norm = 0.0;
+                        for (int64_t i = 0; i < S; ++i) {
+                            p[h*S + i] = 2.0f*u01(rng) - 1.0f;
+                            norm += p[h*S + i]*p[h*S + i];
+                        }
+                        for (int64_t i = 0; i < S; ++i) {
+                            p[h*S + i] /= (float) sqrt(norm);
+                        }
+                    }
+                    p += S*H_k;
+                    for (int64_t i = 0; i < S*H_v; ++i) { *p++ = -0.3f + 5.3f*u01(rng); }
+                    for (int64_t i = 0; i < G*H_v; ++i) { *p++ = -20.0f*u01(rng); }
+                    for (int64_t i = 0; i < H_v;   ++i) { *p++ = u01(rng); }
+                }
+                ggml_backend_tensor_set(t, data.data(), 0, ggml_nbytes(t));
+            } else {
+                init_tensor_uniform(t);
+            }
+        }
+    }
+};
+
+// GGML_OP_SSM_CONV_FOLD
+// the output is the folded history followed by the conv record arena after the op wrote it
+struct test_ssm_conv_fold : public test_case {
+    const int64_t n_hist;
+    const int64_t n_channels;
+    const int64_t n_seq_tokens;
+    const int64_t n_seqs;
+    const int64_t K;
+    const int     m_first;
+    const test_rr_src src;
+
+    static constexpr int64_t dst_row0 = 1;
+
+    std::string vars() override {
+        return VARS_TO_STR7(n_hist, n_channels, n_seq_tokens, n_seqs, K, m_first, (int) src);
+    }
+
+    std::string op_desc(ggml_tensor * t) override {
+        GGML_UNUSED(t);
+        return "SSM_CONV_FOLD";
+    }
+
+    test_ssm_conv_fold(int64_t n_hist = 3, int64_t n_channels = 256, int64_t n_seq_tokens = 4, int64_t n_seqs = 1,
+            int64_t K = 4, int m_first = 0, test_rr_src src = TEST_RR_SRC_SAME)
+        : n_hist(n_hist), n_channels(n_channels), n_seq_tokens(n_seq_tokens), n_seqs(n_seqs), K(K), m_first(m_first), src(src) {}
+
+    int64_t n_rows() const { return n_seqs + 2; }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * cs   = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_hist, n_channels, n_seqs);
+        ggml_tensor * recx = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_channels, K, n_rows());
+        ggml_tensor * x    = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_channels, n_seq_tokens, n_seqs);
+        ggml_tensor * rs   = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 2, n_seqs);
+        ggml_set_name(cs,   "conv_state");
+        ggml_set_name(recx, "recx");
+        ggml_set_name(x,    "x");
+        ggml_set_name(rs,   "rs");
+
+        ggml_tensor * out = ggml_ssm_conv_fold(ctx, cs, recx, x, rs, K, dst_row0);
+
+        ggml_tensor * recx_after = ggml_scale(ctx, recx, 1.0f);
+        return ggml_concat(ctx, ggml_reshape_1d(ctx, out, ggml_nelements(out)), ggml_reshape_1d(ctx, recx_after, ggml_nelements(recx_after)), 0);
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
+            if (ggml_is_view_op(t->op)) { continue; }
+            if (strcmp(t->name, "rs") == 0) {
+                const std::vector<int32_t> rs = test_rr_fold_rows(n_seqs, K, m_first, src, dst_row0, n_rows());
+                ggml_backend_tensor_set(t, rs.data(), 0, ggml_nbytes(t));
+            } else {
+                init_tensor_uniform(t);
+            }
+        }
+    }
+};
+
 // GGML_OP_GATED_LINEAR_ATTN
 struct test_gla : public test_case {
     const ggml_type type;
@@ -11222,6 +11412,35 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_gated_delta_net_cache_fusion(GGML_TYPE_F32, 4, 32,   4, 1, 4));
     test_cases.emplace_back(new test_gated_delta_net_cache_fusion(GGML_TYPE_F32, 8, 32,   4, 2, 4));
     test_cases.emplace_back(new test_gated_delta_net_cache_fusion(GGML_TYPE_F32, 4, 32,   8, 1, 4));
+
+    // [ReplaySSM] qwen35-like broadcast heads (16 -> 48) and H_k == H_v; n_seqs 6 mixes m in {0, 1, K/2, K}
+    for (auto [H_k, v_repeat] : std::initializer_list<std::pair<int64_t, int64_t>>{ { 16, 3 }, { 4, 1 } }) {
+        for (int64_t K : { 4, 8 }) {
+            for (int64_t n_seq_tokens : { 1, 4, 8, 20 }) {
+                for (test_rr_src src : { TEST_RR_SRC_SAME, TEST_RR_SRC_SWAP, TEST_RR_SRC_OUTSIDE }) {
+                    test_cases.emplace_back(new test_gated_delta_net_rr(H_k, v_repeat, 128, n_seq_tokens, 6, K, 0, src, false, true));
+                }
+                for (int m_first = 0; m_first < 4; ++m_first) {
+                    test_cases.emplace_back(new test_gated_delta_net_rr(H_k, v_repeat, 128, n_seq_tokens, 1, K, m_first, TEST_RR_SRC_SAME));
+                }
+            }
+        }
+    }
+    for (int64_t head_size : { 16, 32, 64 }) {
+        for (bool kda : { false, true }) {
+            test_cases.emplace_back(new test_gated_delta_net_rr(2, 2, head_size, 3, 3, 4, 1, TEST_RR_SRC_SWAP, kda));
+        }
+    }
+    for (int64_t K : { 4, 8 }) {
+        for (int64_t n_seq_tokens : { 1, 4, 8, 20 }) {
+            for (test_rr_src src : { TEST_RR_SRC_SAME, TEST_RR_SRC_SWAP, TEST_RR_SRC_OUTSIDE }) {
+                test_cases.emplace_back(new test_ssm_conv_fold(3, 1000, n_seq_tokens, 6, K, 0, src));
+            }
+            for (int m_first = 0; m_first < 4; ++m_first) {
+                test_cases.emplace_back(new test_ssm_conv_fold(3, 256, n_seq_tokens, 1, K, m_first, TEST_RR_SRC_SAME));
+            }
+        }
+    }
 
 #if 0
     // these tests are disabled to save execution time, sbut they can be handy for debugging

@@ -257,6 +257,15 @@ uint32_t llama_hparams::n_embd_s() const {
     return ssm_d_state * ssm_d_inner;
 }
 
+uint32_t llama_hparams::n_embd_rec() const {
+    // scalar gate per value head, see ggml_gated_delta_net_rr
+    return ssm_d_state*ssm_n_group + ssm_d_inner + 2*ssm_dt_rank;
+}
+
+uint32_t llama_hparams::n_embd_recx() const {
+    return ssm_d_inner + 2*ssm_n_group*ssm_d_state;
+}
+
 bool llama_hparams::is_recr(uint32_t il) const {
     if (il < n_layer_all) {
         return is_recr_impl[il];
