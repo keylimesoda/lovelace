@@ -27,4 +27,16 @@ exec 9>"$LOCK"
 flock 9
 rm -f "$ticket"   # dequeue once we hold the lock; the next ticket waits on the flock
 trap - EXIT
-"$@"
+
+# Keep holding the lock until the GPU is back to its idle baseline, so a detached container started inside this
+# hold (docker run -d) can't leak GPU memory into the next job. Baseline: desktop/compositor usage (~1 GiB).
+idle_mib=${GPU_IDLE_MIB:-2048}
+used() { nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -n1; }
+rc=0; "$@" || rc=$?
+waited=0
+while (( $(used) > idle_mib )); do
+  (( waited == 0 )) && echo "gpu-lock: command exited but $(used) MiB still in use; holding the lock until the GPU is idle" >&2
+  (( waited >= 1800 )) && { echo "gpu-lock: GPU still busy after 30 min; releasing anyway" >&2; break; }
+  sleep 5; waited=$((waited + 5))
+done
+exit "$rc"
