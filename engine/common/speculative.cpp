@@ -2465,8 +2465,20 @@ common_params common_base_params_to_speculative(const common_params & params) {
     const bool has_draft = params.speculative.has_dft();
 
     const auto & params_spec = params.speculative.draft;
+    const bool has_block_draft = std::any_of(
+        params.speculative.types.begin(), params.speculative.types.end(),
+        [](common_speculative_type t) {
+            return t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH || t == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
+        });
+    const int64_t n_block_required =
+        (int64_t) std::max(1, params.n_parallel) * std::max<int64_t>(1, (int64_t) params_spec.n_max + 1);
+    const int32_t n_block_ubatch = has_block_draft
+        ? (int32_t) std::min<int64_t>(std::max(1, params.n_batch), n_block_required)
+        : 0;
+    const int32_t n_ubatch_default = has_block_draft ? std::max(128, n_block_ubatch) : params_spec.n_ubatch;
+    const int32_t n_ubatch_requested = params_spec.n_ubatch_explicit ? params_spec.n_ubatch : n_ubatch_default;
     common_params result = params;
-    result.n_ubatch = std::min(params_spec.n_ubatch, params.n_batch);
+    result.n_ubatch = std::min(params.n_batch, std::max(n_ubatch_requested, n_block_ubatch));
 
     result.embedding    = false;
     result.pooling_type = LLAMA_POOLING_TYPE_UNSPECIFIED;
@@ -2501,12 +2513,6 @@ common_params common_base_params_to_speculative(const common_params & params) {
 
     // dflash/dspark decode the whole noise block in a single pass and sample every block position on the backend
     // TODO: refactor such properties to be announced by the speculative types
-    //       something like `struct common_speculative_type_props common_speculative_type_get_props(...);`
-    const bool has_block_draft = std::any_of(
-        params.speculative.types.begin(), params.speculative.types.end(),
-        [](common_speculative_type t) {
-            return t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH || t == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
-        });
     if (has_block_draft) {
         // per-seq output positions: DFlash decodes anchor + n_max masks (n_max + 1); DSpark n_max -> +1 covers both
         const int32_t per_seq = std::max(1, params_spec.n_max + 1);
@@ -2566,6 +2572,19 @@ common_speculative_init_result::common_speculative_init_result(
         }
 
         pimpl->model.reset(model_dft);
+        if (params.speculative.draft.n_ubatch_explicit &&
+                params_dft.n_ubatch > params.speculative.draft.n_ubatch) {
+            char buf[32] = {};
+            const bool causal_draft =
+                llama_model_meta_val_str(model_dft, "dflash.attention.causal", buf, sizeof(buf)) >= 0 &&
+                std::strcmp(buf, "true") == 0;
+            if (causal_draft) {
+                cparams.n_ubatch = std::min(params.speculative.draft.n_ubatch, params.n_batch);
+            } else {
+                LOG_WRN("%s: raising explicit draft ubatch from %d to %d to fit the non-causal block batch\n",
+                        __func__, params.speculative.draft.n_ubatch, params_dft.n_ubatch);
+            }
+        }
 
         llama_context * ctx_dft = llama_init_from_model(model_dft, cparams);
         if (ctx_dft == nullptr) {

@@ -6,10 +6,12 @@ llama.cpp supports speculative decoding, a technique that can significantly acce
 
 ## Draft context physical batch size
 
-Model-backed draft contexts, including MTP and DFlash, use `--spec-draft-ubatch-size N`
-(`-ubd N`, default 128) to set their physical batch size independently of the target. The value is
-capped at the configured logical batch size (`-b`); reducing it lowers draft compute-buffer memory
-and processes prompt tokens in smaller draft ubatches without changing the logical batch capacity.
+MTP and causal draft contexts default to `N=32`. DFlash and DSpark default to
+`max(128, n_parallel * (n_max + 1))` so active non-causal block batches fit in one
+physical ubatch. A supplied `-ubd` takes precedence; for DFlash/DSpark, an explicit
+value below the required non-causal block size is raised with a warning. Physical
+ubatch sizes are capped at the target logical batch size (`-b`); prompt tokens are
+otherwise fed in smaller draft ubatches without changing logical capacity.
 
 ## Implementations
 

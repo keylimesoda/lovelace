@@ -326,7 +326,8 @@ struct common_params_model {
 struct common_params_speculative_draft {
     int32_t n_max = 3; // maximum number of tokens to draft during speculative decoding
     int32_t n_min = 0; // minimum number of draft tokens to use for speculative decoding
-    int32_t n_ubatch = 128; // physical batch size for the draft context (capped to n_batch)
+    int32_t n_ubatch = 32; // physical batch size for the draft context (DFlash/DSpark may require more)
+    bool n_ubatch_explicit = false; // true when --spec-draft-ubatch-size was supplied
 
     float p_split = 0.1f; // speculative decoding split probability
     float p_min   = 0.0f; // minimum speculative decoding probability (greedy)
