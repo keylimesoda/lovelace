@@ -1186,25 +1186,8 @@ static void mul_mat_vec_q_switch_ncols_dst(
     // Whether doubling nwarps pays off on the ncols_dst == 1 path, where K sets the K loop trip count.
     const auto should_halve_iters = [&] {
         if (table_id == MMVQ_PARAMETERS_ADA) {
-            if (has_ids) {
-                return false;
-            }
             // Fewer rows than SMs leave most of the GPU idle, spreading each row over more warps shortens the K loop.
-            if (nrows_x < ggml_cuda_info().devices[device].nsm) {
-                return true;
-            }
-            // Single column with a short K: 8 warps retire the K loop in at most two trips instead of 2-3 ragged ones.
-            switch (type) {
-                case GGML_TYPE_Q4_K:
-                case GGML_TYPE_Q5_K:
-                case GGML_TYPE_Q8_0:
-                case GGML_TYPE_IQ3_XXS:
-                case GGML_TYPE_IQ3_S:
-                case GGML_TYPE_IQ4_XS:
-                    return ncols_dst == 1 && blocks_per_row_x <= 2 * calc_nwarps(type, 1, table_id, false, true) * blocks_per_iter_1warp;
-                default:
-                    return false;
-            }
+            return !has_ids && nrows_x < ggml_cuda_info().devices[device].nsm;
         }
         if (table_id != MMVQ_PARAMETERS_GB10) {
             return false;
