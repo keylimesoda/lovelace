@@ -2234,6 +2234,9 @@ void llama_kv_cache::state_write_meta(llama_io_write_i & io, const cell_ranges_t
 void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t & cr) const {
     const auto & cells = v_cells[cr.strm];
 
+    // cells of other sequences never move, the copies may overlap with their graphs
+    llama_io_concurrent_scope<llama_io_write_i> concurrent(io);
+
     const uint32_t v_trans = this->v_trans ? 1 : 0;
     const uint32_t n_layer = layers.size();
 
@@ -2510,6 +2513,9 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
 
 bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32_t cell_count, const slot_info & sinfo) {
     auto & cells = v_cells[strm];
+
+    // the cells were allocated for this sequence only, the copies may overlap with graphs of other sequences
+    llama_io_concurrent_scope<llama_io_read_i> concurrent(io);
 
     // batch the scatter reads per contiguous run of destination indices
     // from inclusive, to exclusive - same convention as cell_ranges_t

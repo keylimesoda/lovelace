@@ -24,6 +24,7 @@ class llama_io_write_i;
 // "memory" as in abstract memory for the context
 struct llama_memory_i;
 struct llama_memory_context_i;
+struct llama_state_xfer_engine;
 
 // stores copy of the memory in device buffer. used for fast state save/load
 struct llama_memory_buffer {
@@ -162,6 +163,10 @@ struct llama_context {
 
     size_t state_seq_get_data(llama_seq_id seq_id,       uint8_t * dst, size_t size, llama_state_seq_flags flags);
     size_t state_seq_set_data(llama_seq_id seq_id, const uint8_t * src, size_t size, llama_state_seq_flags flags);
+
+    // asynchronous transfers, see llama_state_seq_get_data_async
+    size_t state_seq_get_data_async(llama_seq_id seq_id, const llama_state_chunk * chunks, size_t n_chunks,              llama_state_seq_flags flags, llama_state_xfer ** xfer);
+    size_t state_seq_set_data_async(llama_seq_id seq_id, const llama_state_chunk * chunks, size_t n_chunks, size_t size, llama_state_seq_flags flags, llama_state_xfer ** xfer);
 
     bool state_load_file(
             const char * filepath,
@@ -385,6 +390,11 @@ private:
 
     // keep copies of the per-sequence memory on the device
     std::map<llama_seq_id, llama_memory_buffers> mem_storage;
+
+    // asynchronous state transfers, created on first use
+    std::unique_ptr<llama_state_xfer_engine> xfer_engine;
+
+    llama_state_xfer_engine & state_xfer_engine();
 
     bool has_evaluated_once = false;
 

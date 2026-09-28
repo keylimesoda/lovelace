@@ -928,6 +928,10 @@ extern "C" {
 // Getting the state for a seq_id with this flag invalidates all prior states gotten for that seq_id with this flag.
 #define LLAMA_STATE_SEQ_FLAGS_ON_DEVICE 2
 
+// Asynchronous transfers only: copy all tensor data in order with the compute stream, so that the sequence may be
+// decoded right after the call (e.g. a checkpoint of a sequence that keeps processing its prompt)
+#define LLAMA_STATE_SEQ_FLAGS_ORDERED 4
+
     typedef uint32_t llama_state_seq_flags;
 
     LLAMA_API size_t llama_state_seq_get_size_ext(
@@ -948,6 +952,63 @@ extern "C" {
                           size_t   size,
                     llama_seq_id   dest_seq_id,
            llama_state_seq_flags   flags);
+
+    //
+    // Asynchronous sequence state transfers
+    //
+
+    // Host memory of an asynchronous transfer. The serialized state is the same as with llama_state_seq_get_data_ext,
+    // laid out over the chunks in order. Pinned memory (e.g. from ggml_backend_dev_host_buffer_type) is needed for
+    // the copies to run asynchronously.
+    typedef struct llama_state_chunk {
+        uint8_t * data;
+        size_t    size;
+    } llama_state_chunk;
+
+    // completion handle of an asynchronous transfer, free it with llama_state_xfer_free() before the context
+    typedef struct llama_state_xfer * llama_state_xfer_t;
+
+    // Start copying the state of seq_id to the chunks, returns the size of the serialized state (0 on failure).
+    // The metadata is written before this returns. The tensor data is copied in the background: attention KV on a
+    // copy stream that overlaps with later llama_decode() calls, the rest (e.g. recurrent states) in order with them.
+    // Until the transfer is done:
+    //  - do not read or reuse the chunks
+    //  - do not decode or modify the sequence (seq_rm, ...), its cells must stay intact
+    // Backends without async copies and events copy synchronously, the handle is then done right away.
+    LLAMA_API size_t llama_state_seq_get_data_async(
+            struct llama_context * ctx,
+     const llama_state_chunk     * chunks,
+                          size_t   n_chunks,
+                    llama_seq_id   seq_id,
+           llama_state_seq_flags   flags,
+              llama_state_xfer_t * xfer);
+
+    // Start restoring dest_seq_id from `size` bytes of serialized state in the chunks, returns the bytes read
+    // (0 on failure, the sequence is then in an unspecified state and should be cleared). The cells are allocated
+    // before this returns, the tensor data is copied in the background. Until the transfer is done:
+    //  - keep the chunks intact
+    //  - do not decode or modify the sequence
+    LLAMA_API size_t llama_state_seq_set_data_async(
+            struct llama_context * ctx,
+     const llama_state_chunk     * chunks,
+                          size_t   n_chunks,
+                          size_t   size,
+                    llama_seq_id   dest_seq_id,
+           llama_state_seq_flags   flags,
+              llama_state_xfer_t * xfer);
+
+    // true once every copy of the transfer has completed (non-blocking)
+    LLAMA_API bool llama_state_xfer_done(llama_state_xfer_t xfer);
+
+    // block until the transfer has completed
+    LLAMA_API void llama_state_xfer_wait(llama_state_xfer_t xfer);
+
+    // time the copies took on the device in microseconds, from the start of the first copy to the end of the last
+    // (excludes waiting for earlier work); -1 while not done
+    LLAMA_API int64_t llama_state_xfer_t_us(llama_state_xfer_t xfer);
+
+    // waits for the transfer, then frees the handle
+    LLAMA_API void llama_state_xfer_free(llama_state_xfer_t xfer);
 
     //
     // Decoding
