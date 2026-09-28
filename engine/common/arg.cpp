@@ -3338,8 +3338,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_REUSE_PORT"));
     add_opt(common_arg(
-        {"--path"}, "PATH",
-        string_format("path to serve static files from (default: %s)", params.public_path.c_str()),
+        {"--path", "--web-dir"}, "PATH",
+        string_format("path to serve static files from, e.g. the observability dashboard build apps/web/dist (default: %s)", params.public_path.c_str()),
         [](common_params & params, const std::string & value) {
             params.public_path = value;
         }
@@ -3592,6 +3592,21 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.endpoint_metrics = true;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_ENDPOINT_METRICS"));
+    add_opt(common_arg(
+        {"--telemetry"},
+        {"--no-telemetry"},
+        string_format("enable GET /telemetry, the GET /events record stream and board energy accounting (default: %s)", params.telemetry ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.telemetry = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_TELEMETRY"));
+    add_opt(common_arg(
+        {"--request-log-jsonl"}, "PATH",
+        "append one JSON record per request lifecycle event (start, done, rejected) plus periodic throughput records to PATH; implies --telemetry (default: disabled)",
+        [](common_params & params, const std::string & value) {
+            params.request_log_jsonl = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_REQUEST_LOG_JSONL"));
     add_opt(common_arg(
         {"--props"},
         string_format("enable changing global properties via POST /props (default: %s)", params.endpoint_props ? "enabled" : "disabled"),

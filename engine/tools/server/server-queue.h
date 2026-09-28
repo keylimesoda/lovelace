@@ -109,6 +109,9 @@ public:
         return queue_tasks_deferred.size();
     }
 
+    // lock-free copy of queue_tasks_deferred.size(), for telemetry
+    std::atomic<int32_t> n_deferred { 0 };
+
     //
     // Functions below are not thread-safe, must only be used before start_loop() is called
     //

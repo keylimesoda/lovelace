@@ -17,6 +17,8 @@ add_library(${TARGET} STATIC
     server-context.h
     server-stream.cpp
     server-stream.h
+    server-observe.cpp
+    server-observe.h
     server-tools.cpp
     server-tools.h
     server-mcp.cpp
@@ -31,7 +33,8 @@ endif()
 
 target_include_directories(${TARGET} PRIVATE ../mtmd)
 target_include_directories(${TARGET} PRIVATE ${PROJECT_SOURCE_DIR})
-target_link_libraries(${TARGET} PUBLIC llama-common mtmd ${CMAKE_THREAD_LIBS_INIT})
+# CMAKE_DL_LIBS: NVML is loaded at runtime for GPU board telemetry (server-observe.cpp)
+target_link_libraries(${TARGET} PUBLIC llama-common mtmd ${CMAKE_THREAD_LIBS_INIT} ${CMAKE_DL_LIBS})
 
 # llama-server-impl: server logic, reusable by app
 

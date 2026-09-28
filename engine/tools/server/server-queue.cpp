@@ -77,6 +77,7 @@ void server_queue::defer(server_task && task) {
     std::unique_lock<std::mutex> lock(mutex_tasks);
     QUE_DBG("defer task, id = %d\n", task.id);
     queue_tasks_deferred.push_back(std::move(task));
+    n_deferred.store((int32_t) queue_tasks_deferred.size(), std::memory_order_relaxed);
     time_last_task = ggml_time_ms();
     condition_tasks.notify_one();
 }
@@ -108,6 +109,7 @@ void server_queue::pop_deferred_task(int id_slot) {
             queue_tasks_deferred.pop_front();
         }
     }
+    n_deferred.store((int32_t) queue_tasks_deferred.size(), std::memory_order_relaxed);
     time_last_task = ggml_time_ms();
     condition_tasks.notify_one();
 }
@@ -376,6 +378,7 @@ void server_queue::cleanup_pending_task(int id_target) {
     queue_tasks_deferred.erase(
         std::remove_if(queue_tasks_deferred.begin(),  queue_tasks_deferred.end(),  rm_func),
         queue_tasks_deferred.end());
+    n_deferred.store((int32_t) queue_tasks_deferred.size(), std::memory_order_relaxed);
     // a task declined while yielding is not in queue_tasks yet, but it can still be cancelled
     queue_tasks_unhandled.erase(
         std::remove_if(queue_tasks_unhandled.begin(), queue_tasks_unhandled.end(), rm_func),
