@@ -7,10 +7,14 @@ layer and all KV on the GPU (FFN weights streamed from pinned RAM where needed).
 
 ## Weight quantization (reference: Q8_0 weights, f16 KV; buckets 32k–170k, 12,124 scored positions)
 
-| Weights | KL mean | KL median | top-1 agree | ΔNLL |
-|---|---:|---:|---:|---:|
-| ShapeLearn IQ4_XS-3.84bpw ("GPU-5", 12.17 GiB) | 0.0163 | 0.0011 | 95.64% | +0.0096 |
+| Weights | file size | KL mean | KL median | top-1 agree | ΔNLL |
+|---|---:|---:|---:|---:|---:|
+| **ShapeLearn IQ4_XS-3.84bpw ("GPU-5")** | 13.1 GB | **0.0163** | 0.0011 | **95.64%** | **+0.0096** |
+| ISTA-DASLab GSQ-RCO-IQ3_S (+MTP) | 12.1 GB | 0.0216 | 0.0014 | 95.41% | +0.0120 |
+| ShapeLearn IQ3_S-3.23bpw ("GPU-4") | 11.0 GB | 0.0377 | 0.0029 | 93.76% | +0.0321 |
 
+GPU-5 is kept. ISTA frees ~1 GB of VRAM (~40k KV cells) for 1.33x the KL; GPU-4 frees ~2 GB for 2.3x the KL and
+3.3x the ΔNLL, a much larger gap than ByteShape's aggregate benchmark suggests (98.72% vs 99.63% of BF16).
 ## KV-cache quantization (reference: GPU-5 weights, f16 KV; buckets 32k–250k, 15,359 scored positions)
 
 | K / V | bytes/token | KL mean | top-1 agree | ΔNLL | KL @ 250k |
