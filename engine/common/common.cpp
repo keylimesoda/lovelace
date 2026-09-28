@@ -2407,6 +2407,41 @@ std::vector<llama_state_chunk> common_state_buf::views() const {
     }
     return res;
 }
+void common_state_buf::copy_to(uint8_t * dst, size_t size) const {
+    wait();
+    if (size != n_bytes) {
+        throw std::invalid_argument("state buffer copy size mismatch");
+    }
+    auto src = views();
+    size_t offset = 0;
+    for (const auto & chunk : src) {
+        memcpy(dst + offset, chunk.data, chunk.size);
+        offset += chunk.size;
+    }
+}
+
+bool common_state_buf::assign_from(common_state_arena * arena, const uint8_t * src, size_t size) {
+    if (!alloc(arena, size)) {
+        return false;
+    }
+    auto dst = views();
+    size_t offset = 0;
+    for (const auto & chunk : dst) {
+        memcpy(chunk.data, src + offset, chunk.size);
+        offset += chunk.size;
+    }
+    return true;
+}
+
+std::vector<uint8_t> common_state_buf::copy_to_vector() const {
+    std::vector<uint8_t> result(n_bytes);
+    copy_to(result.data(), result.size());
+    return result;
+}
+
+bool common_state_buf::assign_from_vector(common_state_arena * arena, const std::vector<uint8_t> & data) {
+    return assign_from(arena, data.data(), data.size());
+}
 
 bool common_state_buf::get_async(llama_context * ctx, llama_seq_id seq_id, llama_state_seq_flags flags) {
     wait();

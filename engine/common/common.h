@@ -632,6 +632,11 @@ struct common_params {
     int32_t checkpoint_min_step = 8192;  // minimum spacing between context checkpoints
     int32_t n_ctx_checkpoints_recent = 3; // checkpoints at the starts of the last N messages, regardless of the spacing
     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
+    int32_t     session_ram_mib       = 0;                                              // pinned RAM tier; 0 = disabled
+    std::string session_dir           = "~/.local/state/lovelace/sessions";             // NVMe tier
+    int32_t     session_disk_max_gib   = 0;                                              // 0 = unlimited
+    int32_t     session_ttl_sec        = 86400;                                          // 0 = disable expiration
+    bool        shared_prefix          = true;                                          // share common prefix cells in VRAM
 
     // KV budget scheduling (unified KV only): admission by cell reservation, parking of idle sessions
     bool    kv_budget           = true;  // admit tasks by KV reservation, park idle slots instead of failing
@@ -1250,6 +1255,10 @@ struct common_state_buf {
     // returns false if the heap allocation fails
     bool alloc(common_state_arena * arena, size_t n);
     void clear();
+    std::vector<uint8_t> copy_to_vector() const;
+    bool assign_from_vector(common_state_arena * arena, const std::vector<uint8_t> & data);
+    void copy_to(uint8_t * dst, size_t size) const;
+    bool assign_from(common_state_arena * arena, const uint8_t * src, size_t size);
 
     // start saving / restoring a sequence (after alloc() / on a filled buffer), false on failure
     // flags as in llama_state_seq_get_data_ext, plus LLAMA_STATE_SEQ_FLAGS_ORDERED

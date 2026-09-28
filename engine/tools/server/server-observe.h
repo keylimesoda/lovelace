@@ -161,6 +161,7 @@ struct server_obs_record {
     // request info
     int32_t      id_task    = -1;
     int32_t      id_slot    = -1;
+    uint64_t     session_id = 0;
     int32_t      id_parent  = -1;
     const char * task_type  = "completion";
     const char * endpoint   = "native";

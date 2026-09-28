@@ -7,6 +7,7 @@
 #include "server-schema.h"
 #include "server-observe.h"
 #include "server-sched.h"
+#include "server-session-store.h"
 #include "server-stream.h"
 
 #include "build-info.h"
@@ -29,6 +30,8 @@
 #include <random>
 #include <utility>
 #include <fstream>
+#include <cstdlib>
+#include <ctime>
 
 // fix problem with std::min and std::max
 #if defined(_WIN32)
@@ -40,6 +43,11 @@
 #endif
 
 constexpr int HTTP_POLLING_SECONDS = 1;
+static uint64_t server_context_now_seconds() {
+    const std::time_t now = std::time(nullptr);
+    return now > 0 ? static_cast<uint64_t>(now) : 0;
+}
+
 
 static common_speculative_output_limits server_output_limits(const common_params & params) {
     if (params.embedding ||
@@ -300,6 +308,8 @@ struct server_slot {
     slot_state state = SLOT_STATE_IDLE;
 
     server_prompt prompt;
+    server_session_index * session_index = nullptr;
+    uint64_t session_id = 0;
 
     // observability (see server-observe.h), mutable so that send_error(const server_slot &) can tag the slot
     int64_t                        obs_t_launch_us = 0;
@@ -627,9 +637,15 @@ struct server_slot {
 
             state = SLOT_STATE_IDLE;
 
+            if (session_index && session_id != 0 && task && !task->is_child() && !prompt.tokens.has_mtmd && prompt.n_tokens() > 0) {
+                session_index->update(session_id, prompt.tokens.get_text_tokens(), server_context_now_seconds());
+            }
+
             // do not keep context of the child slots - the parent's context is enough
             if (task->is_child()) {
                 prompt_clear();
+                session_id = 0;
+                prompt.session_id = 0;
             }
 
             callback_on_reset(*this);
@@ -1008,6 +1024,10 @@ private:
 
     // pinned host memory for the prompt cache and the context checkpoints, sized to --cache-ram
     std::unique_ptr<common_state_arena> state_arena;
+    std::unique_ptr<server_session_tiers> session_tiers;
+    server_session_index session_index;
+    uint64_t next_session_id = 1;
+    int64_t t_sessions_expire_us = 0;
 
     std::unique_ptr<server_prompt_cache> prompt_cache;
 
@@ -1024,6 +1044,7 @@ private:
         server_task  task;
         const char * wait_reason = "none"; // first reason the task had to wait
         int64_t      t_enqueue   = 0;
+        uint64_t     session_id = 0;
     };
 
     bool                    kv_budget_on = false;
@@ -1442,6 +1463,7 @@ private:
             slot.spec    = spec.get();
             slot.n_ctx   = n_ctx_slot();
 
+            slot.session_index = &session_index;
             slot.mctx                   = mctx;
             slot.prompt.tokens.has_mtmd = mctx != nullptr;
 
@@ -1498,30 +1520,45 @@ private:
             batch.init(std::max(n_batch, params_base.n_parallel), n_embd);
         }
 
-        if (params_base.cache_ram_mib != 0) {
-            if (params_base.cache_ram_mib < 0) {
-                SRV_TRC("prompt cache is enabled, size limit: %s\n", "no limit");
-            } else {
-                SRV_TRC("prompt cache is enabled, size limit: %d MiB\n", params_base.cache_ram_mib);
-            }
-            SRV_TRC("%s", "use `--cache-ram 0` to disable the prompt cache\n");
-
-            // the entries and the context checkpoints live in fixed chunks of one pinned arena, so that the state
-            // transfers run asynchronously at PCIe speed
-            if (params_base.cache_ram_mib > 0) {
-                const int64_t t_start = ggml_time_us();
-                // about 2k chunks, of at most 16 MiB: small enough that an entry wastes little, large enough for few copies
-                const size_t size  = (size_t) params_base.cache_ram_mib << 20;
+        const bool session_store_on = params_base.session_ram_mib > 0;
+        const int32_t arena_mib = session_store_on ? params_base.session_ram_mib : params_base.cache_ram_mib;
+        if (session_store_on || params_base.cache_ram_mib != 0) {
+            const int64_t t_start = ggml_time_us();
+            const size_t size = arena_mib > 0 ? static_cast<size_t>(arena_mib) << 20 : 0;
+            if (size > 0) {
+                // Keep transfer chunks large enough for coalesced per-layer copies, bounded to 16 MiB.
                 const size_t chunk = std::clamp<size_t>(size / 2048, (size_t) 64 << 10, (size_t) 16 << 20);
                 state_arena = std::make_unique<common_state_arena>(size, chunk);
-                SRV_INF("prompt cache: %.0f MiB of %s host memory in %zu chunks of %zu KiB (%.1f s)\n",
-                        state_arena->n_total() * state_arena->chunk_size() / 1048576.0, state_arena->pinned() ? "pinned" : "pageable",
-                        state_arena->n_total(), state_arena->chunk_size() >> 10, (ggml_time_us() - t_start) / 1e6);
+                SRV_INF("%s: %.0f MiB of %s host memory in %zu chunks of %zu KiB (%.1f s)\n",
+                        session_store_on ? "session store" : "prompt cache",
+                        state_arena->n_total() * state_arena->chunk_size() / 1048576.0,
+                        state_arena->pinned() ? "pinned" : "pageable", state_arena->n_total(),
+                        state_arena->chunk_size() >> 10, (ggml_time_us() - t_start) / 1e6);
             }
 
-            prompt_cache = std::make_unique<server_prompt_cache>(params_base.cache_ram_mib, n_ctx, state_arena.get());
+            prompt_cache = std::make_unique<server_prompt_cache>(session_store_on ? -1 : params_base.cache_ram_mib, n_ctx, state_arena.get());
+            if (session_store_on) {
+                std::string session_path = params_base.session_dir;
+                if (session_path.rfind("~/", 0) == 0) {
+                    const char * home = std::getenv("HOME");
+                    if (home == nullptr || *home == '\0') {
+                        throw std::runtime_error("cannot expand session-dir without HOME");
+                    }
+                    session_path = std::string(home) + session_path.substr(1);
+                }
+                const size_t disk_limit = static_cast<size_t>(params_base.session_disk_max_gib) << 30;
+                session_tiers = std::make_unique<server_session_tiers>(session_path, 0, disk_limit, params_base.session_ttl_sec);
+                const std::string disk_limit_text = disk_limit ? string_format("%zu GiB", disk_limit >> 30) : "unlimited";
+                SRV_INF("session store: directory '%s', disk max %s, TTL %d seconds, shared prefix %s\n",
+                        session_path.c_str(), disk_limit_text.c_str(), params_base.session_ttl_sec,
+                        params_base.shared_prefix ? "on" : "off");
+                prompt_cache->sessions_index = &session_index;
+                prompt_cache->disk_tiers = session_tiers.get();
+                const std::time_t now = std::time(nullptr);
+                next_session_id = prompt_cache->load_disk_index(now > 0 ? static_cast<uint64_t>(now) : 0);
+            }
         } else {
-            SRV_TRC("%s", "prompt cache is disabled - use `--cache-ram N` to enable it\n");
+            SRV_TRC("%s", "prompt cache and session store are disabled\n");
         }
 
         for (auto & slot : slots) {
@@ -2321,6 +2358,25 @@ private:
     sched_result sched_try_admit(sched_entry & e) {
         server_task & task = e.task;
 
+        const bool use_sessions = params_base.session_ram_mib > 0 &&
+                task.type == SERVER_TASK_TYPE_COMPLETION && !task.tokens.has_mtmd;
+        uint64_t task_session_id = 0;
+        if (use_sessions) {
+            if (e.session_id == 0) {
+                const auto tokens = task.tokens.get_text_tokens();
+                const auto found = session_index.find(tokens, 0, server_context_now_seconds());
+                if (found) {
+                    e.session_id = found->id;
+                } else {
+                    e.session_id = next_session_id++;
+                    if (e.session_id == 0) {
+                        e.session_id = next_session_id++;
+                    }
+                }
+            }
+            task_session_id = e.session_id;
+        }
+
         // session-affine slot choice
         int id_slot = -1;
         if (task.id_slot != -1) {
@@ -2331,19 +2387,34 @@ private:
             sched_finish_xfer(*slot, true);
             id_slot = slot->id;
         } else {
-            auto & cands = sched_cands;
-            cands.resize(slots.size());
-            for (size_t i = 0; i < slots.size(); i++) {
-                const auto & slot = slots[i];
-                auto & c = cands[i];
-                c.idle        = !slot.is_processing() && slot.xfer == server_slot::XFER_NONE;
-                c.n_used      = slot.prompt.n_tokens();
-                c.n_lcp       = c.idle && c.n_used > 0 ? (int32_t) slot.prompt.tokens.get_common_prefix(task.tokens) : 0;
-                c.t_last_used = slot.t_last_used;
+            if (task_session_id != 0) {
+                for (auto & candidate : slots) {
+                    if (candidate.session_id != task_session_id) {
+                        continue;
+                    }
+                    if (candidate.is_processing()) {
+                        return SCHED_WAIT_SLOT;
+                    }
+                    sched_finish_xfer(candidate, true);
+                    id_slot = candidate.id;
+                    break;
+                }
             }
-            id_slot = server_kv_budget::pick_slot(cands, task.n_tokens(), slot_prompt_similarity);
             if (id_slot < 0) {
-                return SCHED_WAIT_SLOT;
+                auto & cands = sched_cands;
+                cands.resize(slots.size());
+                for (size_t i = 0; i < slots.size(); i++) {
+                    const auto & slot = slots[i];
+                    auto & c = cands[i];
+                    c.idle        = !slot.is_processing() && slot.xfer == server_slot::XFER_NONE;
+                    c.n_used      = slot.prompt.n_tokens();
+                    c.n_lcp       = c.idle && c.n_used > 0 ? (int32_t) slot.prompt.tokens.get_common_prefix(task.tokens) : 0;
+                    c.t_last_used = slot.t_last_used;
+                }
+                id_slot = server_kv_budget::pick_slot(cands, task.n_tokens(), slot_prompt_similarity);
+                if (id_slot < 0) {
+                    return SCHED_WAIT_SLOT;
+                }
             }
         }
 
@@ -2362,9 +2433,13 @@ private:
         const int32_t n_resident = slot.prompt.n_tokens();
         const int32_t n_lcp      = n_resident > 0 ? (int32_t) slot.prompt.tokens.get_common_prefix(task.tokens) : 0;
         const bool    use_cache  = prompt_cache && task.type == SERVER_TASK_TYPE_COMPLETION;
-        const bool    swap       = use_cache && (n_resident == 0 || n_lcp * 2 < n_resident);
+        const bool session_switch = use_sessions && slot.session_id != task_session_id;
+        const bool swap = use_cache && (n_resident == 0 || session_switch || n_lcp * 2 < n_resident);
 
-        const server_prompt_cache_state * cached = swap ? prompt_cache->find(slot.prompt, task.tokens) : nullptr;
+        const server_prompt_cache_state * cached = nullptr;
+        if (swap) {
+            cached = use_sessions ? prompt_cache->find_session(task_session_id, task.tokens) : prompt_cache->find(slot.prompt, task.tokens);
+        }
         const int32_t n_hold = cached ? cached->prompt.n_tokens() : n_resident;
 
         const int32_t n_predict = task.params.n_predict != -1 ? task.params.n_predict : params_base.n_predict;
@@ -2442,6 +2517,8 @@ private:
                 slot.obs_n_unparked = slot.prompt.n_tokens();
             }
         }
+        slot.session_id = task_session_id;
+        slot.prompt.session_id = task_session_id;
 
         if (swap) {
             prompt_cache->update();
@@ -2478,7 +2555,49 @@ private:
     }
 
     // admit waiting work in order: preempted slots first, then the queue; stops at the first that has to wait
+    void sched_expire_sessions() {
+        if (!session_tiers || params_base.session_ttl_sec == 0) {
+            return;
+        }
+        const int64_t now_us = ggml_time_us();
+        if (t_sessions_expire_us != 0 && now_us - t_sessions_expire_us < 60 * 1000000) {
+            return;
+        }
+        t_sessions_expire_us = now_us;
+        const uint64_t now = server_context_now_seconds();
+        for (uint64_t id : session_index.expired(params_base.session_ttl_sec, now)) {
+            bool active = false;
+            for (const auto & slot : slots) {
+                if (slot.session_id == id && slot.is_processing()) {
+                    active = true;
+                    break;
+                }
+            }
+            if (active) {
+                session_index.touch(id, now);
+                continue;
+            }
+            for (auto & slot : slots) {
+                if (slot.session_id != id) {
+                    continue;
+                }
+                if (slot.xfer != server_slot::XFER_NONE) {
+                    sched_finish_xfer(slot, true);
+                }
+                slot.prompt_clear();
+                slot.session_id = 0;
+                slot.prompt.session_id = 0;
+            }
+            if (prompt_cache) {
+                prompt_cache->erase_session(id);
+            }
+            session_index.erase(id);
+            SRV_WRN("session %llu deleted: inactivity TTL expired\n", static_cast<unsigned long long>(id));
+        }
+    }
+
     void sched_admit() {
+        sched_expire_sessions();
         if (!sched_dirty) {
             return;
         }
@@ -5525,6 +5644,7 @@ private:
         server_obs_record rec;
         rec.kind = SERVER_OBS_REC_REQUEST_START;
         obs_fill_request(rec, task, slot.id, slot.n_ctx, slot.n_predict_max);
+        rec.session_id = slot.session_id;
         rec.queue_wait_ms = task.t_arrival_us > 0 ? (t_now - task.t_arrival_us) / 1e3 : 0.0;
         rec.wait_reason       = slot.obs_wait_reason;
         rec.n_unparked_tokens = slot.obs_n_unparked;
@@ -5566,6 +5686,7 @@ private:
 
         server_obs_record rec;
         obs_fill_request(rec, task, slot.id, slot.n_ctx, slot.n_predict_max);
+        rec.session_id = slot.session_id;
         rec.queue_wait_ms = (slot.obs_t_launch_us - t_arrival) / 1e3;
 
         // an error before any compute means the request was rejected, not served

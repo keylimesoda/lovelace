@@ -11,6 +11,7 @@
 // TODO: prevent including the whole server-common.h as we only use server_tokens
 #include "server-common.h"
 
+#include "server-session-store.h"
 
 enum server_task_type {
     SERVER_TASK_TYPE_COMPLETION,
@@ -575,6 +576,7 @@ struct server_prompt {
     server_tokens tokens;
 
     std::list<common_prompt_checkpoint> checkpoints;
+    uint64_t session_id = 0;
 
     void clear() {
         tokens.clear();
@@ -589,6 +591,7 @@ struct server_prompt {
         return server_prompt {
             tokens.clone(),
             checkpoints,
+            session_id,
         };
     }
 };
@@ -624,6 +627,7 @@ struct server_prompt_cache_state {
 
     // slot whose sequence is still being copied into the entry (-1 = none), the slot must not modify it until then
     int id_slot_save = -1;
+    uint64_t last_sync_seconds = 0;
 
     size_t size() const {
         size_t res = data.size();
@@ -649,6 +653,8 @@ struct server_prompt_cache {
     std::list<server_prompt_cache_state> states;
 
     common_state_arena * arena = nullptr;
+    server_session_index * sessions_index = nullptr;
+    server_session_tiers * disk_tiers = nullptr;
 
     // in bytes, 0 = no limit
     size_t limit_size = 0;
@@ -678,6 +684,7 @@ struct server_prompt_cache {
 
     // the entry load() would restore for tokens_new, given the slot currently holds `prompt`; nullptr = keep `prompt`
     const server_prompt_cache_state * find(const server_prompt & prompt, const server_tokens & tokens_new) const;
+    const server_prompt_cache_state * find_session(uint64_t session_id, const server_tokens & tokens_new);
 
     // removes an entry returned by find() from the cache
     server_prompt_cache_state take(const server_prompt_cache_state * state);
@@ -693,6 +700,8 @@ struct server_prompt_cache {
     bool load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot, size_t & n_bytes);
 
     void update();
+    uint64_t load_disk_index(uint64_t now_seconds);
+    void erase_session(uint64_t session_id);
 };
 
 // used exclusively by router mode

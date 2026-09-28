@@ -576,6 +576,7 @@ static json obs_request_info(const server_obs_record & rec, bool with_detail) {
     json res = {
         {"id_task",   rec.id_task >= 0 ? json(rec.id_task) : json(nullptr)},
         {"id_slot",   rec.id_slot >= 0 ? json(rec.id_slot) : json(nullptr)},
+        {"session_id", rec.session_id != 0 ? json(rec.session_id) : json(nullptr)},
     };
     if (with_detail) {
         res["id_parent"] = rec.id_parent >= 0 ? json(rec.id_parent) : json(nullptr);
