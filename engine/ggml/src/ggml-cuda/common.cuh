@@ -1453,8 +1453,9 @@ struct ggml_cuda_src1_quant_cache {
     struct slot {
         const ggml_tensor * src1   = nullptr;
         const void        * data   = nullptr;
+        size_t              extent = 0; // bytes of src1 data
         int                 layout = -1;
-        size_t              nbytes = 0;
+        size_t              nbytes = 0; // bytes of the quantized data
     };
 
     char * buf  = nullptr;
@@ -1466,6 +1467,18 @@ struct ggml_cuda_src1_quant_cache {
             s = slot();
         }
         next = 0;
+    }
+
+    // Drops the slots whose src1 data overlaps the data written by node.
+    void invalidate(const ggml_tensor * node) {
+        const char * lo = (const char *) node->data;
+        const char * hi = lo + ggml_nbytes(node);
+        for (slot & s : slots) {
+            const char * s_lo = (const char *) s.data;
+            if (s.src1 != nullptr && s_lo < hi && lo < s_lo + s.extent) {
+                s = slot();
+            }
+        }
     }
 
     // Returns the buffer holding src1 quantized to layout, *hit tells whether it is already filled.

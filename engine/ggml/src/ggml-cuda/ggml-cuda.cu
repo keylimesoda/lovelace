@@ -741,7 +741,7 @@ char * ggml_cuda_src1_quant_cache::get(const ggml_tensor * src1, int layout, siz
     }
     const int i = next;
     next = (next + 1) % n_slots;
-    slots[i] = { src1, src1->data, layout, nbytes };
+    slots[i] = { src1, src1->data, ggml_nbytes(src1), layout, nbytes };
     return buf + i*slot_bytes;
 }
 
@@ -4379,6 +4379,9 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     continue;
                 }
 
+                // A node that writes into the memory of a cached src1 (in-place ops, reused memory) makes it stale.
+                cuda_ctx->src1_quant_cache.invalidate(node);
+
                 int nodes_to_skip = ggml_cuda_try_fuse(cuda_ctx, cgraph, i);
 
                 if (nodes_to_skip != 0) {
@@ -4388,6 +4391,9 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                             nodes_to_skip + 1, ggml_op_name(node->op), node->name,
                             ggml_op_name(cgraph->nodes[last_fused]->op), cgraph->nodes[last_fused]->name);
 #endif
+                    for (int j = 1; j <= nodes_to_skip; ++j) {
+                        cuda_ctx->src1_quant_cache.invalidate(cgraph->nodes[i + j]);
+                    }
                     i += nodes_to_skip;
                     continue;
                 }
