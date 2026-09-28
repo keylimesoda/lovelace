@@ -166,7 +166,11 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `-cms, --checkpoint-min-step N` | minimum spacing between context checkpoints in tokens (default: 8192, 0 = no minimum)<br/>(env: LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT) |
 | `-cram, --cache-ram N` | set the maximum cache size in MiB (default: 8192, -1 - no limit, 0 - disable)[(more info)](https://github.com/ggml-org/llama.cpp/pull/16391)<br/>(env: LLAMA_ARG_CACHE_RAM) |
 | `-kvu, --kv-unified, -no-kvu, --no-kv-unified` | use single unified KV buffer shared across all sequences (default: enabled if number of slots is auto)<br/>(env: LLAMA_ARG_KV_UNIFIED) |
-| `--cache-idle-slots, --no-cache-idle-slots` | save idle slots to the prompt cache on new task, and clear them when using unified KV (default: enabled, requires cache-ram)<br/>(env: LLAMA_ARG_CACHE_IDLE_SLOTS) |
+| `--cache-idle-slots, --no-cache-idle-slots` | save idle slots to the prompt cache on new task, and clear them when using unified KV (default: enabled, requires cache-ram; superseded by `--kv-budget`, which parks idle slots on demand)<br/>(env: LLAMA_ARG_CACHE_IDLE_SLOTS) |
+| `--kv-budget, --no-kv-budget` | with --kv-unified: admit a task only when its KV reservation fits, park idle slots to the prompt cache to make room and queue tasks FIFO instead of failing on a full cache (default: enabled)<br/>(env: LLAMA_ARG_KV_BUDGET) |
+| `--kv-budget-gen N` | generated tokens reserved per request at admission, min(max_tokens, N); the reservation grows by N when a request outlives it (default: 8192)<br/>(env: LLAMA_ARG_KV_BUDGET_GEN) |
+| `--kv-budget-headroom N` | KV cells kept free when admitting new work (default: 256)<br/>(env: LLAMA_ARG_KV_BUDGET_HEADROOM) |
+| `--prefill-chunk-gen N` | max prompt tokens per batch while another slot is generating, so a long prefill does not stall decoding (default: 1024, 0 = --batch-size)<br/>(env: LLAMA_ARG_PREFILL_CHUNK_GEN) |
 | `--context-shift, --no-context-shift` | whether to use context shift on infinite text generation (default: disabled)<br/>(env: LLAMA_ARG_CONTEXT_SHIFT) |
 | `-r, --reverse-prompt PROMPT` | halt generation at PROMPT, return control in interactive mode |
 | `-sp, --special` | special tokens output enabled (default: false) |
@@ -335,6 +339,30 @@ services:
       LLAMA_ARG_ENDPOINT_METRICS: 1
       LLAMA_ARG_PORT: 8080
 ```
+
+### KV budget scheduling
+
+With `--kv-unified`, all slots share one KV cache. Upstream llama-server admits a task into any idle slot, so several long prompts can together outgrow the cache mid-decode: `llama_decode()` then fails and every running request gets `Context size has been exceeded`. `--kv-budget` (default on with `--kv-unified`) schedules by KV cells instead:
+
+- **Admission.** A task needs `prompt + min(max_tokens, --kv-budget-gen) + draft n_max + 1` cells, capped at the slot context. It is admitted only if that fits the cells not committed to other slots, minus `--kv-budget-headroom` while other requests run. A running slot commits `max(used, reserved)` cells, an idle slot only the cells it holds.
+- **Parking.** If a task does not fit, idle slots are parked in least-recently-used order, and only as many as needed. Parking saves the whole sequence state (attention KV, recurrent state, draft context and context checkpoints) to the prompt cache (`--cache-ram`), then frees the cells. With `--cache-ram 0`, a parked session is dropped and later re-prefilled.
+- **Queueing.** If a task still does not fit, or no slot is idle, it waits in a FIFO queue. Later tasks never overtake it. A task is never rejected for capacity. A prompt that cannot fit a slot at all (`>= n_ctx_slot`) is answered with the usual 400 right away.
+- **Session affinity.** A prompt goes to the idle slot that holds its longest prefix, if that covers more than `--slot-prompt-similarity` of the prompt. Otherwise it goes to an empty slot, and only then to the least recently used one. A returning session whose prefix was parked is restored from the prompt cache, and only the delta is prefilled.
+- **No mid-decode overflow.** Before each step, a generating slot that would outgrow its reservation extends it by another `--kv-budget-gen` tokens, parking idle slots if needed. If even that does not fit, the slot is preempted at a token boundary: its state is copied to host memory and its cells are freed. It resumes before any queued task.
+- **Prefill/decode interleave.** While any slot is generating, at most `--prefill-chunk-gen` prompt tokens join each batch. This keeps a cold 100k-token prefill from freezing the other agents' decoding. With nothing generating, prompts use the full `--batch-size`.
+
+A truncation that the memory refuses never aborts. This happens with a recurrent rollback beyond its pending records, or of a cell shared with another sequence. The server restores the newest usable context checkpoint instead, or re-prefills. A generating slot re-prefills its history and then continues.
+
+Park/unpark counts, bytes, time and GB/s, wait reasons, and reserved vs used cells appear in `GET /telemetry`, the throughput and `sched` records of `GET /events`, and `/metrics` (see `docs/observability.md`).
+
+Example for 4-6 concurrent coding agents with 100-250k-token prompts on one 24 GB GPU (Qwen3.8-27B IQ4_XS, q4_0 KV):
+
+```sh
+llama-server -m Qwen3.8-27B-IQ4_XS-3.84bpw.gguf -ngl 99 -fa on -np 6 --kv-unified -c <largest that fits> \
+    -ctk q4_0 -ctv q4_0 -ub 1024 -b 2048 --cache-ram 32768 --spec-type draft-mtp --spec-draft-n-max 3
+```
+
+Size `--cache-ram` for every session that is not resident. That is about 1.8 GB of KV per 100k tokens at q4_0, plus 151 MB of recurrent state and its context checkpoints.
 
 ### Multimodal support
 

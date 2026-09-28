@@ -6,6 +6,7 @@
 #include "server-queue.h"
 #include "server-schema.h"
 #include "server-observe.h"
+#include "server-sched.h"
 #include "server-stream.h"
 
 #include "build-info.h"
@@ -106,6 +107,8 @@ enum slot_state {
     SLOT_STATE_PROCESSING_PROMPT,
     SLOT_STATE_DONE_PROMPT,
     SLOT_STATE_GENERATING,
+    SLOT_STATE_PREEMPTED, // KV budget: generation paused at a token boundary, the state is parked in host memory
+    SLOT_STATE_RECOMPUTE, // generation paused, the sequence is re-prefilled from slot.recompute_tokens, then resumes
 };
 
 struct server_slot; // forward declaration
@@ -303,10 +306,20 @@ struct server_slot {
     server_obs_energy_mark         obs_energy0;
     mutable const char *           obs_error_type  = nullptr;
     mutable std::string            obs_error_msg;
+    const char *                   obs_wait_reason = "none"; // why the task waited for admission
+    int32_t                        obs_n_unparked  = 0;      // tokens restored from the prompt cache at launch
 
-    bool prompt_save(server_prompt_cache & prompt_cache) const {
+    // KV budget scheduling (see server-sched.h)
+    int32_t            n_reserved = 0; // cells reserved for the running task
+    int64_t            t_preempt  = 0; // > 0 while preempted, resume order
+    server_prompt_data park_data;      // parked sequence state of a preempted slot
+    llama_tokens       recompute_tokens;
+
+    // copies the sequence state to the prompt cache, returns the state bytes copied (0 = not saved)
+    // take_checkpoints: move the checkpoints instead of copying them, the caller clears the prompt right after
+    size_t prompt_save(server_prompt_cache & prompt_cache, bool take_checkpoints = false) {
         if (prompt.tokens.size() == 0) {
-            return false;
+            return 0;
         }
 
         const size_t cur_size_tgt =           llama_state_seq_get_size_ext(ctx_tgt, id, LLAMA_STATE_SEQ_FLAGS_NONE);
@@ -317,9 +330,9 @@ struct server_slot {
         SRV_TRC(" - saving prompt with length %d, total state size = %.3f MiB (draft: %.3f MiB)\n",
                 (int) prompt.tokens.size(), cur_size / (1024.0 * 1024.0), cur_size_dft / (1024.0 * 1024.0));
 
-        auto * cur = prompt_cache.alloc(prompt, cur_size_tgt, cur_size_dft);
+        auto * cur = prompt_cache.alloc(prompt, cur_size_tgt, cur_size_dft, take_checkpoints);
         if (cur == nullptr) {
-            return false;
+            return 0;
         }
 
         llama_state_seq_get_data_ext(ctx_tgt, cur->data.main.data(), cur_size_tgt, id, LLAMA_STATE_SEQ_FLAGS_NONE);
@@ -327,11 +340,12 @@ struct server_slot {
             llama_state_seq_get_data_ext(ctx_dft, cur->data.drft.data(), cur_size_dft, id, LLAMA_STATE_SEQ_FLAGS_NONE);
         }
 
-        return true;
+        return cur_size;
     }
 
-    bool prompt_load(server_prompt_cache & prompt_cache, const server_tokens & tokens) {
-        bool res = prompt_cache.load(prompt, tokens, ctx_tgt, ctx_dft, id);
+    // returns false if a cache entry could not be restored, the caller must clear the prompt then
+    bool prompt_load(server_prompt_cache & prompt_cache, const server_tokens & tokens, size_t & n_bytes) {
+        bool res = prompt_cache.load(prompt, tokens, ctx_tgt, ctx_dft, id, n_bytes);
         if (!res) {
             SLT_WRN(*this, "%s", "failed to load prompt from cache\n");
         }
@@ -404,7 +418,14 @@ struct server_slot {
         obs_t_launch_us = 0;
         obs_error_type  = nullptr;
         obs_error_msg.clear();
+        obs_wait_reason = "none";
+        obs_n_unparked  = 0;
         n_accepted_per_pos.clear();
+
+        n_reserved = 0;
+        t_preempt  = 0;
+        park_data  = {};
+        recompute_tokens.clear();
 
         n_predict_max = -1;
 
@@ -570,6 +591,11 @@ struct server_slot {
             SLT_INF(*this, "stop processing: n_tokens = %d, truncated = %d\n", prompt.n_tokens(), truncated);
 
             t_last_used = ggml_time_us();
+
+            // a preempted slot holds no cells, its parked state is dropped in reset()
+            if (state == SLOT_STATE_PREEMPTED) {
+                prompt.clear();
+            }
 
             state = SLOT_STATE_IDLE;
 
@@ -746,6 +772,20 @@ struct server_slot {
 
         mem.seq_rm(other.id,     -1, -1);
         mem.seq_cp(id, other.id, -1, -1);
+
+        // seq_cp shares the recurrent cell between both sequences, and a shared cell cannot be rolled back
+        // for one of them (speculative rejection, prompt reuse), so give the child its own copy of the state
+        // the attention cells stay shared, the partial state only covers the recurrent part
+        // note: only the target, draft contexts (MTP, draft models) keep attention-only memory here
+        const llama_model * model = llama_get_model(ctx_tgt);
+        if (llama_model_is_recurrent(model) || llama_model_is_hybrid(model)) {
+            const auto flags = LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY;
+            std::vector<uint8_t> data(llama_state_seq_get_size_ext(ctx_tgt, id, flags));
+            llama_state_seq_get_data_ext(ctx_tgt, data.data(), data.size(), id, flags);
+            if (llama_state_seq_set_data_ext(ctx_tgt, data.data(), data.size(), other.id, flags) != data.size()) {
+                throw std::runtime_error("failed to copy the recurrent state to a child slot");
+            }
+        }
 
         other.i_batch = i_batch;
 
@@ -939,6 +979,48 @@ private:
     int n_empty_consecutive = 0;
 
     std::unique_ptr<server_prompt_cache> prompt_cache;
+
+    // KV budget scheduling (--kv-budget, unified KV only), see server-sched.h
+    enum sched_result {
+        SCHED_ADMITTED,
+        SCHED_DROPPED,   // the task failed to launch and was answered with an error
+        SCHED_WAIT_SLOT, // no idle slot
+        SCHED_WAIT_KV,   // the reservation does not fit, even after parking every idle slot
+    };
+
+    struct sched_entry {
+        server_task  task;
+        const char * wait_reason = "none"; // first reason the task had to wait
+    };
+
+    bool                    kv_budget_on = false;
+    server_kv_budget        kv_budget;
+    std::deque<sched_entry> sched_queue;     // FIFO of tasks waiting for a slot or for KV cells
+    std::vector<int>        sched_preempted; // preempted slot ids, resumed first, in order
+    bool                    sched_dirty = false; // something changed that may allow admission
+    std::vector<server_kv_budget::candidate> sched_cands; // scratch for slot selection
+
+    // gauges read by the metrics task, which may run on the queue worker while a decode is in flight
+    std::atomic<int32_t> sched_n_waiting { 0 };
+
+    // counters, also mirrored to the observer (see obs_sched_*)
+    struct sched_totals {
+        uint64_t n_park         = 0; // idle sessions saved to the prompt cache and evicted from VRAM
+        uint64_t n_park_drop    = 0; // idle sessions evicted without a copy (no cache room)
+        uint64_t n_unpark       = 0; // sessions restored from the prompt cache
+        uint64_t n_preempt      = 0; // generating slots paused to host memory
+        uint64_t n_resume       = 0;
+        uint64_t n_grow         = 0; // reservations extended in flight
+        uint64_t n_wait_slot    = 0; // tasks that had to wait for a slot
+        uint64_t n_wait_kv      = 0; // tasks that had to wait for KV cells
+        uint64_t n_rollback_fallback = 0; // truncations the memory refused, recovered from a checkpoint or by re-prefill
+        uint64_t n_recompute_tokens  = 0; // tokens re-prefilled to recover a generating slot
+        uint64_t n_kv_overflow  = 0; // llama_decode() found no free cells despite the budget
+        uint64_t bytes_park     = 0;
+        uint64_t bytes_unpark   = 0;
+        int64_t  us_park        = 0;
+        int64_t  us_unpark      = 0;
+    } sched_stats;
 
     server_metrics metrics;
 
@@ -1326,6 +1408,7 @@ private:
             SLT_TRC(slot, "new slot, n_ctx = %d\n", slot.n_ctx);
 
             slot.callback_on_release = [this](int id_slot) {
+                sched_dirty = true;
                 queue_tasks.pop_deferred_task(id_slot);
             };
 
@@ -1386,6 +1469,30 @@ private:
             prompt_cache = std::make_unique<server_prompt_cache>(params_base.cache_ram_mib, n_ctx);
         } else {
             SRV_TRC("%s", "prompt cache is disabled - use `--cache-ram N` to enable it\n");
+        }
+
+        // KV budget scheduling: only a unified cache is shared, a per-slot cache cannot be exhausted by other slots
+        kv_budget_on = params_base.kv_budget && params_base.kv_unified && llama_get_memory(ctx_tgt) != nullptr;
+        sched_queue.clear();
+        sched_preempted.clear();
+        sched_n_waiting.store(0, std::memory_order_relaxed);
+        if (kv_budget_on) {
+            kv_budget.n_cells  = (int32_t) llama_n_ctx(ctx_tgt);
+            kv_budget.headroom = params_base.kv_budget_headroom;
+            kv_budget.slots.assign(slots.size(), {});
+
+            SRV_INF("KV budget: %d cells shared by %d slots, reserving up to %d generated tokens per request, headroom %d cells\n",
+                    kv_budget.n_cells, (int) slots.size(), params_base.kv_budget_gen, kv_budget.headroom);
+            if (!prompt_cache) {
+                SRV_WRN("%s", "KV budget: no prompt cache (--cache-ram 0), parked sessions are dropped and re-prefilled\n");
+            }
+            if (params_base.cache_idle_slots) {
+                // the budget parks idle slots only when their cells are needed, eager parking would defeat session affinity
+                SRV_INF("%s", "KV budget: --cache-idle-slots is superseded, idle slots are parked on demand\n");
+                params_base.cache_idle_slots = false;
+            }
+        } else if (params_base.kv_budget && params_base.kv_unified) {
+            SRV_WRN("%s", "KV budget: the context has no memory, disabled\n");
         }
         SRV_TRC("%s", "for more info see https://github.com/ggml-org/llama.cpp/pull/16391\n");
 
@@ -1673,7 +1780,8 @@ private:
 
                 ret->prompt_save(*prompt_cache);
 
-                if (!ret->prompt_load(*prompt_cache, task.tokens)) {
+                size_t n_bytes = 0;
+                if (!ret->prompt_load(*prompt_cache, task.tokens, n_bytes)) {
                     ret->prompt_clear();
                 }
 
@@ -1687,10 +1795,7 @@ private:
     }
 
     // return true if at least one slot has been cleared
-    // TODO: improve logic
-    //       - smarter decision which slot to clear (LRU or longest prompt?)
-    //       - move slot to level 2 cache instead of removing?
-    //       - instead of purging, try to store and resume later?
+    // with the KV budget the slot is parked to the prompt cache instead of purged
     bool try_clear_idle_slots() {
         bool res = false;
 
@@ -1698,24 +1803,515 @@ private:
             return res;
         }
 
+        server_slot * victim = nullptr;
         for (auto & slot : slots) {
-            if (slot.is_processing()) {
+            if (slot.is_processing() || slot.prompt.n_tokens() == 0) {
                 continue;
             }
-
-            if (slot.prompt.n_tokens() > 0) {
-                SRV_WRN("purging slot %d with %zu tokens\n", slot.id, slot.prompt.tokens.size());
-
-                slot.prompt_clear();
-
-                res = true;
-
-                // clear slots one by one
+            if (!kv_budget_on) {
+                victim = &slot;
                 break;
+            }
+            if (victim == nullptr || slot.t_last_used < victim->t_last_used) {
+                victim = &slot;
             }
         }
 
+        if (victim) {
+            if (kv_budget_on) {
+                SRV_WRN("KV budget: parking slot %d with %d tokens to free cells\n", victim->id, victim->prompt.n_tokens());
+                sched_park(*victim);
+            } else {
+                SRV_WRN("purging slot %d with %zu tokens\n", victim->id, victim->prompt.tokens.size());
+                victim->prompt_clear();
+            }
+            res = true;
+        }
+
         return res;
+    }
+
+    //
+    // KV budget scheduling
+    //
+
+    int32_t sched_n_draft() const {
+        return spec ? common_speculative_n_max(spec.get()) : 0;
+    }
+
+    int32_t sched_reservation(int32_t n_tokens, int32_t n_predict) const {
+        return server_kv_budget::reservation(n_tokens, n_predict, params_base.kv_budget_gen, sched_n_draft(), n_ctx_slot());
+    }
+
+    // mirror the slots into the budget before planning
+    void sched_sync() {
+        for (size_t i = 0; i < slots.size(); i++) {
+            const auto & slot = slots[i];
+            auto & s = kv_budget.slots[i];
+            s.active      = slot.is_processing();
+            s.n_used      = slot.state == SLOT_STATE_PREEMPTED ? 0 : slot.prompt.n_tokens();
+            s.n_reserved  = slot.n_reserved;
+            s.t_last_used = slot.t_last_used;
+        }
+    }
+
+    // headroom only protects running work, a lone task may use every cell
+    bool sched_others_running(int id_slot) const {
+        for (const auto & slot : slots) {
+            if (slot.id != id_slot && slot.is_processing() && slot.state != SLOT_STATE_PREEMPTED) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void sched_account_transfer(bool park, size_t n_bytes, int64_t t_us) {
+        if (park) {
+            sched_stats.bytes_park += n_bytes;
+            sched_stats.us_park    += t_us;
+        } else {
+            sched_stats.bytes_unpark += n_bytes;
+            sched_stats.us_unpark    += t_us;
+        }
+    }
+
+    // save an idle slot's session to the prompt cache and free its cells
+    void sched_park(server_slot & slot) {
+        GGML_ASSERT(!slot.is_processing());
+
+        const int32_t n_tokens = slot.prompt.n_tokens();
+        if (n_tokens == 0) {
+            return;
+        }
+
+        const int64_t t_start = ggml_time_us();
+        const size_t  n_bytes = prompt_cache ? slot.prompt_save(*prompt_cache, /* take_checkpoints */ true) : 0;
+        const int64_t t_copy  = ggml_time_us() - t_start;
+
+        slot.prompt_clear();
+        if (prompt_cache) {
+            prompt_cache->update();
+        }
+
+        if (n_bytes > 0) {
+            sched_stats.n_park++;
+            sched_account_transfer(true, n_bytes, t_copy);
+            SLT_INF(slot, "parked session: %d tokens, %.1f MiB in %.1f ms (%.2f GB/s)\n",
+                    n_tokens, n_bytes / 1048576.0, t_copy / 1e3, n_bytes / 1e3 / std::max<int64_t>(1, t_copy));
+        } else {
+            // already contained in a cache entry, or the cache is off or has no room
+            sched_stats.n_park_drop++;
+            SLT_INF(slot, "evicted session without a new copy: %d tokens\n", n_tokens);
+        }
+
+        obs_sched_event("park", slot, n_tokens, n_bytes, t_copy);
+    }
+
+    // pause a generating slot at a token boundary: its whole state goes to host memory, its cells are freed
+    void sched_preempt(server_slot & slot) {
+        GGML_ASSERT(slot.state == SLOT_STATE_GENERATING && slot.spec_draft.empty() && slot.spec_i_batch.empty());
+
+        const int64_t t_start = ggml_time_us();
+
+        const size_t size_tgt =           llama_state_seq_get_size_ext(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+        const size_t size_dft = ctx_dft ? llama_state_seq_get_size_ext(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE) : 0;
+
+        try {
+            slot.park_data.main.resize(size_tgt);
+            slot.park_data.drft.resize(size_dft);
+            llama_state_seq_get_data_ext(ctx_tgt, slot.park_data.main.data(), size_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+            if (ctx_dft) {
+                llama_state_seq_get_data_ext(ctx_dft, slot.park_data.drft.data(), size_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+            }
+        } catch (const std::bad_alloc &) {
+            // resumed by re-prefilling the history instead
+            SLT_WRN(slot, "%s", "no host memory to park the state, it will be recomputed on resume\n");
+            slot.park_data = {};
+        }
+
+        const int64_t t_copy = ggml_time_us() - t_start;
+
+        slot.mem.seq_rm(slot.id, -1, -1);
+
+        slot.state      = SLOT_STATE_PREEMPTED;
+        slot.t_preempt  = ggml_time_us();
+        slot.n_reserved = 0;
+
+        sched_preempted.push_back(slot.id);
+        sched_dirty = true;
+
+        sched_stats.n_preempt++;
+        sched_account_transfer(true, slot.park_data.size(), t_copy);
+
+        SLT_WRN(slot, "preempted at %d tokens, the KV budget cannot grow its reservation: parked %.1f MiB in %.1f ms\n",
+                slot.prompt.n_tokens(), slot.park_data.size() / 1048576.0, t_copy / 1e3);
+
+        obs_sched_event("preempt", slot, slot.prompt.n_tokens(), slot.park_data.size(), t_copy);
+    }
+
+    // resume the oldest preempted slot if its reservation fits, returns false to keep waiting
+    bool sched_try_resume(server_slot & slot) {
+        GGML_ASSERT(slot.state == SLOT_STATE_PREEMPTED);
+
+        const int32_t need = sched_reservation(slot.prompt.n_tokens(), slot.n_remaining());
+
+        sched_sync();
+        const auto plan = kv_budget.plan_commit(slot.id, need, sched_others_running(slot.id));
+        if (!plan.fits) {
+            return false;
+        }
+        for (int id : plan.victims) {
+            sched_park(slots[id]);
+        }
+
+        const int64_t t_start = ggml_time_us();
+
+        bool ok = !slot.park_data.main.empty();
+        if (ok) {
+            auto & data = slot.park_data;
+            ok = llama_state_seq_set_data_ext(ctx_tgt, data.main.data(), data.main.size(), slot.id, LLAMA_STATE_SEQ_FLAGS_NONE) == data.main.size();
+            if (ok && ctx_dft) {
+                ok = llama_state_seq_set_data_ext(ctx_dft, data.drft.data(), data.drft.size(), slot.id, LLAMA_STATE_SEQ_FLAGS_NONE) == data.drft.size();
+            }
+        }
+
+        const int64_t t_copy  = ggml_time_us() - t_start;
+        const size_t  n_bytes = slot.park_data.size();
+
+        slot.park_data  = {};
+        slot.t_preempt  = 0;
+        slot.n_reserved = need;
+        slot.state      = SLOT_STATE_GENERATING;
+
+        if (ok) {
+            sched_account_transfer(false, n_bytes, t_copy);
+            SLT_INF(slot, "resumed at %d tokens: restored %.1f MiB in %.1f ms\n", slot.prompt.n_tokens(), n_bytes / 1048576.0, t_copy / 1e3);
+        } else {
+            SLT_WRN(slot, "%s", "resuming by re-prefilling the history, the parked state is unusable\n");
+            llama_tokens tokens = slot.prompt.tokens.get_text_tokens();
+            slot.mem.seq_rm(slot.id, -1, -1);
+            slot.prompt.clear(); // the checkpoints are useless without the attention prefix
+            slot_start_recompute(slot, std::move(tokens));
+        }
+
+        sched_stats.n_resume++;
+        obs_sched_event("resume", slot, slot.prompt.n_tokens(), ok ? n_bytes : 0, t_copy);
+
+        return true;
+    }
+
+    // extend or give up the reservations of generating slots that are about to outgrow them
+    // runs at a token boundary, before any draft or token of this iteration enters the KV cache
+    void sched_check_growth() {
+        const int32_t n_draft = sched_n_draft();
+
+        for (auto & slot : slots) {
+            if (slot.state != SLOT_STATE_GENERATING || !slot.spec_draft.empty() || !slot.spec_i_batch.empty()) {
+                continue;
+            }
+
+            const int32_t n_next = slot.prompt.n_tokens() + 1 + (slot.can_speculate() ? n_draft : 0);
+            if (n_next <= slot.n_reserved || slot.n_reserved >= slot.n_ctx) {
+                // within the reservation, or at the slot limit where process_token() ends the generation
+                continue;
+            }
+
+            const int32_t need = sched_reservation(slot.prompt.n_tokens(), slot.n_remaining());
+
+            sched_sync();
+            const auto plan = kv_budget.plan_commit(slot.id, need, false);
+            if (plan.fits) {
+                for (int id : plan.victims) {
+                    sched_park(slots[id]);
+                }
+                SLT_INF(slot, "KV reservation grown from %d to %d cells\n", slot.n_reserved, need);
+                slot.n_reserved = need;
+                sched_stats.n_grow++;
+                continue;
+            }
+
+            sched_preempt(slot);
+        }
+    }
+
+    // truncate the slot's sequence to its first n_keep tokens without ever aborting:
+    //  - a plain removal when the memory allows it
+    //  - else restore the newest context checkpoint at or below n_keep and truncate there
+    //    (recurrent memory cannot roll back beyond its pending records, or a cell shared with another sequence)
+    //  - else clear the sequence
+    // returns the number of tokens kept, slot.prompt.tokens is truncated to it
+    int32_t slot_truncate(server_slot & slot, int32_t n_keep) {
+        if (slot.mem.try_seq_rm(slot.id, slot.prompt.tokens.pos_next(n_keep), -1)) {
+            slot.prompt.tokens.keep_first(n_keep);
+            return n_keep;
+        }
+
+        sched_stats.n_rollback_fallback++;
+
+        auto & ckpts = slot.prompt.checkpoints;
+        for (auto it = ckpts.rbegin(); it != ckpts.rend(); ++it) {
+            if (it->n_tokens <= 0 || it->n_tokens > n_keep) {
+                continue;
+            }
+
+            it->load_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+            it->load_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+            common_speculative_set_state(spec.get(), slot.id, it->data_spec);
+
+            const int32_t n = (int32_t) it->n_tokens;
+            if (slot.mem.try_seq_rm(slot.id, slot.prompt.tokens.pos_next(n), -1)) {
+                SLT_WRN(slot, "the memory cannot truncate to %d tokens, restored the checkpoint at %d tokens\n", n_keep, n);
+
+                slot.prompt.tokens.keep_first(n);
+                ckpts.erase(std::remove_if(ckpts.begin(), ckpts.end(), [n](const common_prompt_checkpoint & c) { return c.n_tokens > n; }), ckpts.end());
+                return n;
+            }
+        }
+
+        SLT_WRN(slot, "the memory cannot truncate to %d tokens and no checkpoint helps, clearing the sequence\n", n_keep);
+
+        slot.mem.seq_rm(slot.id, -1, -1);
+        slot.prompt.tokens.keep_first(0);
+        ckpts.clear();
+        return 0;
+    }
+
+    // the sequence of a generating slot cannot be rolled back to n_target tokens: rebuild it from the newest
+    // usable checkpoint (or from scratch), and re-prefill the rest of its history before generation resumes
+    void slot_recover(server_slot & slot, int32_t n_target) {
+        llama_tokens tokens = slot.prompt.tokens.get_text_tokens();
+        tokens.resize(std::min<size_t>(tokens.size(), n_target));
+
+        const int32_t n_kept = slot_truncate(slot, n_target);
+        if (n_kept >= n_target) {
+            return;
+        }
+
+        slot_start_recompute(slot, std::move(tokens));
+    }
+
+    // re-prefill tokens[slot.prompt.n_tokens():] (the slot's history) before its generation resumes
+    void slot_start_recompute(server_slot & slot, llama_tokens && tokens) {
+        const int32_t n_kept = slot.prompt.n_tokens();
+
+        if (slot.prompt.tokens.has_mtmd && std::find(tokens.begin() + n_kept, tokens.end(), LLAMA_TOKEN_NULL) != tokens.end()) {
+            send_error(slot, "the sequence state was lost and media chunks cannot be recomputed", ERROR_TYPE_SERVER);
+            slot.release();
+            return;
+        }
+
+        SLT_WRN(slot, "recomputing %d tokens (%d -> %zu) before generation resumes\n", (int) tokens.size() - n_kept, n_kept, tokens.size());
+
+        slot.i_batch          = -1;
+        slot.recompute_tokens = std::move(tokens);
+        slot.state            = SLOT_STATE_RECOMPUTE;
+    }
+
+    // try to launch the task at the head of the queue
+    // on SCHED_ADMITTED and SCHED_DROPPED the task has been moved out of the entry
+    sched_result sched_try_admit(sched_entry & e) {
+        server_task & task = e.task;
+
+        // session-affine slot choice
+        int id_slot = -1;
+        if (task.id_slot != -1) {
+            server_slot * slot = get_slot_by_id(task.id_slot);
+            if (slot == nullptr || slot->is_processing()) {
+                return SCHED_WAIT_SLOT;
+            }
+            id_slot = slot->id;
+        } else {
+            auto & cands = sched_cands;
+            cands.resize(slots.size());
+            for (size_t i = 0; i < slots.size(); i++) {
+                const auto & slot = slots[i];
+                auto & c = cands[i];
+                c.idle        = !slot.is_processing();
+                c.n_used      = slot.prompt.n_tokens();
+                c.n_lcp       = c.idle && c.n_used > 0 ? (int32_t) slot.prompt.tokens.get_common_prefix(task.tokens) : 0;
+                c.t_last_used = slot.t_last_used;
+            }
+            id_slot = server_kv_budget::pick_slot(cands, task.n_tokens(), slot_prompt_similarity);
+            if (id_slot < 0) {
+                return SCHED_WAIT_SLOT;
+            }
+        }
+
+        server_slot & slot = slots[id_slot];
+
+        std::vector<server_slot *> child_slots;
+        if (task.is_parent()) {
+            child_slots = get_free_slots(task.child_tasks.size(), slot.id);
+            if (child_slots.size() < task.child_tasks.size()) {
+                return SCHED_WAIT_SLOT;
+            }
+        }
+
+        // what the slot will hold at launch: its resident prompt, or a better cached one
+        // the existing rule: a prompt that keeps less than half of the resident one swaps it with the cache
+        const int32_t n_resident = slot.prompt.n_tokens();
+        const int32_t n_lcp      = n_resident > 0 ? (int32_t) slot.prompt.tokens.get_common_prefix(task.tokens) : 0;
+        const bool    use_cache  = prompt_cache && task.type == SERVER_TASK_TYPE_COMPLETION;
+        const bool    swap       = use_cache && (n_resident == 0 || n_lcp * 2 < n_resident);
+
+        const server_prompt_cache_state * cached = swap ? prompt_cache->find(slot.prompt, task.tokens) : nullptr;
+        const int32_t n_hold = cached ? cached->prompt.n_tokens() : n_resident;
+
+        const int32_t n_predict = task.params.n_predict != -1 ? task.params.n_predict : params_base.n_predict;
+        const int32_t n_gen_res = sched_reservation(0, n_predict);
+
+        // children share the prompt cells of the parent and generate on their own
+        const int32_t need = std::min<int64_t>(
+                (int64_t) sched_reservation(task.n_tokens(), n_predict) + (int64_t) child_slots.size() * n_gen_res,
+                kv_budget.n_cells);
+
+        sched_sync();
+        for (auto * child : child_slots) {
+            // copy_state_to() replaces the child's sequence, it is parked below if it holds one
+            kv_budget.slots[child->id].active = true;
+            kv_budget.slots[child->id].n_used = 0;
+        }
+
+        const auto plan = kv_budget.plan_commit(slot.id, std::max(need, n_hold), sched_others_running(slot.id));
+        if (!plan.fits) {
+            return SCHED_WAIT_KV;
+        }
+
+        for (int id : plan.victims) {
+            sched_park(slots[id]);
+        }
+        for (auto * child : child_slots) {
+            sched_park(*child);
+        }
+
+        // take the entry out first: saving the resident prompt below may evict cache entries
+        server_prompt_cache_state state_new;
+        if (cached) {
+            state_new = prompt_cache->take(cached);
+        }
+
+        if (swap && n_resident > 0) {
+            // keep a copy of the resident session for its owner; move its checkpoints when it is replaced
+            const int64_t t_start = ggml_time_us();
+            const size_t  n_bytes = slot.prompt_save(*prompt_cache, /* take_checkpoints */ cached != nullptr);
+            const int64_t t_copy  = ggml_time_us() - t_start;
+            if (n_bytes > 0) {
+                sched_stats.n_park++;
+                sched_account_transfer(true, n_bytes, t_copy);
+                SLT_INF(slot, "parked session: %d tokens, %.1f MiB in %.1f ms (%.2f GB/s)\n",
+                        n_resident, n_bytes / 1048576.0, t_copy / 1e3, n_bytes / 1e3 / std::max<int64_t>(1, t_copy));
+                obs_sched_event("park", slot, n_resident, n_bytes, t_copy);
+            }
+        }
+
+        if (cached) {
+            const int64_t t_start = ggml_time_us();
+            size_t n_bytes = 0;
+            if (!server_prompt_cache::restore(state_new, slot.prompt, ctx_tgt, ctx_dft, slot.id, n_bytes)) {
+                SLT_WRN(slot, "%s", "failed to restore a parked session, the prompt is processed from scratch\n");
+                slot.prompt_clear();
+                n_bytes = 0;
+            }
+            const int64_t t_copy = ggml_time_us() - t_start;
+            if (n_bytes > 0) {
+                sched_stats.n_unpark++;
+                sched_account_transfer(false, n_bytes, t_copy);
+                slot.obs_n_unparked = slot.prompt.n_tokens();
+                SLT_INF(slot, "unparked session: %d tokens, %.1f MiB in %.1f ms (%.2f GB/s)\n",
+                        slot.prompt.n_tokens(), n_bytes / 1048576.0, t_copy / 1e3, n_bytes / 1e3 / std::max<int64_t>(1, t_copy));
+                obs_sched_event("unpark", slot, slot.prompt.n_tokens(), n_bytes, t_copy);
+            }
+        }
+
+        if (swap) {
+            prompt_cache->update();
+        }
+
+        const char * wait_reason = e.wait_reason;
+
+        slot.n_reserved = need;
+        slot.obs_wait_reason = wait_reason;
+
+        bool ok;
+        if (task.is_parent()) {
+            // each sequence may grow to prompt + generation; the shared prompt cells are counted once per slot,
+            // which over-reserves but never under-reserves
+            const int32_t n_seq_res = sched_reservation(task.n_tokens(), n_predict);
+            ok = launch_slots_with_parent_task(slot, child_slots, std::move(task));
+            if (ok) {
+                slot.n_reserved = n_seq_res;
+                for (auto * child : child_slots) {
+                    child->n_reserved      = n_seq_res;
+                    child->obs_wait_reason = wait_reason;
+                }
+            }
+        } else {
+            ok = launch_slot_with_task(slot, std::move(task));
+        }
+
+        if (!ok) {
+            slot.n_reserved = 0;
+            return SCHED_DROPPED;
+        }
+
+        return SCHED_ADMITTED;
+    }
+
+    // admit waiting work in order: preempted slots first, then the queue; stops at the first that has to wait
+    void sched_admit() {
+        if (!sched_dirty) {
+            return;
+        }
+        sched_dirty = false;
+
+        while (true) {
+            if (!sched_preempted.empty()) {
+                server_slot & slot = slots[sched_preempted.front()];
+                if (slot.state == SLOT_STATE_PREEMPTED && !sched_try_resume(slot)) {
+                    break;
+                }
+                // resumed, or released (cancelled) while preempted
+                sched_preempted.erase(sched_preempted.begin());
+                continue;
+            }
+
+            if (sched_queue.empty()) {
+                break;
+            }
+
+            auto & entry = sched_queue.front();
+            const auto res = sched_try_admit(entry);
+            if (res == SCHED_WAIT_SLOT || res == SCHED_WAIT_KV) {
+                if (strcmp(entry.wait_reason, "none") == 0) {
+                    entry.wait_reason = res == SCHED_WAIT_SLOT ? "slot" : "kv";
+                    (res == SCHED_WAIT_SLOT ? sched_stats.n_wait_slot : sched_stats.n_wait_kv)++;
+                }
+                break;
+            }
+
+            sched_queue.pop_front();
+        }
+
+        sched_n_waiting.store((int32_t) sched_queue.size(), std::memory_order_relaxed);
+    }
+
+    // queue a slot task for admission; a prompt that can never fit a slot is answered right away
+    void sched_enqueue(server_task && task) {
+        const int32_t n_ctx_cur = n_ctx_slot();
+        if (task.need_sampling() && task.n_tokens() >= n_ctx_cur) {
+            const std::string err = string_format(
+                    "request (%d tokens) exceeds the available context size (%d tokens), try increasing it",
+                    task.n_tokens(), n_ctx_cur);
+            obs_on_reject(task, err, ERROR_TYPE_EXCEED_CONTEXT_SIZE);
+            send_error(task.id, err, ERROR_TYPE_EXCEED_CONTEXT_SIZE, task.n_tokens(), n_ctx_cur);
+            return;
+        }
+
+        sched_queue.push_back({ std::move(task), "none" });
+        sched_n_waiting.store((int32_t) sched_queue.size(), std::memory_order_relaxed);
+        sched_dirty = true;
+
+        sched_admit();
     }
 
     std::vector<common_adapter_lora_info> construct_lora_list(const std::map<int, float> & config) const {
@@ -2431,6 +3027,11 @@ private:
                         }
                     }
 
+                    if (kv_budget_on) {
+                        sched_enqueue(std::move(task));
+                        break;
+                    }
+
                     const int id_task = task.id;
 
                     server_slot * slot = get_available_slot(task);
@@ -2498,6 +3099,17 @@ private:
                             break;
                         }
                     }
+
+                    // or drop it from the admission queue
+                    for (auto it = sched_queue.begin(); it != sched_queue.end(); ++it) {
+                        if (it->task.id == task.id_target) {
+                            SRV_DBG("cancelled queued task, id_task = %d\n", task.id_target);
+                            sched_queue.erase(it);
+                            sched_n_waiting.store((int32_t) sched_queue.size(), std::memory_order_relaxed);
+                            sched_dirty = true;
+                            break;
+                        }
+                    }
                 } break;
             case SERVER_TASK_TYPE_CONTROL:
                 {
@@ -2550,7 +3162,7 @@ private:
                     auto res = std::make_unique<server_task_result_metrics>();
                     res->id                  = task.id;
                     res->n_processing_slots  = n_processing_slots;
-                    res->n_tasks_deferred    = queue_tasks.queue_tasks_deferred_size();
+                    res->n_tasks_deferred    = queue_tasks.queue_tasks_deferred_size() + sched_n_waiting.load(std::memory_order_relaxed);
                     res->metrics             = metrics;
                     if (task.metrics_telemetry) {
                         res->telemetry = obs_telemetry_json();
@@ -2845,6 +3457,11 @@ private:
         }
 #endif
 
+        // admit waiting work into the slots and cells freed by the last iteration
+        if (kv_budget_on) {
+            sched_admit();
+        }
+
         // check if all slots are idle
         {
             bool all_idle = true;
@@ -2956,6 +3573,23 @@ private:
     }
 
     void pre_decode() {
+        // slots done re-prefilling their history resume generating in this iteration
+        for (auto & slot : slots) {
+            if (slot.state == SLOT_STATE_RECOMPUTE && slot.prompt.n_tokens() >= (int32_t) slot.recompute_tokens.size()) {
+                SLT_INF(slot, "recomputed %d tokens, resuming generation\n", slot.prompt.n_tokens());
+                slot.recompute_tokens.clear();
+                slot.state = SLOT_STATE_GENERATING;
+                if (slot.can_speculate()) {
+                    common_speculative_begin(spec.get(), slot.id, slot.prompt.tokens.get_text_tokens());
+                }
+            }
+        }
+
+        // no generating slot may outgrow its KV reservation in this iteration
+        if (kv_budget_on) {
+            sched_check_growth();
+        }
+
         // apply context-shift if needed
         // TODO: simplify and improve
         iterate(slots, [&](server_slot & slot) {
@@ -3162,6 +3796,12 @@ private:
         int32_t n_batch  = llama_n_batch(ctx_tgt);
         int32_t n_ubatch = llama_n_ubatch(ctx_tgt);
 
+        // while other slots generate, cap the prompt tokens of this iteration so that a long prefill does not
+        // stall their decoding; with nothing generating, prompts take the whole batch
+        const int32_t n_batch_prompt = !generating.empty() && params_base.prefill_chunk_gen > 0
+            ? std::min(n_batch, batch.size() + params_base.prefill_chunk_gen)
+            : n_batch;
+
         auto & alora_scale       = batch.alora_scale;
         auto & alora_disabled_id = batch.alora_disabled_id;
 
@@ -3170,11 +3810,11 @@ private:
             bool add_ok = true; // false means the batch is full, skip remaining slots
 
             iterate(slots, [&](server_slot & slot) {
-                if (!add_ok || batch.size() >= n_batch) {
+                if (!add_ok || batch.size() >= n_batch_prompt) {
                     return; // batch is full, skip remaining slots
                 }
 
-                if (!slot.is_processing()) {
+                if (!slot.is_processing() || slot.state == SLOT_STATE_PREEMPTED) {
                     return;
                 }
 
@@ -3186,6 +3826,24 @@ private:
                 // check if this is a child slot
                 if (slot.state == SLOT_STATE_WAIT_OTHER) {
                     SLT_DBG(slot, "%s", "waiting for parent slot to complete\n");
+                    return;
+                }
+
+                // re-prefill the history of a generating slot whose sequence was lost, see slot_recover()
+                // these are not prompt tokens of the request: no stats, no checkpoints
+                if (slot.state == SLOT_STATE_RECOMPUTE) {
+                    const auto & tokens = slot.recompute_tokens;
+                    int32_t n_added = 0;
+                    while (slot.prompt.n_tokens() < (int32_t) tokens.size() && batch.size() < n_batch_prompt) {
+                        const llama_token tok = tokens[slot.prompt.n_tokens()];
+                        add_ok &= batch.add(slot.id, tok, slot.prompt.tokens.pos_next(), false, false);
+                        slot.prompt.tokens.push_back(tok);
+                        n_added++;
+                    }
+                    sched_stats.n_recompute_tokens += n_added;
+                    if (!slot_batched) {
+                        slot_batched = &slot;
+                    }
                     return;
                 }
 
@@ -3464,6 +4122,10 @@ private:
                             SLT_WRN(slot, "n_past was set to %d\n", n_past);
                         }
 
+                        // truncate the memory to the reused prefix now: a memory that refuses the removal (recurrent
+                        // rollback beyond its records, shared cell) falls back to an earlier checkpoint or a re-prefill
+                        n_past = slot_truncate(slot, n_past);
+
                         slot.stats.n_prompt_cached    = n_past;
                         slot.stats.n_prompt_processed = 0;
 
@@ -3499,7 +4161,9 @@ private:
 
                     SLT_TRC(slot, "cached n_tokens = %d, memory_seq_rm [%d, end)\n", slot.prompt.n_tokens(), p0);
 
-                    slot.mem.seq_rm(slot.id, p0, -1);
+                    if (!slot.mem.try_seq_rm(slot.id, p0, -1)) {
+                        slot_truncate(slot, slot.prompt.n_tokens());
+                    }
 
                     // If using an alora, there may be uncached tokens that come
                     // before the invocation sequence. When this happens, the
@@ -3579,7 +4243,7 @@ private:
                     const auto last_user_pos = spans.last_user_message_pos();
 
                     // add prompt tokens for processing in the current batch
-                    while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < n_batch) {
+                    while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < n_batch_prompt) {
                         // get next token to process
                         llama_token cur_tok = input_tokens[slot.prompt.n_tokens()];
                         if (cur_tok == LLAMA_TOKEN_NULL) {
@@ -3789,6 +4453,11 @@ private:
                     // stop, do not retry with smaller batch size
                     throw std::runtime_error(err);
                 }
+            }
+
+            // the KV budget should make this unreachable, count it to catch accounting bugs
+            if (kv_budget_on) {
+                sched_stats.n_kv_overflow++;
             }
 
             // retry with half the batch size to try to find a free slot in the KV cache
@@ -4023,9 +4692,14 @@ private:
                             ckpt.load_dft(slot.ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
                         }
 
-                        slot.mem.seq_rm(slot.id, ckpt.pos_max + 1, -1);
-
-                        slot.prompt.tokens.keep_first(ckpt.n_tokens);
+                        if (slot.mem.try_seq_rm(slot.id, ckpt.pos_max + 1, -1)) {
+                            slot.prompt.tokens.keep_first(ckpt.n_tokens);
+                        } else {
+                            slot_recover(slot, ckpt.n_tokens);
+                            if (!slot.is_processing()) {
+                                return;
+                            }
+                        }
                         common_sampler_copy(smpl_save.get(), slot.smpl.get());
 
                         return;
@@ -4073,7 +4747,13 @@ private:
             slot.sampled = ids.back(); // last accepted token
             SLT_DBG(slot, "add accepted tokens: sampled=%d, ids.size=%zu, n_draft=%zu\n", slot.sampled, ids.size(), n_draft);
 
-            slot.mem.seq_rm(slot.id, slot.prompt.tokens.pos_next(), -1);
+            // a rollback within the draft window, a recurrent memory can refuse it (shared cell, too few records)
+            if (!slot.mem.try_seq_rm(slot.id, slot.prompt.tokens.pos_next(), -1)) {
+                slot_recover(slot, slot.prompt.n_tokens());
+                if (!slot.is_processing()) {
+                    return;
+                }
+            }
 
             for (size_t i = 0; i < ids.size(); ++i) {
                 completion_token_output result;
@@ -4296,17 +4976,20 @@ public:
     // runs on the loop thread, or on the queue worker while a decode is in flight (read-only)
     json obs_telemetry_json() const {
         static const char * state_names[] = {
-            "idle", "wait_other", "started", "processing_prompt", "done_prompt", "generating",
+            "idle", "wait_other", "started", "processing_prompt", "done_prompt", "generating", "preempted", "recompute",
         };
 
         json arr = json::array();
-        int32_t n_busy = 0, n_prompt = 0, n_gen = 0;
-        uint64_t cells_used = 0;
+        int32_t n_busy = 0, n_prompt = 0, n_gen = 0, n_preempted = 0;
+        uint64_t cells_used = 0, cells_committed = 0;
         for (const auto & slot : slots) {
+            const int32_t used = slot.state == SLOT_STATE_PREEMPTED ? 0 : slot.prompt.n_tokens();
             n_busy   += slot.is_processing();
             n_prompt += slot.state == SLOT_STATE_STARTED || slot.state == SLOT_STATE_PROCESSING_PROMPT;
             n_gen    += slot.state == SLOT_STATE_GENERATING;
-            cells_used += slot.prompt.n_tokens();
+            n_preempted += slot.state == SLOT_STATE_PREEMPTED;
+            cells_used      += used;
+            cells_committed += slot.is_processing() ? std::max(used, slot.n_reserved) : used;
 
             const size_t i_state = (size_t) slot.state;
             arr.push_back({
@@ -4314,7 +4997,10 @@ public:
                 {"state",            i_state < std::size(state_names) ? state_names[i_state] : "unknown"},
                 {"is_processing",    slot.is_processing()},
                 {"n_ctx",            slot.n_ctx},
-                {"n_ctx_used",       slot.prompt.n_tokens()},
+                {"n_ctx_used",       used},
+                {"n_reserved",       slot.n_reserved},
+                {"wait_reason",      slot.task ? json(slot.obs_wait_reason) : json(nullptr)},
+                {"n_unparked_tokens", slot.obs_n_unparked},
                 {"id_task",          slot.task ? json(slot.task->id) : json(nullptr)},
                 {"n_prompt_tokens",  slot.task ? slot.task->n_tokens() : 0},
                 {"n_cached_tokens",  slot.stats.n_prompt_cached},
@@ -4334,6 +5020,33 @@ public:
             {"slots_processing_prompt", n_prompt},
             {"slots_generating",        n_gen},
             {"queue_deferred",          queue_tasks.n_deferred.load(std::memory_order_relaxed)},
+            {"kv_budget", {
+                {"enabled",           kv_budget_on},
+                {"queue_waiting",     sched_n_waiting.load(std::memory_order_relaxed)},
+                {"slots_preempted",   n_preempted},
+                {"gen_reserve",       params_base.kv_budget_gen},
+                {"headroom",          params_base.kv_budget_headroom},
+                {"prefill_chunk_gen", params_base.prefill_chunk_gen},
+                {"totals", {
+                    {"parks",               sched_stats.n_park},
+                    {"park_drops",          sched_stats.n_park_drop},
+                    {"unparks",             sched_stats.n_unpark},
+                    {"preempts",            sched_stats.n_preempt},
+                    {"resumes",             sched_stats.n_resume},
+                    {"grows",               sched_stats.n_grow},
+                    {"park_bytes",          sched_stats.bytes_park},
+                    {"unpark_bytes",        sched_stats.bytes_unpark},
+                    {"park_seconds",        sched_stats.us_park / 1e6},
+                    {"unpark_seconds",      sched_stats.us_unpark / 1e6},
+                    {"park_gbps",           sched_stats.us_park   > 0 ? sched_stats.bytes_park   / 1e3 / sched_stats.us_park   : 0.0},
+                    {"unpark_gbps",         sched_stats.us_unpark > 0 ? sched_stats.bytes_unpark / 1e3 / sched_stats.us_unpark : 0.0},
+                    {"waited_slot",         sched_stats.n_wait_slot},
+                    {"waited_kv",           sched_stats.n_wait_kv},
+                    {"rollback_fallbacks",  sched_stats.n_rollback_fallback},
+                    {"recompute_tokens",    sched_stats.n_recompute_tokens},
+                    {"kv_overflows",        sched_stats.n_kv_overflow},
+                }},
+            }},
             {"totals", {
                 {"prompt_tokens",           m.prompt.count},
                 {"prompt_tokens_cached",    m.n_prompt_cached},
@@ -4362,7 +5075,8 @@ public:
         res["memory"] = {
             {"kv", {
                 {"cells_total",  n_ctx},
-                {"cells_used",   cells_used},
+                {"cells_used",     cells_used},
+                {"cells_reserved", cells_committed},
                 {"unified",      params_base.kv_unified},
                 {"n_ctx_slot",   n_ctx_slot()},
                 {"cache_type_k", ggml_type_name(params_base.cache_type_k)},
@@ -4538,6 +5252,8 @@ private:
         rec.kind = SERVER_OBS_REC_REQUEST_START;
         obs_fill_request(rec, task, slot.id, slot.n_ctx, slot.n_predict_max);
         rec.queue_wait_ms = task.t_arrival_us > 0 ? (t_now - task.t_arrival_us) / 1e3 : 0.0;
+        rec.wait_reason       = slot.obs_wait_reason;
+        rec.n_unparked_tokens = slot.obs_n_unparked;
 
         obs->counters.req_started.fetch_add(1, std::memory_order_relaxed);
         obs->emit(std::move(rec));
@@ -4603,6 +5319,8 @@ private:
         rec.n_prefill_tokens    = st.n_prompt_processed;
         rec.n_completion_tokens = st.n_gen;
         rec.n_ctx_used          = slot.prompt.n_tokens();
+        rec.wait_reason         = slot.obs_wait_reason;
+        rec.n_unparked_tokens   = slot.obs_n_unparked;
         rec.t_prefill_ms        = st.t_prompt_ms();
         rec.t_decode_ms         = st.t_gen_ms();
         rec.t_ttft_ms           = st.n_gen > 0 && st.t_prompt_last > 0 ? (st.t_prompt_last - t_arrival) / 1e3 : -1.0;
@@ -4639,6 +5357,7 @@ private:
         c.slots_busy    .store(n_busy,   std::memory_order_relaxed);
         c.slots_prompt  .store(n_prompt, std::memory_order_relaxed);
         c.queue_deferred.store(queue_tasks.n_deferred.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        obs_sched_publish();
     }
 
     void obs_on_idle() {
@@ -4647,6 +5366,68 @@ private:
         c.slots_busy    .store(0, std::memory_order_relaxed);
         c.slots_prompt  .store(0, std::memory_order_relaxed);
         c.queue_deferred.store(queue_tasks.n_deferred.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        obs_sched_publish();
+    }
+
+    // mirror the KV budget counters and gauges into the observer (relaxed stores, no allocation)
+    void obs_sched_publish() {
+        auto & c = obs->counters;
+        const auto & s = sched_stats;
+
+        c.sched_parks       .store(s.n_park,       std::memory_order_relaxed);
+        c.sched_park_drops  .store(s.n_park_drop,  std::memory_order_relaxed);
+        c.sched_unparks     .store(s.n_unpark,     std::memory_order_relaxed);
+        c.sched_preempts    .store(s.n_preempt,    std::memory_order_relaxed);
+        c.sched_resumes     .store(s.n_resume,     std::memory_order_relaxed);
+        c.sched_grows       .store(s.n_grow,       std::memory_order_relaxed);
+        c.sched_park_bytes  .store(s.bytes_park,   std::memory_order_relaxed);
+        c.sched_unpark_bytes.store(s.bytes_unpark, std::memory_order_relaxed);
+        c.sched_park_us     .store(s.us_park,      std::memory_order_relaxed);
+        c.sched_unpark_us   .store(s.us_unpark,    std::memory_order_relaxed);
+        c.sched_wait_slot   .store(s.n_wait_slot,  std::memory_order_relaxed);
+        c.sched_wait_kv     .store(s.n_wait_kv,    std::memory_order_relaxed);
+        c.sched_rollback_fallbacks.store(s.n_rollback_fallback, std::memory_order_relaxed);
+        c.sched_recompute_tokens  .store(s.n_recompute_tokens,  std::memory_order_relaxed);
+        c.sched_kv_overflows      .store(s.n_kv_overflow,       std::memory_order_relaxed);
+
+        int64_t n_used = 0, n_committed = 0;
+        int32_t n_preempted = 0;
+        for (const auto & slot : slots) {
+            const int32_t used = slot.state == SLOT_STATE_PREEMPTED ? 0 : slot.prompt.n_tokens();
+            n_used      += used;
+            n_committed += slot.is_processing() ? std::max(used, slot.n_reserved) : used;
+            n_preempted += slot.state == SLOT_STATE_PREEMPTED;
+        }
+        c.kv_cells_total   .store(n_ctx,                  std::memory_order_relaxed);
+        c.kv_cells_used    .store((int32_t) n_used,       std::memory_order_relaxed);
+        c.kv_cells_reserved.store((int32_t) n_committed,  std::memory_order_relaxed);
+        c.sched_waiting    .store(sched_n_waiting.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        c.sched_preempted  .store(n_preempted,            std::memory_order_relaxed);
+        c.sessions_parked  .store(prompt_cache ? (int32_t) prompt_cache->states.size() : 0, std::memory_order_relaxed);
+    }
+
+    // one record per park / unpark / preempt / resume, the transfers are rare and heavy
+    void obs_sched_event(const char * event, const server_slot & slot, int32_t n_tokens, size_t n_bytes, int64_t t_us) {
+        SRV_DBG("sched %s: slot %d, %d tokens, %zu bytes, %" PRId64 " us\n", event, slot.id, n_tokens, n_bytes, t_us);
+        if (!obs) {
+            return;
+        }
+        obs_sched_publish();
+
+        server_obs_record rec;
+        rec.kind      = SERVER_OBS_REC_RAW;
+        rec.event     = "sched";
+        rec.t_unix_ms = server_observer::now_unix_ms();
+        rec.body      = {
+            {"action",   event},
+            {"id_slot",  slot.id},
+            {"id_task",  slot.task ? json(slot.task->id) : json(nullptr)},
+            {"n_tokens", n_tokens},
+            {"bytes",    n_bytes},
+            {"ms",       t_us / 1e3},
+            {"gbps",     t_us > 0 ? n_bytes / 1e3 / t_us : 0.0},
+        };
+        obs->emit(std::move(rec));
     }
 };
 

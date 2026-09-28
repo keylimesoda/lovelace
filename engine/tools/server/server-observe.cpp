@@ -615,6 +615,8 @@ std::string server_observer::format(const server_obs_record & rec, uint64_t seq)
                 res["event"]         = "request_start";
                 res["request"]       = obs_request_info(rec, true);
                 res["queue_wait_ms"] = r3(rec.queue_wait_ms);
+                res["wait_reason"]   = rec.wait_reason;
+                res["n_unparked_tokens"] = rec.n_unparked_tokens;
             } break;
         case SERVER_OBS_REC_REQUEST_DONE:
             {
@@ -628,6 +630,8 @@ std::string server_observer::format(const server_obs_record & rec, uint64_t seq)
                     {"n_prefill_tokens",    rec.n_prefill_tokens},
                     {"n_completion_tokens", rec.n_completion_tokens},
                     {"n_ctx_used",          rec.n_ctx_used},
+                    {"n_unparked_tokens",   rec.n_unparked_tokens},
+                    {"wait_reason",         rec.wait_reason},
                     {"error",               rec.error_msg.empty() ? json(nullptr) : json(rec.error_msg)},
                 };
                 res["timings_ms"] = {
@@ -706,6 +710,8 @@ void server_observer::sampler_loop() {
         uint64_t prefill = 0, decode = 0, drafted = 0, accepted = 0, calls = 0, busy = 0;
         uint64_t started = 0, done = 0, rejected = 0;
         double   e_board = 0.0, e_prefill = 0.0, e_decode = 0.0, e_idle = 0.0;
+        uint64_t parks = 0, unparks = 0, preempts = 0, resumes = 0, park_bytes = 0, unpark_bytes = 0, park_us = 0, unpark_us = 0;
+        uint64_t wait_slot = 0, wait_kv = 0, recompute = 0;
     };
     auto take_base = [&](const server_obs_clock::snapshot & clk) {
         base_t b;
@@ -719,6 +725,17 @@ void server_observer::sampler_loop() {
         b.started  = counters.req_started.load(std::memory_order_relaxed);
         b.done     = counters.req_done.load(std::memory_order_relaxed);
         b.rejected = counters.req_rejected.load(std::memory_order_relaxed);
+        b.parks        = counters.sched_parks.load(std::memory_order_relaxed);
+        b.unparks      = counters.sched_unparks.load(std::memory_order_relaxed);
+        b.preempts     = counters.sched_preempts.load(std::memory_order_relaxed);
+        b.resumes      = counters.sched_resumes.load(std::memory_order_relaxed);
+        b.park_bytes   = counters.sched_park_bytes.load(std::memory_order_relaxed);
+        b.unpark_bytes = counters.sched_unpark_bytes.load(std::memory_order_relaxed);
+        b.park_us      = counters.sched_park_us.load(std::memory_order_relaxed);
+        b.unpark_us    = counters.sched_unpark_us.load(std::memory_order_relaxed);
+        b.wait_slot    = counters.sched_wait_slot.load(std::memory_order_relaxed);
+        b.wait_kv      = counters.sched_wait_kv.load(std::memory_order_relaxed);
+        b.recompute    = counters.sched_recompute_tokens.load(std::memory_order_relaxed);
         std::lock_guard<std::mutex> lock(mtx_state);
         b.e_board   = energy_board;
         b.e_prefill = energy_prefill;
@@ -864,6 +881,27 @@ void server_observer::sampler_loop() {
                 {"slots_busy",              counters.slots_busy.load(std::memory_order_relaxed)},
                 {"slots_processing_prompt", counters.slots_prompt.load(std::memory_order_relaxed)},
                 {"queue_deferred",          counters.queue_deferred.load(std::memory_order_relaxed)},
+                {"queue_waiting",           counters.sched_waiting.load(std::memory_order_relaxed)},
+                {"slots_preempted",         counters.sched_preempted.load(std::memory_order_relaxed)},
+                {"waited_slot",             cur.wait_slot - base.wait_slot},
+                {"waited_kv",               cur.wait_kv   - base.wait_kv},
+            }},
+            {"kv", {
+                {"cells_total",    counters.kv_cells_total.load(std::memory_order_relaxed)},
+                {"cells_used",     counters.kv_cells_used.load(std::memory_order_relaxed)},
+                {"cells_reserved", counters.kv_cells_reserved.load(std::memory_order_relaxed)},
+            }},
+            {"parking", {
+                {"sessions_parked", counters.sessions_parked.load(std::memory_order_relaxed)},
+                {"parks",           cur.parks    - base.parks},
+                {"unparks",         cur.unparks  - base.unparks},
+                {"preempts",        cur.preempts - base.preempts},
+                {"resumes",         cur.resumes  - base.resumes},
+                {"park_bytes",      cur.park_bytes   - base.park_bytes},
+                {"unpark_bytes",    cur.unpark_bytes - base.unpark_bytes},
+                {"park_seconds",    r6((cur.park_us   - base.park_us)   / 1e6)},
+                {"unpark_seconds",  r6((cur.unpark_us - base.unpark_us) / 1e6)},
+                {"recompute_tokens", cur.recompute - base.recompute},
             }},
             {"loop_seconds", {
                 {"prefill", r6(loop_s[SERVER_OBS_PHASE_PREFILL])},
@@ -1092,5 +1130,36 @@ std::string server_observer::to_prometheus() const {
                 << "llamacpp:idle_power_watts " << w_idle << "\n";
         }
     }
+
+    const auto metric = [&](const char * name, const char * type, const char * help, double value) {
+        out << "# HELP llamacpp:" << name << " " << help << "\n"
+            << "# TYPE llamacpp:" << name << " " << type << "\n"
+            << "llamacpp:" << name << " " << value << "\n";
+    };
+    const auto ld = [](const auto & a) { return (double) a.load(std::memory_order_relaxed); };
+
+    const auto & c = counters;
+    metric("kv_cells_total",    "gauge", "KV cells of the unified cache",                               ld(c.kv_cells_total));
+    metric("kv_cells_used",     "gauge", "KV cells held by all slots",                                  ld(c.kv_cells_used));
+    metric("kv_cells_reserved", "gauge", "KV cells held or reserved by running requests (KV budget)",   ld(c.kv_cells_reserved));
+    metric("sched_waiting",     "gauge", "Requests waiting for admission (KV budget)",                  ld(c.sched_waiting));
+    metric("sched_preempted",   "gauge", "Slots paused to host memory (KV budget)",                     ld(c.sched_preempted));
+    metric("sessions_parked",   "gauge", "Sessions held in the host prompt cache",                      ld(c.sessions_parked));
+    metric("sched_parks_total",       "counter", "Idle sessions moved from VRAM to host memory",        ld(c.sched_parks));
+    metric("sched_park_drops_total",  "counter", "Idle sessions evicted without a new host copy",       ld(c.sched_park_drops));
+    metric("sched_unparks_total",     "counter", "Sessions restored from host memory",                  ld(c.sched_unparks));
+    metric("sched_preempts_total",    "counter", "Generating slots paused to host memory",              ld(c.sched_preempts));
+    metric("sched_resumes_total",     "counter", "Paused slots resumed",                                ld(c.sched_resumes));
+    metric("sched_grows_total",       "counter", "KV reservations extended in flight",                  ld(c.sched_grows));
+    metric("sched_park_bytes_total",  "counter", "Bytes copied device to host by parking",              ld(c.sched_park_bytes));
+    metric("sched_unpark_bytes_total","counter", "Bytes copied host to device by unparking",            ld(c.sched_unpark_bytes));
+    metric("sched_park_seconds_total",  "counter", "Time spent parking",                                ld(c.sched_park_us) / 1e6);
+    metric("sched_unpark_seconds_total","counter", "Time spent unparking",                              ld(c.sched_unpark_us) / 1e6);
+    metric("sched_wait_slot_total",   "counter", "Requests that waited for a free slot",                ld(c.sched_wait_slot));
+    metric("sched_wait_kv_total",     "counter", "Requests that waited for KV cells",                   ld(c.sched_wait_kv));
+    metric("sched_rollback_fallbacks_total", "counter", "Sequence truncations the memory refused (recovered)", ld(c.sched_rollback_fallbacks));
+    metric("sched_recompute_tokens_total",   "counter", "Tokens re-prefilled to recover a sequence",           ld(c.sched_recompute_tokens));
+    metric("sched_kv_overflows_total",       "counter", "Decodes that found no free KV cells",                 ld(c.sched_kv_overflows));
+
     return out.str();
 }

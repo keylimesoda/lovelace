@@ -1708,7 +1708,7 @@ size_t server_prompt_cache::n_tokens() const {
     return res;
 }
 
-server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & prompt, size_t state_size_tgt, size_t state_size_dft) {
+server_prompt_cache_state * server_prompt_cache::alloc(server_prompt & prompt, size_t state_size_tgt, size_t state_size_dft, bool take_checkpoints) {
     // first check if the current state is contained fully in the cache
     for (auto it = states.begin(); it != states.end(); ++it) {
         const int cur_lcp_len = it->prompt.tokens.get_common_prefix(prompt.tokens);
@@ -1779,7 +1779,7 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
     states.push_back({
         /*.prompt =*/ {
             /*.tokens      =*/ prompt.tokens.clone(),
-            /*.checkpoints =*/ prompt.checkpoints,
+            /*.checkpoints =*/ take_checkpoints ? std::move(prompt.checkpoints) : prompt.checkpoints,
         },
         /*.data   =*/ {
             /*.main =*/ std::move(state_data_tgt),
@@ -1790,7 +1790,7 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
     return &states.back();
 }
 
-bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot) {
+const server_prompt_cache_state * server_prompt_cache::find(const server_prompt & prompt, const server_tokens & tokens_new) const {
     const int lcp_best = prompt.tokens.get_common_prefix(tokens_new);
 
     float f_keep_best = prompt.tokens.size() > 0 ? float(lcp_best) / prompt.tokens.size() : -1.0f; // empty slot: any cache entry wins
@@ -1798,16 +1798,16 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
 
     SRV_TRC(" - looking for better prompt, base f_keep = %.3f, f_sim = %.3f\n", f_keep_best, f_sim_best);
 
-    auto it_best = states.end();
+    const server_prompt_cache_state * best = nullptr;
 
     // find the most similar cached prompt, that would also preserve the most context
-    for (auto it = states.begin(); it != states.end(); ++it) {
-        const int lcp_cur = it->prompt.tokens.get_common_prefix(tokens_new);
+    for (const auto & state : states) {
+        const int lcp_cur = state.prompt.tokens.get_common_prefix(tokens_new);
 
-        const float f_keep_cur = float(lcp_cur) / it->prompt.tokens.size();
+        const float f_keep_cur = float(lcp_cur) / state.prompt.tokens.size();
         const float f_sim_cur  = float(lcp_cur) / tokens_new.size();
 
-        SRV_TRC("   - prompt with length %7zu, lcp = %7d, f_keep = %.3f, f_sim = %.3f\n", it->prompt.tokens.size(), lcp_cur, f_keep_cur, f_sim_cur);
+        SRV_TRC("   - prompt with length %7zu, lcp = %7d, f_keep = %.3f, f_sim = %.3f\n", state.prompt.tokens.size(), lcp_cur, f_keep_cur, f_sim_cur);
 
         // don't trash large prompts
         if (f_keep_cur < 0.25f) {
@@ -1818,53 +1818,79 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
             f_keep_best = f_keep_cur;
             f_sim_best  = f_sim_cur;
 
-            it_best = it;
+            best = &state;
         }
     }
 
-    if (it_best != states.end()) {
+    if (best) {
         SRV_TRC(" - found better prompt with f_keep = %.3f, f_sim = %.3f\n", f_keep_best, f_sim_best);
+    }
 
-        {
-            auto & data = it_best->data.main;
+    return best;
+}
+
+server_prompt_cache_state server_prompt_cache::take(const server_prompt_cache_state * state) {
+    auto it = std::find_if(states.begin(), states.end(), [&](const server_prompt_cache_state & s) { return &s == state; });
+    GGML_ASSERT(it != states.end());
+
+    server_prompt_cache_state res = std::move(*it);
+    states.erase(it);
+
+    return res;
+}
+
+bool server_prompt_cache::restore(server_prompt_cache_state & state, server_prompt & prompt, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot, size_t & n_bytes) {
+    n_bytes = 0;
+
+    {
+        const auto & data = state.data.main;
+
+        const size_t size = data.size();
+        const size_t n = llama_state_seq_set_data_ext(ctx_tgt, data.data(), size, id_slot, 0);
+        if (n != size) {
+            SRV_ERR("failed to restore state with size %zu\n", size);
+
+            return false;
+        }
+
+        n_bytes += size;
+    }
+
+    {
+        const auto & data = state.data.drft;
+
+        if (!data.empty()) {
+            GGML_ASSERT(ctx_dft);
 
             const size_t size = data.size();
-            const size_t n = llama_state_seq_set_data_ext(ctx_tgt, data.data(), size, id_slot, 0);
+            const size_t n = llama_state_seq_set_data_ext(ctx_dft, data.data(), size, id_slot, 0);
             if (n != size) {
-                SRV_ERR("failed to restore state with size %zu\n", size);
+                SRV_WRN("failed to restore state with size %zu\n", size);
 
                 return false;
             }
 
-            data.clear();
-            data.shrink_to_fit();
+            n_bytes += size;
         }
-
-        {
-            auto & data = it_best->data.drft;
-
-            if (!data.empty()) {
-                GGML_ASSERT(ctx_dft);
-
-                const size_t size = data.size();
-                const size_t n = llama_state_seq_set_data_ext(ctx_dft, data.data(), size, id_slot, 0);
-                if (n != size) {
-                    SRV_WRN("failed to restore state with size %zu\n", size);
-
-                    return false;
-                }
-
-                data.clear();
-                data.shrink_to_fit();
-            }
-        }
-
-        prompt = std::move(it_best->prompt);
-
-        states.erase(it_best);
     }
 
+    prompt = std::move(state.prompt);
+    state.data = {};
+
     return true;
+}
+
+bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot, size_t & n_bytes) {
+    n_bytes = 0;
+
+    const server_prompt_cache_state * best = find(prompt, tokens_new);
+    if (best == nullptr) {
+        return true;
+    }
+
+    server_prompt_cache_state state = take(best);
+
+    return restore(state, prompt, ctx_tgt, ctx_dft, id_slot, n_bytes);
 }
 
 void server_prompt_cache::update() {

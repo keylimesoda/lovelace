@@ -65,6 +65,8 @@ VramBudget (from ggml backend memory breakdown, captured once after model load):
 ```
 request: RequestInfo
 queue_wait_ms: number              // arrival at HTTP handler -> slot launch
+wait_reason: "none" | "slot" | "kv"   // KV budget: first reason the request waited for admission (no idle slot / no KV cells)
+n_unparked_tokens: number          // tokens of a parked session restored from host memory at launch (0 = none)
 ```
 RequestInfo:
 ```
@@ -85,6 +87,8 @@ result: {
   n_prefill_tokens: number,       // prompt tokens actually computed
   n_completion_tokens: number,    // generated tokens committed
   n_ctx_used: number,             // slot sequence length at release
+  n_unparked_tokens: number,      // as in request_start
+  wait_reason: "none" | "slot" | "kv",
   error: string | null
 }
 timings_ms: {
@@ -108,6 +112,15 @@ error: { type: string, message: string }  // type e.g. "invalid_request", "excee
 queue_wait_ms: number | null
 ```
 
+### sched  (KV budget, one record per state transfer between VRAM and host memory)
+```
+action: "park" | "unpark" | "preempt" | "resume"   // park: idle session VRAM -> host; unpark: host -> VRAM at launch;
+                                                   // preempt / resume: a generating slot paused at a token boundary and resumed
+id_slot: number, id_task: number | null, n_tokens: number,
+bytes: number,                     // state bytes copied (target + draft context; 0 = no copy, e.g. resume by re-prefill)
+ms: number, gbps: number           // wall time of the copy (host allocation included) and bytes / time
+```
+
 ### throughput  (every throughput_interval_ms, only when the interval had activity; idle time is folded into the next record's interval_seconds)
 ```
 interval_seconds: number
@@ -115,7 +128,13 @@ tokens: { prefill: number, decode: number, drafted: number, accepted: number }  
 throughput_tokens_per_second: { prefill: number, decode: number }                // tokens / interval_seconds (aggregate over all slots)
 phase_tokens_per_second: { prefill: number | null, decode: number | null }       // tokens / loop seconds spent in that phase
 requests: { started: number, done: number, rejected: number }
-scheduler: { slots_total, slots_busy, slots_processing_prompt, queue_deferred }  // snapshot at emit time (drawn as points, not bands)
+scheduler: { slots_total, slots_busy, slots_processing_prompt, queue_deferred,   // snapshot at emit time (drawn as points, not bands)
+             queue_waiting, slots_preempted,                                     // KV budget: admission queue length, paused slots
+             waited_slot, waited_kv }                                            // requests that started waiting in the interval, by reason
+kv: { cells_total, cells_used, cells_reserved }   // snapshot; reserved = sum over slots of max(used, reservation) of running requests + cells of idle slots
+parking: { sessions_parked,                       // prompt cache entries (snapshot)
+           parks, unparks, preempts, resumes, park_bytes, unpark_bytes, park_seconds, unpark_seconds,
+           recompute_tokens }                     // interval deltas; recompute = tokens re-prefilled to recover a lost sequence
 loop_seconds: { prefill: number, decode: number, host: number, idle: number }    // server loop wall clock split, sums to ~interval_seconds
 batch: { decode_calls: number, mean_busy_slots: number | null }                  // llama_decode calls and mean busy slots per call
 energy: {
@@ -151,6 +170,15 @@ energy: {
 }
 scheduler: {
   slots_total, slots_busy, slots_idle, slots_processing_prompt, slots_generating, queue_deferred,
+  kv_budget: {
+    enabled: boolean, queue_waiting: number, slots_preempted: number,
+    gen_reserve: number, headroom: number, prefill_chunk_gen: number,   // --kv-budget-gen, --kv-budget-headroom, --prefill-chunk-gen
+    totals: { parks, park_drops, unparks, preempts, resumes, grows, park_bytes, unpark_bytes, park_seconds, unpark_seconds,
+              park_gbps, unpark_gbps, waited_slot, waited_kv, rollback_fallbacks, recompute_tokens, kv_overflows }
+      // park_drops: idle sessions evicted without a new host copy (already cached, or no cache room)
+      // rollback_fallbacks: truncations the memory refused, recovered from a checkpoint or by re-prefill
+      // kv_overflows: llama_decode() found no free cells despite the budget (should stay 0)
+  },
   loop: {
     window_seconds: number,        // rolling window (10 s)
     phase: "idle" | "host" | "prefill" | "decode",   // current
@@ -165,13 +193,15 @@ scheduler: {
   }
 }
 memory: {
-  kv: { cells_total: number, cells_used: number, unified: boolean, n_ctx_slot: number, cache_type_k: string, cache_type_v: string },
-      // cells_used = sum of slot sequence lengths (idle slots keep their KV until evicted)
+  kv: { cells_total: number, cells_used: number, cells_reserved: number, unified: boolean, n_ctx_slot: number, cache_type_k: string, cache_type_v: string },
+      // cells_used = sum of slot sequence lengths (idle slots keep their KV until parked or evicted)
+      // cells_reserved = cells_used plus the unused part of the reservations of running requests (KV budget)
   prompt_cache: { enabled: boolean, bytes_used: number, bytes_limit: number /* 0 = unlimited */, tokens: number, tokens_limit: number, entries: number },
   vram: VramBudget | null
 }
-slots: [{ id, state: "idle"|"started"|"processing_prompt"|"done_prompt"|"generating"|"wait_other",
-          is_processing: boolean, n_ctx: number, n_ctx_used: number, id_task: number | null,
+slots: [{ id, state: "idle"|"started"|"processing_prompt"|"done_prompt"|"generating"|"wait_other"|"preempted"|"recompute",
+          is_processing: boolean, n_ctx: number, n_ctx_used: number, n_reserved: number, id_task: number | null,
+          wait_reason: "none"|"slot"|"kv"|null, n_unparked_tokens: number,
           n_prompt_tokens: number, n_cached_tokens: number, n_prefill_tokens: number, n_decoded: number, speculative: boolean }]
 events: { jsonl_enabled: boolean, jsonl_path: string | null, subscribers: number, records_emitted: number, records_dropped: number }
 ```
@@ -183,4 +213,10 @@ llamacpp:energy_joules_total{phase="prefill|decode|idle"} counter
 llamacpp:loop_seconds_total{phase="prefill|decode|host|idle"} counter
 llamacpp:board_power_watts                              gauge (mean over last 1 s)
 llamacpp:idle_power_watts                               gauge
+llamacpp:kv_cells_total | kv_cells_used | kv_cells_reserved   gauge
+llamacpp:sched_waiting | sched_preempted | sessions_parked    gauge
+llamacpp:sched_{parks,park_drops,unparks,preempts,resumes,grows}_total              counter
+llamacpp:sched_{park,unpark}_bytes_total, sched_{park,unpark}_seconds_total         counter
+llamacpp:sched_wait_{slot,kv}_total                                                 counter
+llamacpp:sched_{rollback_fallbacks,recompute_tokens,kv_overflows}_total             counter
 ```
