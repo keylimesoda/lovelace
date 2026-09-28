@@ -216,6 +216,7 @@ struct ggml_cuda_mmq_config {
 #include "mmq-config-pascal-older.cuh"
 #include "mmq-config-pascal-dp4a.cuh"
 #include "mmq-config-ampere.cuh"
+#include "mmq-config-ada.cuh"
 #include "mmq-config-blackwell.cuh"
 
 #include "mmq-config-gcn.cuh"
@@ -253,6 +254,9 @@ static __host__ ggml_cuda_mmq_config ggml_cuda_mmq_get_config(const ggml_type ty
         }
         return ggml_cuda_mmq_get_config_blackwell(type, J, fallback);
     }
+    if (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) == GGML_CUDA_CC_ADA_LOVELACE) {
+        return ggml_cuda_mmq_get_config_ada(type, J, fallback);
+    }
     if (ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA) {
         return ggml_cuda_mmq_get_config_ampere(type, J, fallback);
     }
@@ -284,6 +288,8 @@ static constexpr __device__ ggml_cuda_mmq_config ggml_cuda_mmq_get_config(ggml_t
         return ggml_cuda_mmq_get_config_ampere(type, J, fallback);
     }
     return ggml_cuda_mmq_get_config_blackwell(type, J, fallback);
+#elif __CUDA_ARCH__ == GGML_CUDA_CC_ADA_LOVELACE
+    return ggml_cuda_mmq_get_config_ada(type, J, fallback);
 #elif __CUDA_ARCH__ >= GGML_CUDA_CC_VOLTA
     return ggml_cuda_mmq_get_config_ampere(type, J, fallback);
 #elif __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A
@@ -1446,10 +1452,12 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
 
     // For the stream-k kernel it is possible to run it with tiling by setting the number of CUDA blocks equal to the number of tiles.
     // This is worthwhile if the efficiency of tiling is high and skipping the fixup kernel is more important.
+    // Configs that target more than one resident block per SM get as many stream-k blocks as can be resident.
+    const int nblocks_sk = nsm * config.occupancy;
     const int ntiles_dst = ntx * nty * ntzw;
-    const int tiles_nwaves = (ntiles_dst + nsm - 1) / nsm;
-    const int tiles_efficiency_percent = 100 * ntiles_dst / (nsm*tiles_nwaves);
-    const dim3 block_nums_stream_k(GGML_CUDA_CC_IS_NVIDIA(cc) && tiles_efficiency_percent >= 90 ? ntiles_dst : nsm, 1, 1);
+    const int tiles_nwaves = (ntiles_dst + nblocks_sk - 1) / nblocks_sk;
+    const int tiles_efficiency_percent = 100 * ntiles_dst / (nblocks_sk*tiles_nwaves);
+    const dim3 block_nums_stream_k(GGML_CUDA_CC_IS_NVIDIA(cc) && tiles_efficiency_percent >= 90 ? ntiles_dst : nblocks_sk, 1, 1);
 
     GGML_ASSERT(ntiles_dst * blocks_per_ne00_fd.z < (1 << 30)); // Assert that variable kbc will not overflow.
 
