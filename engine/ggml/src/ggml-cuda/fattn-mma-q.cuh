@@ -10,7 +10,7 @@
 // The quantized K/V rows are copied into shared memory as they are (cp.async, multi-stage) and dequantized from there
 // directly into mma fragments, so the K/V cache is read from VRAM exactly once per step and no f16 copy is made.
 // KQ is computed with int8 mma from Q quantized to 8 bit per 32 values (like q8_1) and the raw K values,
-// VKQ with f16 mma, accumulated per K/V tile in f16 and across tiles in f32.
+// V is dequantized into an f16 tile for VKQ with f16 mma, accumulated per K/V tile in f16 and across tiles in f32.
 // Before touching K/V a block scans its mask chunk and only visits K/V tiles that some query of the tile can see:
 // with a unified KV cache shared by several sequences each tile then reads only the cells of its own sequences.
 // The partial results of the chunks are merged by flash_attn_ext_mma_q_combine with a fixed number of chunks per row.
@@ -48,6 +48,12 @@ static constexpr __host__ __device__ int fattn_mma_q_cpy_bytes(const int D, cons
 static constexpr __host__ __device__ int fattn_mma_q_stride_Q(const int D) {
     return D + 16; // int8
 }
+static constexpr __host__ __device__ int fattn_mma_q_stride_Qds(const int D) {
+    return D/QK8_1 + 1; // float2, padded to avoid bank conflicts
+}
+static constexpr __host__ __device__ int fattn_mma_q_stride_V(const int D) {
+    return D + 8; // halves
+}
 static constexpr __host__ __device__ int fattn_mma_q_stride_P() {
     return FATTN_MMA_Q_NBATCH + 8; // halves
 }
@@ -56,7 +62,8 @@ static constexpr __host__ __device__ int fattn_mma_q_stride_mask() {
 }
 static constexpr __host__ __device__ int fattn_mma_q_smem_fixed(const int D, const int ncols_tiles) {
     return 16*ncols_tiles*fattn_mma_q_stride_Q(D)        // Q, int8
-         + 16*ncols_tiles*(D/QK8_1)*8                    // Q scales and sums
+         + 16*ncols_tiles*fattn_mma_q_stride_Qds(D)*8     // Q scales and sums
+         + FATTN_MMA_Q_NBATCH*fattn_mma_q_stride_V(D)*2  // V, f16
          + 16*ncols_tiles*fattn_mma_q_stride_P()*2       // P
          + FATTN_MMA_Q_NWARPS*16*ncols_tiles*4           // cross-warp row max/sum
          + FATTN_MMA_Q_MAX_CHUNK_TILES*4 + 16;           // visible tile list + count
@@ -82,48 +89,77 @@ static __device__ __forceinline__ half2 fattn_mma_q_u8x2_to_h2(const uint32_t q)
     return *(const half2 *) &h;
 }
 
-// Dimension j of two K/V rows.
-template <ggml_type type>
-static __device__ __forceinline__ half2 fattn_mma_q_dq1x2(const uint8_t * row0, const uint8_t * row1, const int j) {
-    const int ib = j / QK8_0;
-    const int jj = j % QK8_0;
-    const uint8_t * b0 = row0 + ib*fattn_mma_q_block_bytes(type);
-    const uint8_t * b1 = row1 + ib*fattn_mma_q_block_bytes(type);
+static constexpr __host__ __device__ bool fattn_mma_q_has_m(const ggml_type type) {
+    return type == GGML_TYPE_Q4_1 || type == GGML_TYPE_Q5_1;
+}
 
-    if constexpr (type == GGML_TYPE_Q4_0) {
-        const int shift = 4*(jj / 16);
-        const uint32_t q = ((b0[2 + jj % 16] >> shift) & 0x0F) | (((b1[2 + jj % 16] >> shift) & 0x0F) << 16);
-        const half2 d = __halves2half2(*(const half *) b0, *(const half *) b1);
-        return __hmul2(__hsub2(fattn_mma_q_u8x2_to_h2(q), make_half2(1032.0f, 1032.0f)), d);
-    } else if constexpr (type == GGML_TYPE_Q4_1) {
-        const int shift = 4*(jj / 16);
-        const uint32_t q = ((b0[4 + jj % 16] >> shift) & 0x0F) | (((b1[4 + jj % 16] >> shift) & 0x0F) << 16);
-        const half2 dm0 = *(const half2 *) b0;
-        const half2 dm1 = *(const half2 *) b1;
-        return __hfma2(__hsub2(fattn_mma_q_u8x2_to_h2(q), make_half2(1024.0f, 1024.0f)), __lows2half2(dm0, dm1), __highs2half2(dm0, dm1));
-    } else if constexpr (type == GGML_TYPE_Q5_0) {
-        const int shift = 4*(jj / 16);
-        const int ih = 2 + 2*(jj / 16);
-        const uint32_t qh0 = *(const uint16_t *) (b0 + ih) >> (jj % 16);
-        const uint32_t qh1 = *(const uint16_t *) (b1 + ih) >> (jj % 16);
-        const uint32_t q = ((b0[6 + jj % 16] >> shift) & 0x0F) | ((qh0 & 1) << 4) |
-                          (((b1[6 + jj % 16] >> shift) & 0x0F) << 16) | ((qh1 & 1) << 20);
-        const half2 d = __halves2half2(*(const half *) b0, *(const half *) b1);
-        return __hmul2(__hsub2(fattn_mma_q_u8x2_to_h2(q), make_half2(1040.0f, 1040.0f)), d);
-    } else if constexpr (type == GGML_TYPE_Q5_1) {
-        const int shift = 4*(jj / 16);
-        const uint32_t qh0 = *(const uint32_t *) (b0 + 4) >> jj;
-        const uint32_t qh1 = *(const uint32_t *) (b1 + 4) >> jj;
-        const uint32_t q = ((b0[8 + jj % 16] >> shift) & 0x0F) | ((qh0 & 1) << 4) |
-                          (((b1[8 + jj % 16] >> shift) & 0x0F) << 16) | ((qh1 & 1) << 20);
-        const half2 dm0 = *(const half2 *) b0;
-        const half2 dm1 = *(const half2 *) b1;
-        return __hfma2(__hsub2(fattn_mma_q_u8x2_to_h2(q), make_half2(1024.0f, 1024.0f)), __lows2half2(dm0, dm1), __highs2half2(dm0, dm1));
+// Four nibbles/bytes of q (values < 128) -> two half2 of (1024 + value), exact.
+static __device__ __forceinline__ void fattn_mma_q_u8x4_to_h2(const uint32_t q, half2 * dst) {
+    const uint32_t lo = __byte_perm(q, 0x64646464, 0x5140);
+    const uint32_t hi = __byte_perm(q, 0x64646464, 0x5342);
+    dst[0] = *(const half2 *) &lo;
+    dst[1] = *(const half2 *) &hi;
+}
+
+// Bits 0..3 of h -> bit 4 of bytes 0..3.
+static __device__ __forceinline__ uint32_t fattn_mma_q_spread_qh(const uint32_t h) {
+    return ((h << 4) & 0x00000010) | ((h << 11) & 0x00001000) | ((h << 18) & 0x00100000) | ((h << 25) & 0x10000000);
+}
+
+// 16 values of a block as f16: dst[0..3] are the dimensions i0...i0+7, dst[4..7] the dimensions i1...i1+7,
+// i0 = 8*h and i1 = 16 + 8*h for the 4/5 bit types (nibbles of the same bytes), i0 = 16*h and i1 = 16*h + 8 for q8_0.
+template <ggml_type type>
+static __device__ __forceinline__ void fattn_mma_q_dq16(const uint8_t * b, const int h, half2 * dst) {
+    if constexpr (type == GGML_TYPE_Q8_0) {
+        const half2 d = __half2half2(*(const half *) b);
+        const uint16_t * qs = (const uint16_t *) (b + 2) + 8*h;
+#pragma unroll
+        for (int l = 0; l < 4; ++l) {
+            const uint32_t q = (qs[2*l] | (uint32_t(qs[2*l + 1]) << 16)) ^ 0x80808080;
+            half2 tmp[2];
+            fattn_mma_q_u8x4_to_h2(q, tmp);
+            dst[2*l + 0] = __hmul2(__hsub2(tmp[0], make_half2(1152.0f, 1152.0f)), d);
+            dst[2*l + 1] = __hmul2(__hsub2(tmp[1], make_half2(1152.0f, 1152.0f)), d);
+        }
     } else {
-        static_assert(type == GGML_TYPE_Q8_0, "bad type");
-        const uint32_t q = (b0[2 + jj] ^ 0x80) | ((b1[2 + jj] ^ 0x80) << 16);
-        const half2 d = __halves2half2(*(const half *) b0, *(const half *) b1);
-        return __hmul2(__hsub2(fattn_mma_q_u8x2_to_h2(q), make_half2(1152.0f, 1152.0f)), d);
+        constexpr int iqs = type == GGML_TYPE_Q4_0 ? 2 : type == GGML_TYPE_Q4_1 ? 4 : type == GGML_TYPE_Q5_0 ? 6 : 8;
+        const uint16_t * qs = (const uint16_t *) (b + iqs) + 4*h;
+        const uint32_t x0 = qs[0] | (uint32_t(qs[1]) << 16);
+        const uint32_t x1 = qs[2] | (uint32_t(qs[3]) << 16);
+        uint32_t q[4] = {x0 & 0x0F0F0F0F, x1 & 0x0F0F0F0F, (x0 >> 4) & 0x0F0F0F0F, (x1 >> 4) & 0x0F0F0F0F};
+        if constexpr (type == GGML_TYPE_Q5_0 || type == GGML_TYPE_Q5_1) {
+            const uint16_t * qh16 = (const uint16_t *) (b + (type == GGML_TYPE_Q5_0 ? 2 : 4));
+            const uint32_t qh = qh16[0] | (uint32_t(qh16[1]) << 16);
+            q[0] |= fattn_mma_q_spread_qh(qh >> (8*h +  0));
+            q[1] |= fattn_mma_q_spread_qh(qh >> (8*h +  4));
+            q[2] |= fattn_mma_q_spread_qh(qh >> (8*h + 16));
+            q[3] |= fattn_mma_q_spread_qh(qh >> (8*h + 20));
+        }
+        half2 d;
+        half2 m;
+        half2 off;
+        if constexpr (fattn_mma_q_has_m(type)) {
+            const half2 dm = *(const half2 *) b;
+            d   = __low2half2(dm);
+            m   = __high2half2(dm);
+            off = make_half2(1024.0f, 1024.0f);
+        } else {
+            d   = __half2half2(*(const half *) b);
+            m   = make_half2(0.0f, 0.0f);
+            off = type == GGML_TYPE_Q4_0 ? make_half2(1032.0f, 1032.0f) : make_half2(1040.0f, 1040.0f);
+        }
+#pragma unroll
+        for (int l = 0; l < 4; ++l) {
+            half2 tmp[2];
+            fattn_mma_q_u8x4_to_h2(q[l], tmp);
+            if constexpr (fattn_mma_q_has_m(type)) {
+                dst[2*l + 0] = __hfma2(__hsub2(tmp[0], off), d, m);
+                dst[2*l + 1] = __hfma2(__hsub2(tmp[1], off), d, m);
+            } else {
+                dst[2*l + 0] = __hmul2(__hsub2(tmp[0], off), d);
+                dst[2*l + 1] = __hmul2(__hsub2(tmp[1], off), d);
+            }
+        }
     }
 }
 
@@ -166,10 +202,6 @@ static __device__ __forceinline__ float2 fattn_mma_q_K_dm(const uint8_t * b) {
     } else {
         return make_float2(__half2float(*(const half *) b), 0.0f);
     }
-}
-
-static constexpr __host__ __device__ bool fattn_mma_q_has_m(const ggml_type type) {
-    return type == GGML_TYPE_Q4_1 || type == GGML_TYPE_Q5_1;
 }
 
 // int32 -> float for |x| < 2^22, cheaper than I2F.
@@ -230,6 +262,34 @@ static __device__ __forceinline__ void fattn_mma_q_ldmatrix_A(uint32_t * a, cons
         : "r"(addr));
 #else
     GGML_UNUSED_VARS(a, tile, stride);
+    NO_DEVICE_CODE;
+#endif // AMPERE_MMA_AVAILABLE
+}
+
+// B fragments of two 16x8 f16 tiles at tile (row-major [k][n], stride in halves): b[0..1] for n 0..7, b[2..3] for n 8..15.
+static __device__ __forceinline__ void fattn_mma_q_ldmatrix_B_trans_x4(uint32_t * b, const half * tile, const int stride) {
+#ifdef AMPERE_MMA_AVAILABLE
+    const half * p = tile + (threadIdx.x % 16)*stride + (threadIdx.x / 16)*8;
+    const uint32_t addr = __cvta_generic_to_shared(p);
+    asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0, %1, %2, %3}, [%4];"
+        : "=r"(b[0]), "=r"(b[1]), "=r"(b[2]), "=r"(b[3])
+        : "r"(addr));
+#else
+    GGML_UNUSED_VARS(b, tile, stride);
+    NO_DEVICE_CODE;
+#endif // AMPERE_MMA_AVAILABLE
+}
+
+// B fragment of one 16x8 f16 tile at tile (row-major [k][n], stride in halves).
+static __device__ __forceinline__ void fattn_mma_q_ldmatrix_B_trans_x2(uint32_t * b, const half * tile, const int stride) {
+#ifdef AMPERE_MMA_AVAILABLE
+    const half * p = tile + (threadIdx.x % 16)*stride;
+    const uint32_t addr = __cvta_generic_to_shared(p);
+    asm volatile("ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {%0, %1}, [%2];"
+        : "=r"(b[0]), "=r"(b[1])
+        : "r"(addr));
+#else
+    GGML_UNUSED_VARS(b, tile, stride);
     NO_DEVICE_CODE;
 #endif // AMPERE_MMA_AVAILABLE
 }
@@ -384,6 +444,8 @@ static __global__ void flash_attn_ext_mma_q(
     constexpr int NT        = DW/8;                 // VKQ n tiles per warp
     constexpr int stride_Q  = fattn_mma_q_stride_Q(D);
     constexpr int stride_P  = fattn_mma_q_stride_P();
+    constexpr int stride_Qds = fattn_mma_q_stride_Qds(D);
+    constexpr int stride_V  = fattn_mma_q_stride_V(D);
     constexpr int stride_M  = fattn_mma_q_stride_mask();
     static_assert(D % 64 == 0, "bad D");
 
@@ -414,7 +476,8 @@ static __global__ void flash_attn_ext_mma_q(
     extern __shared__ __align__(16) uint8_t fattn_mma_q_smem[];
     int8_t  * tile_Q    = (int8_t *) fattn_mma_q_smem;
     float2  * tile_Qds  = (float2 *) (tile_Q + nrows*stride_Q);
-    half    * tile_P    = (half *) (tile_Qds + nrows*(D/QK8_1));
+    half    * tile_V    = (half *) (tile_Qds + nrows*stride_Qds);
+    half    * tile_P    = tile_V + FATTN_MMA_Q_NBATCH*stride_V;
     float   * red       = (float *) (tile_P + nrows*stride_P);
     int     * tile_list = (int *) (red + FATTN_MMA_Q_NWARPS*nrows);
     int     * tile_num  = tile_list + FATTN_MMA_Q_MAX_CHUNK_TILES;
@@ -514,7 +577,7 @@ static __global__ void flash_attn_ext_mma_q(
         sum += __shfl_xor_sync(0xFFFFFFFF >> (WARP_SIZE - D/8), sum, 2);
         *(uint2 *) (tile_Q + r*stride_Q + 8*lane) = make_uint2(qi[0], qi[1]);
         if (lane % 4 == 0) {
-            tile_Qds[r*(D/QK8_1) + lane/4] = make_float2(d, d*sum);
+            tile_Qds[r*stride_Qds + lane/4] = make_float2(d, d*sum);
         }
     }
 
@@ -581,8 +644,8 @@ static __global__ void flash_attn_ext_mma_q(
                     fattn_mma_q_ldmatrix_A(a, (const half *) (tile_Q + 16*m*stride_Q + ib*QK8_0), stride_Q/2);
                     int acc[4] = {0, 0, 0, 0};
                     fattn_mma_q_mma_i8(acc, a, b0, b1);
-                    const float2 ds0 = tile_Qds[(16*m + lr    )*(D/QK8_1) + ib];
-                    const float2 ds1 = tile_Qds[(16*m + lr + 8)*(D/QK8_1) + ib];
+                    const float2 ds0 = tile_Qds[(16*m + lr    )*stride_Qds + ib];
+                    const float2 ds1 = tile_Qds[(16*m + lr + 8)*stride_Qds + ib];
                     KQ[m][0] += dm0.x*ds0.x * fattn_mma_q_i2f(acc[0]);
                     KQ[m][1] += dm1.x*ds0.x * fattn_mma_q_i2f(acc[1]);
                     KQ[m][2] += dm0.x*ds1.x * fattn_mma_q_i2f(acc[2]);
@@ -623,7 +686,8 @@ static __global__ void flash_attn_ext_mma_q(
             }
         }
 
-        __syncthreads(); // tile maxima are in shared memory, K and mask of this stage are no longer needed
+        fattn_mma_q_cp_async_wait<2*nstages - 2>();
+        __syncthreads(); // tile maxima and V are in shared memory, K and mask of this stage are no longer needed
 
         if (it + nstages < nvis) {
             const int k0_next = tile_list[it + nstages]*FATTN_MMA_Q_NBATCH;
@@ -633,6 +697,25 @@ static __global__ void flash_attn_ext_mma_q(
             }
         }
         fattn_mma_q_cp_async_commit();
+
+        // Dequantize V:
+        {
+            constexpr int bs = fattn_mma_q_block_bytes(type);
+            const uint8_t * V_s = stage_V(s);
+#pragma unroll
+            for (int i0 = 0; i0 < FATTN_MMA_Q_NBATCH*(D/16); i0 += FATTN_MMA_Q_NTHREADS) {
+                const int i    = i0 + tid;
+                const int cell = i / (D/16);
+                const int ib   = (i % (D/16)) / 2;
+                const int h    = i % 2;
+                half2 v[8];
+                fattn_mma_q_dq16<type>(V_s + cell*row_bytes + ib*bs, h, v);
+                const int i0v = type == GGML_TYPE_Q8_0 ? 16*h : 8*h;
+                const int i1v = type == GGML_TYPE_Q8_0 ? 16*h + 8 : 16 + 8*h;
+                ggml_cuda_memcpy_1<16>(tile_V + cell*stride_V + ib*QK8_0 + i0v, v + 0);
+                ggml_cuda_memcpy_1<16>(tile_V + cell*stride_V + ib*QK8_0 + i1v, v + 4);
+            }
+        }
 
         // Softmax, P is written to shared memory as f16:
 #pragma unroll
@@ -661,7 +744,6 @@ static __global__ void flash_attn_ext_mma_q(
             }
         }
 
-        fattn_mma_q_cp_async_wait<2*nstages - 1>();
         __syncthreads(); // P and V of this tile are in shared memory
 
         // VKQ, each warp does DW columns:
@@ -675,20 +757,22 @@ static __global__ void flash_attn_ext_mma_q(
                     VKQ_h[m][j][1] = 0;
                 }
             }
-            const uint8_t * V_s = stage_V(s);
 #pragma unroll
             for (int k = 0; k < FATTN_MMA_Q_NBATCH; k += 16) {
-                const uint8_t * V_r0 = V_s + (k + 2*lq    )*row_bytes;
-                const uint8_t * V_r1 = V_s + (k + 2*lq + 1)*row_bytes;
-                const uint8_t * V_r8 = V_s + (k + 2*lq + 8)*row_bytes;
-                const uint8_t * V_r9 = V_s + (k + 2*lq + 9)*row_bytes;
                 uint32_t b0[NT];
                 uint32_t b1[NT];
 #pragma unroll
-                for (int j = 0; j < NT; ++j) {
-                    const int dim = warp*DW + 8*j + lr;
-                    b0[j] = fattn_mma_q_h2_as_u32(fattn_mma_q_dq1x2<type>(V_r0, V_r1, dim));
-                    b1[j] = fattn_mma_q_h2_as_u32(fattn_mma_q_dq1x2<type>(V_r8, V_r9, dim));
+                for (int j = 0; j < NT; j += 2) {
+                    uint32_t b[4];
+                    if (j + 1 < NT) {
+                        fattn_mma_q_ldmatrix_B_trans_x4(b, tile_V + k*stride_V + warp*DW + 8*j, stride_V);
+                        b0[j + 1] = b[2];
+                        b1[j + 1] = b[3];
+                    } else {
+                        fattn_mma_q_ldmatrix_B_trans_x2(b, tile_V + k*stride_V + warp*DW + 8*j, stride_V);
+                    }
+                    b0[j] = b[0];
+                    b1[j] = b[1];
                 }
 #pragma unroll
                 for (int m = 0; m < ncols_tiles; ++m) {
@@ -714,7 +798,7 @@ static __global__ void flash_attn_ext_mma_q(
             }
         }
 
-        __syncthreads(); // V and P of this stage are no longer needed
+        __syncthreads(); // V and P are no longer needed
 
         if (it + nstages < nvis) {
             fattn_mma_q_load_KV<D, type>(stage_V(s), V_h, nb21, tile_list[it + nstages]*FATTN_MMA_Q_NBATCH, ne11);
