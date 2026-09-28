@@ -11241,6 +11241,17 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 24576, 24, true, false, 0, 0, GGML_PREC_F32, type_KV, type_KV,
             {0, 1, 2, 3}, true, false, 0, 6));
     }
+    // mixed K/V types, e.g. q8_0 K with 4/5 bit V
+    for (std::pair<ggml_type, ggml_type> types_KV : std::vector<std::pair<ggml_type, ggml_type>>{
+            {GGML_TYPE_Q8_0, GGML_TYPE_Q4_0}, {GGML_TYPE_Q8_0, GGML_TYPE_Q4_1}, {GGML_TYPE_Q8_0, GGML_TYPE_Q5_0},
+            {GGML_TYPE_Q4_0, GGML_TYPE_Q8_0}, {GGML_TYPE_Q5_1, GGML_TYPE_Q4_1}}) {
+        for (int64_t nb : {1, 4, 13}) {
+            test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 1000, nb, true, false, 0, 0, GGML_PREC_F32, types_KV.first, types_KV.second));
+        }
+        test_cases.emplace_back(new test_flash_attn_ext(64, 64, 4, {4, 1}, 512, 3, true, true, 0, 0, GGML_PREC_F32, types_KV.first, types_KV.second));
+        test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 24576, 24, true, false, 0, 0, GGML_PREC_F32, types_KV.first, types_KV.second,
+            {0, 1, 2, 3}, true, false, 0, 6));
+    }
 
     // MLA shape: the V cache is a sub-view of the K cache, with quantized KV
     test_cases.emplace_back(new test_flash_attn_ext(576, 512, 1, {8, 1},  113,   1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, {0, 1, 2, 3}, true, true));
@@ -11782,7 +11793,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     test_cases.emplace_back(new test_flash_attn_ext(64, 64, 8, {8, 1}, 7680, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
 
     // Qwen3.8-27B decode and speculative verify: 24 q heads over 4 KV heads, head size 256, unified KV cache of n_seq sequences
-    for (ggml_type type_KV : {GGML_TYPE_F16, GGML_TYPE_Q8_0, GGML_TYPE_Q4_0}) {
+    for (std::pair<ggml_type, ggml_type> types_KV : std::vector<std::pair<ggml_type, ggml_type>>{
+            {GGML_TYPE_F16, GGML_TYPE_F16}, {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0}, {GGML_TYPE_Q4_0, GGML_TYPE_Q4_0},
+            {GGML_TYPE_Q8_0, GGML_TYPE_Q4_0}, {GGML_TYPE_Q8_0, GGML_TYPE_Q5_0}}) {
         for (int64_t kv : {16384, 65536, 196608}) {
             for (int64_t n_seq : {1, 3, 6}) {
                 if (kv*n_seq > 600000) {
@@ -11790,7 +11803,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
                 }
                 for (int64_t n_q : {1, 4, 8}) {
                     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, kv*n_seq, n_q*n_seq, true, false, 0, 0, GGML_PREC_F32,
-                        type_KV, type_KV, {0, 1, 2, 3}, true, false, 0, n_seq));
+                        types_KV.first, types_KV.second, {0, 1, 2, 3}, true, false, 0, n_seq));
                 }
             }
         }
