@@ -12,11 +12,7 @@ The current `docs/quality-kld.md` results use sparse top-64 KL over recorded age
 
 ## Quick start
 
-The serving image expects the built engine at `engine/build-sm89/bin`, the dashboard at `apps/web/dist`, and the base image `lovelace-engine-runtime:cuda13.1`. Models are mounted from `~/models`; they are not included in the image. Prepare the persistent data directories once:
-
-```sh
-sudo install -d -o 1000 -g 1000 /var/log/lovelace /var/lib/lovelace
-```
+The serving image expects the built engine at `engine/build-sm89/bin`, the dashboard at `apps/web/dist`, and the base image `lovelace-engine-runtime:cuda13.1`. Models are mounted from `~/models`; they are not included in the image. Request logs and proxy captures go to `~/.local/state/lovelace` (override with `LOVELACE_STATE`).
 
 Build the engine, dashboard and serving image, then start a profile:
 

@@ -15,8 +15,7 @@ Usage:
 
 CTX overrides the profile context. Defaults: balanced/quality 327680, vision 262144.
 
-One-time data-directory setup (run these commands yourself):
-  sudo install -d -o 1000 -g 1000 /var/log/lovelace /var/lib/lovelace
+Host state lives in ${LOVELACE_STATE:-~/.local/state/lovelace} (log/: request log, lib/captures/: proxy captures).
 USAGE
 }
 
@@ -52,13 +51,8 @@ start_service() {
     file="$ROOT/deploy/profiles/$profile.args"
     [[ -f $file ]] || fail "profile file not found: $file"
 
-    if [[ ! -d /var/log/lovelace || ! -d /var/lib/lovelace ]] \
-        || [[ $(stat -c '%u:%g' /var/log/lovelace 2>/dev/null || true) != 1000:1000 ]] \
-        || [[ $(stat -c '%u:%g' /var/lib/lovelace 2>/dev/null || true) != 1000:1000 ]]; then
-        printf 'Create the required directories with the following one-time commands, then retry:\n' >&2
-        printf '  sudo install -d -o 1000 -g 1000 /var/log/lovelace /var/lib/lovelace\n' >&2
-        fail '/var/log/lovelace and /var/lib/lovelace must be owned by uid 1000'
-    fi
+    local state=${LOVELACE_STATE:-$HOME/.local/state/lovelace}
+    mkdir -p "$state/log" "$state/lib/captures"
     [[ -d ${HOME:?}/models ]] || fail "models directory not found: $HOME/models"
     docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image not found: $IMAGE (build it first)"
 
@@ -80,11 +74,11 @@ start_service() {
     docker run --detach --init --name lovelace --label com.lovelace.managed=serve \
         --restart unless-stopped --gpus all --network host --user 1000:1000 \
         --mount "type=bind,src=$HOME/models,dst=/models,readonly" \
-        --mount type=bind,src=/var/log/lovelace,dst=/var/log/lovelace \
+        --mount "type=bind,src=$state/log,dst=/var/log/lovelace" \
         "$IMAGE" /opt/lovelace/bin/llama-server "${args[@]}"
     if ! docker run --detach --init --name lovelace-proxy --label com.lovelace.managed=serve \
         --restart unless-stopped --network host --user 1000:1000 \
-        --mount type=bind,src=/var/lib/lovelace,dst=/var/lib/lovelace \
+        --mount "type=bind,src=$state/lib,dst=/var/lib/lovelace" \
         "$IMAGE" python3 /opt/lovelace/proxy/capture_proxy.py \
         --listen 127.0.0.1:8080 --upstream http://127.0.0.1:8090 --out /var/lib/lovelace/captures; then
         docker stop lovelace >/dev/null 2>&1 || true

@@ -15,7 +15,7 @@ services:
         target: /models
         read_only: true
       - type: bind
-        source: /var/log/lovelace
+        source: ${HOME}/.local/state/lovelace/log
         target: /var/log/lovelace
     command:
       - /opt/lovelace/bin/llama-server
@@ -82,7 +82,7 @@ services:
       - lovelace
     volumes:
       - type: bind
-        source: /var/lib/lovelace
+        source: ${HOME}/.local/state/lovelace/lib
         target: /var/lib/lovelace
     command:
       - python3
