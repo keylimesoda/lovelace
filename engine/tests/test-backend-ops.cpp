@@ -11795,7 +11795,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     // Qwen3.8-27B decode and speculative verify: 24 q heads over 4 KV heads, head size 256, unified KV cache of n_seq sequences
     for (std::pair<ggml_type, ggml_type> types_KV : std::vector<std::pair<ggml_type, ggml_type>>{
             {GGML_TYPE_F16, GGML_TYPE_F16}, {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0}, {GGML_TYPE_Q4_0, GGML_TYPE_Q4_0},
-            {GGML_TYPE_Q8_0, GGML_TYPE_Q4_0}, {GGML_TYPE_Q8_0, GGML_TYPE_Q5_0}}) {
+            {GGML_TYPE_Q5_0, GGML_TYPE_Q5_0}, {GGML_TYPE_Q8_0, GGML_TYPE_Q4_0}, {GGML_TYPE_Q8_0, GGML_TYPE_Q5_0}}) {
         for (int64_t kv : {16384, 65536, 196608}) {
             for (int64_t n_seq : {1, 3, 6}) {
                 if (kv*n_seq > 600000) {
