@@ -61,7 +61,8 @@ step() { # base|compare out model buckets kv-type label [base-file]
         return
     fi
     local t0=$SECONDS
-    "${KLD[@]}" "${args[@]}" 2>&1 | tee "$out.log"
+    # one GPU-mutex hold per step, so other GPU jobs interleave between steps
+    "$(dirname "$0")/../../deploy/gpu-lock.sh" "${KLD[@]}" "${args[@]}" 2>&1 | tee "$out.log"
     mv "$out.part" "$out"
     echo "  $label: $(((SECONDS - t0) / 60)) min"
     echo
@@ -70,22 +71,19 @@ step() { # base|compare out model buckets kv-type label [base-file]
 [[ -x build/lovelace-kld ]] || { echo "build/lovelace-kld missing: build it first (README)"; exit 1; }
 if [[ $DRY_RUN != 1 ]]; then
     used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -n1)
-    if ((used > 1024)) && [[ ${FORCE:-0} != 1 ]]; then
-        echo "GPU has ${used} MiB in use; stop the other workload first (or FORCE=1)"
-        exit 1
-    fi
+    echo "note: ${used} MiB in use at start; each step waits for the GPU mutex (deploy/gpu-lock.sh)"
 fi
 mkdir -p results
-
-echo "== (1) weight quantization, buckets $SHORT"
-step base results/wq-base-q8_0-f16.bin "$REF" "$SHORT" f16 wq-base-q8_0-f16
-step compare results/wq-iq4xs-f16.json "$IQ4" "$SHORT" f16 wq-iq4xs-f16 results/wq-base-q8_0-f16.bin
 
 echo "== (2) KV quantization, buckets $ALL"
 step base results/kv-base-iq4xs-f16.bin "$IQ4" "$ALL" f16 kv-base-iq4xs-f16
 for t in "${KV_CANDIDATES[@]}"; do
     step compare "results/kv-iq4xs-$t.json" "$IQ4" "$ALL" "$t" "kv-iq4xs-$t" results/kv-base-iq4xs-f16.bin
 done
+
+echo "== (1) weight quantization, buckets $SHORT"
+step base results/wq-base-q8_0-f16.bin "$REF" "$SHORT" f16 wq-base-q8_0-f16
+step compare results/wq-iq4xs-f16.json "$IQ4" "$SHORT" f16 wq-iq4xs-f16 results/wq-base-q8_0-f16.bin
 
 [[ $DRY_RUN == 1 ]] && exit 0
 results=(results/wq-iq4xs-f16.json)
