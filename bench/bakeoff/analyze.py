@@ -29,6 +29,8 @@ def gpu_stats(path: Path):
 
 
 def summarize(run_dir: Path, warmup: float):
+    if (run_dir / "warmup_s").exists():
+        warmup = float((run_dir / "warmup_s").read_text())
     reqs_path = run_dir / "requests.jsonl"
     if not reqs_path.exists():
         return None

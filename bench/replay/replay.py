@@ -50,6 +50,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="'recorded' (max_tokens = recorded output tokens, clamped to [64, 4096]) or 'fixed:N'",
     )
     ap.add_argument("--start-turn-min-depth", type=int, default=0, help="skip leading turns shallower than this")
+    ap.add_argument("--max-depth", type=int, default=0,
+                    help="end a session once its next turn is deeper than this (0 = no cap); keeps N*depth under KV capacity")
     ap.add_argument("--temperature", type=float, default=0.6)
     ap.add_argument("--reasoning-effort", default=None, help="passed through as reasoning_effort")
     ap.add_argument("--extra-body", default=None, help="JSON object merged into every request body")
@@ -287,6 +289,8 @@ async def agent(run: Run, idx: int) -> None:
         try:
             started = False
             for turn in iter_turns(a.corpus / sess["file"]):
+                if a.max_depth and depth_of(turn) > a.max_depth:
+                    break
                 if not started:
                     if depth_of(turn) < a.start_turn_min_depth:
                         continue
