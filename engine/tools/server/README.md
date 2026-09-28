@@ -166,6 +166,11 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `-cms, --checkpoint-min-step N` | minimum spacing between context checkpoints in tokens (default: 8192, 0 = no minimum)<br/>(env: LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT) |
 | `--ctx-checkpoints-recent N` | context checkpoints at the start of each of the last N messages of a prompt, regardless of --checkpoint-min-step, so that a client rewriting recent history (reasoning stripping, tool-result folding) resumes from the message below the edit; kept in preference to older checkpoints (default: 3, 0 = off)<br/>(env: LLAMA_ARG_CTX_CHECKPOINTS_RECENT) |
 | `-cram, --cache-ram N` | set the maximum cache size in MiB (default: 8192, -1 - no limit, 0 - disable)[(more info)](https://github.com/ggml-org/llama.cpp/pull/16391)<br/>(env: LLAMA_ARG_CACHE_RAM) |
+| `--session-ram MiB` | pinned host RAM reserved for session mirrors (default: 0, disables the session store)<br/>(env: LLAMA_ARG_SESSION_RAM) |
+| `--session-dir PATH` | durable NVMe directory for session mirrors (default: `~/.local/state/lovelace/sessions`; `~` expands to `$HOME`)<br/>(env: LLAMA_ARG_SESSION_DIR) |
+| `--session-disk-max GiB` | maximum bytes used by the NVMe tier (default: 0, unlimited; when exceeded, least-recently-used disk sessions are deleted and logged)<br/>(env: LLAMA_ARG_SESSION_DISK_MAX) |
+| `--session-ttl SEC` | delete sessions inactive for this many seconds (default: 86400; 0 disables TTL expiry)<br/>(env: LLAMA_ARG_SESSION_TTL) |
+| `--shared-prefix on|off` | pin the common prefix shared by sessions in VRAM (default: on)<br/>(env: LLAMA_ARG_SHARED_PREFIX) |
 | `-kvu, --kv-unified, -no-kvu, --no-kv-unified` | use single unified KV buffer shared across all sequences (default: enabled if number of slots is auto)<br/>(env: LLAMA_ARG_KV_UNIFIED) |
 | `--cache-idle-slots, --no-cache-idle-slots` | save idle slots to the prompt cache on new task, and clear them when using unified KV (default: enabled, requires cache-ram; superseded by `--kv-budget`, which parks idle slots on demand)<br/>(env: LLAMA_ARG_CACHE_IDLE_SLOTS) |
 | `--kv-budget, --no-kv-budget` | with --kv-unified: admit a task only when its KV reservation fits, park idle slots to the prompt cache to make room and queue tasks FIFO instead of failing on a full cache (default: enabled)<br/>(env: LLAMA_ARG_KV_BUDGET) |

@@ -17,6 +17,9 @@ services:
       - type: bind
         source: ${HOME}/.local/state/lovelace/log
         target: /var/log/lovelace
+      - type: bind
+        source: ${HOME}/.local/state/lovelace/lib
+        target: /var/lib/lovelace
     command:
       - /opt/lovelace/bin/llama-server
       - -m
@@ -49,7 +52,13 @@ services:
       - --jinja
       - --reasoning-preserve
       - --cache-ram
-      - "32768"
+      - "0"
+      - --session-ram
+      - "30720"
+      - --session-dir
+      - /var/lib/lovelace/sessions
+      - --shared-prefix
+      - "on"
       - -ctxcp
       - "8"
       - --kv-budget

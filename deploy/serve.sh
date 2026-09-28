@@ -52,7 +52,7 @@ start_service() {
     [[ -f $file ]] || fail "profile file not found: $file"
 
     local state=${LOVELACE_STATE:-$HOME/.local/state/lovelace}
-    mkdir -p "$state/log" "$state/lib/captures"
+    mkdir -p "$state/log" "$state/lib/captures" "$state/lib/sessions"
     [[ -d ${HOME:?}/models ]] || fail "models directory not found: $HOME/models"
     docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image not found: $IMAGE (build it first)"
 
@@ -75,6 +75,7 @@ start_service() {
         --restart unless-stopped --gpus all --network host --user 1000:1000 \
         --mount "type=bind,src=$HOME/models,dst=/models,readonly" \
         --mount "type=bind,src=$state/log,dst=/var/log/lovelace" \
+        --mount "type=bind,src=$state/lib,dst=/var/lib/lovelace" \
         "$IMAGE" /opt/lovelace/bin/llama-server "${args[@]}"
     if ! docker run --detach --init --name lovelace-proxy --label com.lovelace.managed=serve \
         --restart unless-stopped --network host --user 1000:1000 \

@@ -1730,6 +1730,53 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CACHE_RAM").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
+        {"--session-ram"}, "MiB",
+        string_format("pinned host memory reserved for the session store (default: %d MiB, 0 = disabled)", params.session_ram_mib),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("session-ram must be non-negative");
+            }
+            params.session_ram_mib = value;
+        }
+    ).set_env("LLAMA_ARG_SESSION_RAM").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--session-dir"}, "PATH",
+        string_format("directory for durable session snapshots (default: %s)", params.session_dir.c_str()),
+        [](common_params & params, const std::string & value) {
+            params.session_dir = value;
+        }
+    ).set_env("LLAMA_ARG_SESSION_DIR").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--session-disk-max"}, "GiB",
+        string_format("maximum session-store disk usage in GiB (default: %d, 0 = unlimited)", params.session_disk_max_gib),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("session-disk-max must be non-negative");
+            }
+            params.session_disk_max_gib = value;
+        }
+    ).set_env("LLAMA_ARG_SESSION_DISK_MAX").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--session-ttl"}, "SEC",
+        string_format("remove inactive sessions after this many seconds (default: %d, 0 = disabled)", params.session_ttl_sec),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("session-ttl must be non-negative");
+            }
+            params.session_ttl_sec = value;
+        }
+    ).set_env("LLAMA_ARG_SESSION_TTL").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--shared-prefix"}, "on|off",
+        string_format("keep the common session prefix shared in VRAM (default: %s)", params.shared_prefix ? "on" : "off"),
+        [](common_params & params, const std::string & value) {
+            if (value != "on" && value != "off") {
+                throw std::invalid_argument("shared-prefix must be 'on' or 'off'");
+            }
+            params.shared_prefix = value == "on";
+        }
+    ).set_env("LLAMA_ARG_SHARED_PREFIX").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"-kvu", "--kv-unified"},
         {"-no-kvu", "--no-kv-unified"},
         "use single unified KV buffer shared across all sequences (default: enabled if number of slots is auto)",
