@@ -136,6 +136,9 @@ struct task_result_state {
 struct server_task {
     int id = -1; // to be filled by server_queue
 
+    // arrival at the HTTP handler (ggml_time_us), 0 if unknown; used by the request log
+    int64_t t_arrival_us = 0;
+
     // TODO @ngxson : remove this field and implement a mapping task_id -> idx in the response_reader
     size_t index = 0; // used when there are multiple prompts (batch request)
 
@@ -171,6 +174,7 @@ struct server_task {
 
     // used by SERVER_TASK_TYPE_METRICS
     bool metrics_reset_bucket = false;
+    bool metrics_telemetry    = false; // also fill server_task_result_metrics::telemetry (GET /telemetry)
 
     // used by SERVER_TASK_TYPE_SET_LORA
     std::map<int, float> set_lora; // mapping adapter ID -> scale
@@ -234,6 +238,7 @@ struct server_task {
         copy.type      = type;
         copy.tokens    = tokens.clone();
         copy.id_slot   = -1; // child tasks cannot specify slot
+        copy.t_arrival_us = t_arrival_us;
 
         // use different sampling seed for each child
         // note: https://github.com/ggml-org/llama.cpp/pull/18700#discussion_r2675115723
@@ -496,6 +501,9 @@ struct server_task_result_metrics : server_task_result {
     int n_tasks_deferred = 0;
 
     server_metrics metrics;
+
+    // the server loop's view for GET /telemetry, only set when requested
+    json telemetry;
 
     virtual json to_json() override;
 

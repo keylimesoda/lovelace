@@ -673,6 +673,10 @@ struct common_params {
     bool endpoint_props   = false; // only control POST requests, not GET
     bool endpoint_metrics = false;
 
+    // observability: GET /telemetry, GET /events, board energy (implied by request_log_jsonl)
+    bool        telemetry = false;
+    std::string request_log_jsonl; // one JSON record per request lifecycle event, empty = disabled
+
     // enable built-in tools
     std::vector<std::string> server_tools;
     std::string server_tools_runtime;

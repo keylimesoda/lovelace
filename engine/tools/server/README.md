@@ -192,7 +192,7 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--host HOST` | IP addresses to listen on, comma-separated, or UNIX socket paths ending in .sock; with multiple TCP addresses, :: binds IPv6 only; overlapping addresses result in undefined behavior (default: 127.0.0.1)<br/>(env: LLAMA_ARG_HOST) |
 | `--port PORT` | port to listen (default: 8080)<br/>(env: LLAMA_ARG_PORT) |
 | `--reuse-port` | allow multiple sockets to bind to the same port (default: disabled)<br/>(env: LLAMA_ARG_REUSE_PORT) |
-| `--path PATH` | path to serve static files from (default: )<br/>(env: LLAMA_ARG_STATIC_PATH) |
+| `--path, --web-dir PATH` | path to serve static files from, e.g. the observability dashboard build apps/web/dist (default: )<br/>(env: LLAMA_ARG_STATIC_PATH) |
 | `--cors-origins ORIGINS` | comma-separated list of allowed origins for CORS (default: *)<br/>if set to special value 'localhost', reflect the Origin header only if it is localhost<br/>(env: LLAMA_ARG_CORS_ORIGINS) |
 | `--cors-methods METHODS` | comma-separated list of allowed methods for CORS (default: GET, POST, DELETE, OPTIONS)<br/>(env: LLAMA_ARG_CORS_METHODS) |
 | `--cors-headers HEADERS` | comma-separated list of allowed headers for CORS (default: *)<br/>(env: LLAMA_ARG_CORS_HEADERS) |
@@ -220,6 +220,8 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--cache-prompt, --no-cache-prompt` | whether to enable prompt caching (default: enabled)<br/>(env: LLAMA_ARG_CACHE_PROMPT) |
 | `--cache-reuse N` | min chunk size to attempt reusing from the cache via KV shifting, requires prompt caching to be enabled (default: 0)<br/>[(card)](https://ggml.ai/f0.png)<br/>(env: LLAMA_ARG_CACHE_REUSE) |
 | `--metrics` | enable prometheus compatible metrics endpoint (default: disabled)<br/>(env: LLAMA_ARG_ENDPOINT_METRICS) |
+| `--telemetry, --no-telemetry` | enable GET /telemetry, the GET /events record stream and board energy accounting (default: disabled)<br/>(env: LLAMA_ARG_TELEMETRY) |
+| `--request-log-jsonl PATH` | append one JSON record per request lifecycle event (start, done, rejected) plus periodic throughput records to PATH; implies --telemetry (default: disabled)<br/>(env: LLAMA_ARG_REQUEST_LOG_JSONL) |
 | `--props` | enable changing global properties via POST /props (default: disabled)<br/>(env: LLAMA_ARG_ENDPOINT_PROPS) |
 | `--slots, --no-slots` | expose slots monitoring endpoint (default: enabled)<br/>(env: LLAMA_ARG_ENDPOINT_SLOTS) |
 | `--slot-save-path PATH` | path to save slot kv cache (default: disabled) |
@@ -1195,6 +1197,16 @@ In *router mode* the query param `?model={model_id}` has to be set. This endpoin
     "n_erased": 1745
 }
 ```
+
+### GET `/telemetry`: Live engine, scheduler, memory and GPU board snapshot
+
+Only available with `--telemetry` or `--request-log-jsonl`. Returns one complete JSON snapshot: GPU board sensors read through NVML (loaded at runtime from `libnvidia-ml.so.1`, reported as `"available": false` when missing), board energy attributed to prefill / decode / idle, slot and queue occupancy, the server loop's wall-clock split over a rolling 10 s window, KV cells and prompt-cache usage against `--cache-ram`, per-slot occupancy, and the VRAM budget. With `--metrics`, `/metrics` also exports `llamacpp:loop_seconds_total`, `llamacpp:energy_joules_total`, `llamacpp:board_energy_joules_total`, `llamacpp:board_power_watts` and `llamacpp:idle_power_watts`.
+
+### GET `/events`: Request log record stream (SSE)
+
+Only available with `--telemetry` or `--request-log-jsonl`. Streams the records `--request-log-jsonl` writes (`server_start`, `request_start`, `request_done`, `request_rejected`, `throughput`), one per `data:` line, byte-identical to the file. A new subscriber first receives the retained `server_start` record and a bounded backlog of recent records. Slow subscribers drop their oldest records instead of slowing the server down.
+
+The payload schema of both endpoints is documented in `docs/observability.md` of the lovelace repository.
 
 ### GET `/lora-adapters`: Get list of all LoRA adapters
 

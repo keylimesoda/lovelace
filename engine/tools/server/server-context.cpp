@@ -5,11 +5,13 @@
 #include "server-task.h"
 #include "server-queue.h"
 #include "server-schema.h"
+#include "server-observe.h"
 #include "server-stream.h"
 
 #include "build-info.h"
 #include "common.h"
 #include "fit.h"
+#include "../../src/llama-ext.h" // llama_get_memory_breakdown(), read-only use for the VRAM budget
 #include "llama.h"
 #include "log.h"
 #include "sampling.h"
@@ -296,6 +298,12 @@ struct server_slot {
 
     server_prompt prompt;
 
+    // observability (see server-observe.h), mutable so that send_error(const server_slot &) can tag the slot
+    int64_t                        obs_t_launch_us = 0;
+    server_obs_energy_mark         obs_energy0;
+    mutable const char *           obs_error_type  = nullptr;
+    mutable std::string            obs_error_msg;
+
     bool prompt_save(server_prompt_cache & prompt_cache) const {
         if (prompt.tokens.size() == 0) {
             return false;
@@ -393,6 +401,9 @@ struct server_slot {
 
         // note: callback_on_reset() must have run before this, see release()
         stats = {};
+        obs_t_launch_us = 0;
+        obs_error_type  = nullptr;
+        obs_error_msg.clear();
         n_accepted_per_pos.clear();
 
         n_predict_max = -1;
@@ -858,6 +869,10 @@ public:
     server_queue    queue_tasks;
     server_response queue_results;
 
+    // observability, null unless --telemetry or --request-log-jsonl
+    std::unique_ptr<server_observer> obs;
+    json obs_vram; // VRAM budget, captured once after the model is loaded
+
     // note: chat_params must not be refreshed upon existing sleeping state
     server_chat_params chat_params;
 
@@ -1319,6 +1334,7 @@ private:
                 if (slot.stats.n_gen > 0) {
                     metrics_on_prediction(slot);
                 }
+                obs_on_slot_reset(slot);
             };
 
             slot.reset();
@@ -1525,7 +1541,7 @@ private:
             }
         }
 
-        return true;
+        return obs_init();
     }
 
     server_slot * get_slot_by_id(int id_slot) {
@@ -1834,6 +1850,8 @@ private:
             ? SLOT_STATE_WAIT_OTHER // wait for the parent to process prompt
             : SLOT_STATE_STARTED;
 
+        obs_on_launch(slot);
+
         // reset server kill-switch counter
         n_empty_consecutive = 0;
 
@@ -2030,10 +2048,15 @@ private:
     }
 
     void send_error(const server_task & task, const std::string & error, const enum error_type type = ERROR_TYPE_SERVER) {
+        obs_on_reject(task, error, type);
         send_error(task.id, error, type);
     }
 
     void send_error(const server_slot & slot, const std::string & error, const enum error_type type = ERROR_TYPE_SERVER) {
+        if (slot.obs_error_type == nullptr) {
+            slot.obs_error_type = obs_error_name(type);
+            slot.obs_error_msg  = error;
+        }
         send_error(slot.task->id, error, type, slot.task->n_tokens(), slot.n_ctx);
     }
 
@@ -2390,6 +2413,10 @@ private:
             return false;
         }
 
+        if (obs && !is_yielding) {
+            obs->clock.mark(SERVER_OBS_PHASE_HOST);
+        }
+
         switch (task.type) {
             case SERVER_TASK_TYPE_COMPLETION:
             case SERVER_TASK_TYPE_INFILL:
@@ -2525,6 +2552,9 @@ private:
                     res->n_processing_slots  = n_processing_slots;
                     res->n_tasks_deferred    = queue_tasks.queue_tasks_deferred_size();
                     res->metrics             = metrics;
+                    if (task.metrics_telemetry) {
+                        res->telemetry = obs_telemetry_json();
+                    }
 
                     if (task.metrics_reset_bucket) {
                         metrics.reset_bucket();
@@ -2831,10 +2861,18 @@ private:
 
                 metrics_flush_idle();
 
+                if (obs) {
+                    obs_on_idle();
+                }
+
                 return; // skip further processing
 
             } else {
                 SRV_DBG("%s", "posting NEXT_RESPONSE\n");
+
+                if (obs) {
+                    obs->clock.mark(SERVER_OBS_PHASE_HOST);
+                }
 
                 server_task task(SERVER_TASK_TYPE_NEXT_RESPONSE);
                 task.id = queue_tasks.get_new_id();
@@ -3053,9 +3091,15 @@ private:
 
         // generate the actual drafts (if any)
         if (!drafting.empty()) {
+            if (obs) {
+                obs->clock.compute_begin(0, 1);
+            }
             queue_tasks.yield_to_queue([&]() {
                 common_speculative_draft(spec.get());
             });
+            if (obs) {
+                obs->clock.compute_end();
+            }
         }
 
         // make checkpoints if needed
@@ -3064,6 +3108,9 @@ private:
             auto & ckpt  = slot.spec_ckpt;
 
             slot.stats.n_draft_tokens += draft.size();
+            if (obs) {
+                server_obs_add(obs->counters.drafted, draft.size());
+            }
 
             // TODO: avoid restoring the draft context and re-evaluating the drafted tokens when not needed [TAG_SPEC_AVOID_DRAFT_REEVAL]
             const bool use_ckpt_dft = ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
@@ -3682,19 +3729,27 @@ private:
         }
 
         bool has_output = false;
+        int32_t n_prompt_rows = 0;
         for (int i = off; i < off + batch_view.n_tokens; ++i) {
-            has_output |= batch.tokens[i].output;
+            has_output    |= batch.tokens[i].output;
+            n_prompt_rows += batch.tokens[i].is_prompt;
         }
 
         // yield to the queue, so we can still handle metrics tasks while decoding
         // note: the sync is done here too, so that the wait is also covered by the yield
         int ret = 0;
+        if (obs) {
+            obs->clock.compute_begin(n_prompt_rows, batch_view.n_tokens);
+        }
         queue_tasks.yield_to_queue([&]() {
             ret = llama_decode(ctx_tgt, batch_view);
             if (ret == 0 && has_output) {
                 llama_synchronize(ctx_tgt);
             }
         });
+        if (obs) {
+            obs->clock.compute_end();
+        }
 
         if (ret != 0) {
             {
@@ -3754,9 +3809,15 @@ private:
         //       ref: https://github.com/ggml-org/llama.cpp/pull/22728#issuecomment-4400925384
         if (spec) {
             bool ok = true;
+            if (obs) {
+                obs->clock.compute_begin(n_prompt_rows, batch_view.n_tokens);
+            }
             queue_tasks.yield_to_queue([&]() {
                 ok = common_speculative_process(spec.get(), batch_view);
             });
+            if (obs) {
+                obs->clock.compute_end();
+            }
 
             if (!ok) {
                 SRV_ERR("%s", "failed to process speculative batch\n");
@@ -3875,6 +3936,9 @@ private:
             const int64_t t_now = ggml_time_us();
 
             slot.stats.n_gen += 1;
+            if (obs) {
+                server_obs_add(obs->counters.decode_tokens, 1);
+            }
 
             if (slot.stats.n_gen == 1) {
                 slot.stats.update_prompt_last();
@@ -3989,6 +4053,9 @@ private:
 
             // update how many tokens out of those tested were accepted
             slot.stats.n_draft_accepted += n_accepted;
+            if (obs) {
+                server_obs_add(obs->counters.accepted, n_accepted);
+            }
             slot.stats.n_draft_verif_steps += 1;
 
             auto & n_accepted_per_pos = slot.n_accepted_per_pos;
@@ -4018,6 +4085,9 @@ private:
                 // TODO: set result.probs
 
                 slot.stats.n_gen += 1;
+                if (obs) {
+                    server_obs_add(obs->counters.decode_tokens, 1);
+                }
 
                 if (!process_token(result, slot)) {
                     slot.print_timings();
@@ -4110,6 +4180,10 @@ private:
 
         metrics_queue_prompt(n_prompt_tokens);
 
+        if (obs) {
+            obs_post_decode(n_prompt_tokens);
+        }
+
         if (has_output) {
             // the context is already synchronized, so the timings are correct
             metrics_flush_prompt();
@@ -4158,6 +4232,421 @@ private:
         for (size_t i = 0; i < src.size(); i++) {
             dst[i] += src[i];
         }
+    }
+
+    //
+    // observability helpers, see server-observe.h
+    // the obs_on_* functions run on the server loop thread and only enqueue records
+    //
+
+    static const char * obs_task_type(server_task_type type) {
+        switch (type) {
+            case SERVER_TASK_TYPE_INFILL:    return "infill";
+            case SERVER_TASK_TYPE_EMBEDDING: return "embedding";
+            case SERVER_TASK_TYPE_RERANK:    return "rerank";
+            default:                         return "completion";
+        }
+    }
+
+    static const char * obs_endpoint(task_response_type type) {
+        switch (type) {
+            case TASK_RESPONSE_TYPE_OAI_CHAT:  return "oai_chat";
+            case TASK_RESPONSE_TYPE_OAI_CMPL:  return "oai_cmpl";
+            case TASK_RESPONSE_TYPE_OAI_RESP:  return "oai_resp";
+            case TASK_RESPONSE_TYPE_OAI_ASR:   return "oai_asr";
+            case TASK_RESPONSE_TYPE_OAI_EMBD:  return "oai_embd";
+            case TASK_RESPONSE_TYPE_ANTHROPIC: return "anthropic";
+            default:                           return "native";
+        }
+    }
+
+public:
+    static const char * obs_error_name(error_type type) {
+        switch (type) {
+            case ERROR_TYPE_INVALID_REQUEST:      return "invalid_request";
+            case ERROR_TYPE_AUTHENTICATION:       return "authentication";
+            case ERROR_TYPE_NOT_FOUND:            return "not_found";
+            case ERROR_TYPE_PERMISSION:           return "permission";
+            case ERROR_TYPE_UNAVAILABLE:          return "unavailable";
+            case ERROR_TYPE_NOT_SUPPORTED:        return "not_supported";
+            case ERROR_TYPE_EXCEED_CONTEXT_SIZE:  return "exceed_context_size";
+            default:                              return "server";
+        }
+    }
+
+    // a request that failed before reaching the server loop (parse / tokenize), HTTP thread
+    void obs_on_reject_http(const std::string & error, task_response_type res_type, bool stream) {
+        if (!obs) {
+            return;
+        }
+        server_obs_record rec;
+        rec.kind       = SERVER_OBS_REC_REQUEST_REJECTED;
+        rec.t_unix_ms  = server_observer::now_unix_ms();
+        rec.endpoint   = obs_endpoint(res_type);
+        rec.stream     = stream;
+        rec.n_ctx_slot = n_ctx_slot();
+        rec.stage      = "http";
+        rec.error_type = "invalid_request";
+        rec.error_msg  = error;
+        obs->counters.req_rejected.fetch_add(1, std::memory_order_relaxed);
+        obs->emit(std::move(rec));
+    }
+
+    // the loop's own view for GET /telemetry: slots, scheduler gauges and totals, memory
+    // runs on the loop thread, or on the queue worker while a decode is in flight (read-only)
+    json obs_telemetry_json() const {
+        static const char * state_names[] = {
+            "idle", "wait_other", "started", "processing_prompt", "done_prompt", "generating",
+        };
+
+        json arr = json::array();
+        int32_t n_busy = 0, n_prompt = 0, n_gen = 0;
+        uint64_t cells_used = 0;
+        for (const auto & slot : slots) {
+            n_busy   += slot.is_processing();
+            n_prompt += slot.state == SLOT_STATE_STARTED || slot.state == SLOT_STATE_PROCESSING_PROMPT;
+            n_gen    += slot.state == SLOT_STATE_GENERATING;
+            cells_used += slot.prompt.n_tokens();
+
+            const size_t i_state = (size_t) slot.state;
+            arr.push_back({
+                {"id",               slot.id},
+                {"state",            i_state < std::size(state_names) ? state_names[i_state] : "unknown"},
+                {"is_processing",    slot.is_processing()},
+                {"n_ctx",            slot.n_ctx},
+                {"n_ctx_used",       slot.prompt.n_tokens()},
+                {"id_task",          slot.task ? json(slot.task->id) : json(nullptr)},
+                {"n_prompt_tokens",  slot.task ? slot.task->n_tokens() : 0},
+                {"n_cached_tokens",  slot.stats.n_prompt_cached},
+                {"n_prefill_tokens", slot.stats.n_prompt_processed},
+                {"n_decoded",        slot.stats.n_gen},
+                {"speculative",      slot.can_speculate()},
+            });
+        }
+
+        const auto & m = metrics;
+        json res;
+        res["slots"]     = arr;
+        res["scheduler"] = {
+            {"slots_total",             slots.size()},
+            {"slots_busy",              n_busy},
+            {"slots_idle",              (int32_t) slots.size() - n_busy},
+            {"slots_processing_prompt", n_prompt},
+            {"slots_generating",        n_gen},
+            {"queue_deferred",          queue_tasks.n_deferred.load(std::memory_order_relaxed)},
+            {"totals", {
+                {"prompt_tokens",           m.prompt.count},
+                {"prompt_tokens_cached",    m.n_prompt_cached},
+                {"predicted_tokens",        m.predict.count},
+                {"prompt_seconds",          m.prompt.time / 1e6},
+                {"predicted_seconds",       m.predict.time / 1e6},
+                {"n_decode",                m.n_decode},
+                {"n_busy_slots_per_decode", (double) m.n_busy_slots / std::max<double>(1.0, (double) m.n_decode)},
+                {"drafted",                 m.n_draft_tokens},
+                {"accepted",                m.n_draft_accepted},
+                {"requests_started",        obs ? obs->counters.req_started.load(std::memory_order_relaxed)  : 0},
+                {"requests_done",           obs ? obs->counters.req_done.load(std::memory_order_relaxed)     : 0},
+                {"requests_rejected",       obs ? obs->counters.req_rejected.load(std::memory_order_relaxed) : 0},
+            }},
+        };
+
+        json prompt_cache_json = {
+            {"enabled",      prompt_cache != nullptr},
+            {"bytes_used",   prompt_cache ? prompt_cache->size()         : 0},
+            {"bytes_limit",  prompt_cache ? prompt_cache->limit_size     : 0},
+            {"tokens",       prompt_cache ? prompt_cache->n_tokens()     : 0},
+            {"tokens_limit", prompt_cache ? prompt_cache->limit_tokens   : 0},
+            {"entries",      prompt_cache ? prompt_cache->states.size()  : 0},
+        };
+
+        res["memory"] = {
+            {"kv", {
+                {"cells_total",  n_ctx},
+                {"cells_used",   cells_used},
+                {"unified",      params_base.kv_unified},
+                {"n_ctx_slot",   n_ctx_slot()},
+                {"cache_type_k", ggml_type_name(params_base.cache_type_k)},
+                {"cache_type_v", ggml_type_name(params_base.cache_type_v)},
+            }},
+            {"prompt_cache", prompt_cache_json},
+            {"vram", obs_vram},
+        };
+        return res;
+    }
+
+private:
+    // ggml backend memory breakdown, aggregated per device and host like common_memory_breakdown_print()
+    json obs_vram_json() const {
+        std::vector<ggml_backend_dev_t> devices;
+        for (int i = 0; i < llama_model_n_devices(model_tgt); i++) {
+            devices.push_back(llama_model_get_device(model_tgt, i));
+        }
+
+        std::vector<llama_memory_breakdown_data> mb_dev(devices.size());
+        llama_memory_breakdown_data              mb_host;
+
+        for (const auto & [buft, mb] : llama_get_memory_breakdown(ctx_tgt)) {
+            if (ggml_backend_buft_is_host(buft)) {
+                mb_host.model   += mb.model;
+                mb_host.context += mb.context;
+                mb_host.compute += mb.compute;
+                continue;
+            }
+            ggml_backend_dev_t dev = ggml_backend_buft_get_device(buft);
+            for (size_t i = 0; i < devices.size(); i++) {
+                if (devices[i] == dev) {
+                    mb_dev[i].model   += mb.model;
+                    mb_dev[i].context += mb.context;
+                    mb_dev[i].compute += mb.compute;
+                    break;
+                }
+            }
+        }
+
+        json arr = json::array();
+        for (size_t i = 0; i < devices.size(); i++) {
+            size_t free = 0, total = 0;
+            ggml_backend_dev_memory(devices[i], &free, &total);
+            const auto & mb = mb_dev[i];
+            arr.push_back({
+                {"name",              ggml_backend_dev_name(devices[i])},
+                {"description",       ggml_backend_dev_description(devices[i])},
+                {"total_bytes",       total},
+                {"free_bytes",        free},
+                {"model_bytes",       mb.model},
+                {"context_bytes",     mb.context},
+                {"compute_bytes",     mb.compute},
+                {"unaccounted_bytes", (int64_t) total - (int64_t) free - (int64_t) mb.total()},
+            });
+        }
+
+        return json {
+            {"devices", arr},
+            {"host", {
+                {"model_bytes",   mb_host.model},
+                {"context_bytes", mb_host.context},
+                {"compute_bytes", mb_host.compute},
+            }},
+        };
+    }
+
+    bool obs_init() {
+        if (!params_base.telemetry && params_base.request_log_jsonl.empty()) {
+            return true;
+        }
+
+        server_observer_config cfg;
+        cfg.jsonl_path = params_base.request_log_jsonl;
+        cfg.n_slots    = (int32_t) slots.size();
+
+        // NVML is matched to the first GPU by PCI bus id, CUDA and NVML may enumerate differently
+        for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+            if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) {
+                continue;
+            }
+            ggml_backend_dev_props props;
+            ggml_backend_dev_get_props(dev, &props);
+            if (props.device_id) {
+                cfg.gpu_pci_bus_id = props.device_id;
+            }
+            break;
+        }
+
+        try {
+            obs = std::make_unique<server_observer>(cfg);
+        } catch (const std::exception & e) {
+            SRV_ERR("failed to initialize telemetry: %s\n", e.what());
+            return false;
+        }
+
+        obs_vram = obs_vram_json();
+
+        std::string spec_types;
+        for (const auto type : params_base.speculative.types) {
+            if (!spec_types.empty()) {
+                spec_types += ",";
+            }
+            spec_types += common_speculative_type_to_str(type);
+        }
+
+        json server_start = {
+            {"build_info", llama_build_info()},
+            {"model", {
+                {"path",        params_base.model.path},
+                {"name",        model_name},
+                {"ftype",       llama_ftype_name(llama_model_ftype(model_tgt))},
+                {"n_params",    llama_model_n_params(model_tgt)},
+                {"size_bytes",  llama_model_size(model_tgt)},
+                {"n_ctx_train", llama_model_n_ctx_train(model_tgt)},
+            }},
+            {"config", {
+                {"n_ctx",         n_ctx},
+                {"n_ctx_slot",    n_ctx_slot()},
+                {"n_parallel",    slots.size()},
+                {"n_batch",       llama_n_batch(ctx_tgt)},
+                {"n_ubatch",      llama_n_ubatch(ctx_tgt)},
+                {"kv_unified",    params_base.kv_unified},
+                {"cache_type_k",  ggml_type_name(params_base.cache_type_k)},
+                {"cache_type_v",  ggml_type_name(params_base.cache_type_v)},
+                {"flash_attn",    llama_flash_attn_type_name(params_base.flash_attn_type)},
+                {"cache_ram_mib", params_base.cache_ram_mib},
+                {"n_gpu_layers",  params_base.n_gpu_layers},
+                {"speculative", {
+                    {"types", spec_types},
+                    {"n_max", params_base.speculative.draft.n_max},
+                    {"n_min", params_base.speculative.draft.n_min},
+                }},
+                {"throughput_interval_ms", cfg.throughput_interval_ms},
+                {"energy_sample_hz",       cfg.sample_hz},
+                {"request_log_jsonl",      cfg.jsonl_path.empty() ? json(nullptr) : json(cfg.jsonl_path)},
+            }},
+            {"vram", obs_vram},
+        };
+
+        obs->start(std::move(server_start));
+
+        SRV_INF("telemetry enabled: GET /telemetry, GET /events%s%s\n",
+                cfg.jsonl_path.empty() ? "" : ", request log: ", cfg.jsonl_path.c_str());
+        return true;
+    }
+
+    void obs_fill_request(server_obs_record & rec, const server_task & task, int id_slot, int32_t n_ctx_slot_cur, int32_t n_predict) const {
+        rec.t_unix_ms       = server_observer::now_unix_ms();
+        rec.id_task         = task.id;
+        rec.id_slot         = id_slot;
+        rec.id_parent       = task.id_parent;
+        rec.task_type       = obs_task_type(task.type);
+        rec.endpoint        = obs_endpoint(task.params.res_type);
+        rec.stream          = task.params.stream;
+        rec.n_prompt_tokens = task.n_tokens();
+        rec.n_predict       = n_predict;
+        rec.n_ctx_slot      = n_ctx_slot_cur;
+    }
+
+    void obs_on_launch(server_slot & slot) {
+        if (!obs) {
+            return;
+        }
+        const server_task & task = *slot.task;
+        const int64_t t_now = ggml_time_us();
+
+        slot.obs_t_launch_us = t_now;
+        slot.obs_energy0     = obs->energy_mark();
+
+        server_obs_record rec;
+        rec.kind = SERVER_OBS_REC_REQUEST_START;
+        obs_fill_request(rec, task, slot.id, slot.n_ctx, slot.n_predict_max);
+        rec.queue_wait_ms = task.t_arrival_us > 0 ? (t_now - task.t_arrival_us) / 1e3 : 0.0;
+
+        obs->counters.req_started.fetch_add(1, std::memory_order_relaxed);
+        obs->emit(std::move(rec));
+    }
+
+    void obs_on_reject(const server_task & task, const std::string & error, error_type type) {
+        if (!obs) {
+            return;
+        }
+        if (task.type != SERVER_TASK_TYPE_COMPLETION && task.type != SERVER_TASK_TYPE_INFILL &&
+            task.type != SERVER_TASK_TYPE_EMBEDDING  && task.type != SERVER_TASK_TYPE_RERANK) {
+            return;
+        }
+        server_obs_record rec;
+        rec.kind = SERVER_OBS_REC_REQUEST_REJECTED;
+        obs_fill_request(rec, task, -1, n_ctx_slot(), task.params.n_predict);
+        rec.queue_wait_ms = task.t_arrival_us > 0 ? (ggml_time_us() - task.t_arrival_us) / 1e3 : -1.0;
+        rec.stage         = "launch";
+        rec.error_type    = obs_error_name(type);
+        rec.error_msg     = error;
+
+        obs->counters.req_rejected.fetch_add(1, std::memory_order_relaxed);
+        obs->emit(std::move(rec));
+    }
+
+    // called from release(), before the slot stats are reset
+    void obs_on_slot_reset(const server_slot & slot) {
+        if (!obs || !slot.task || slot.obs_t_launch_us == 0) {
+            return;
+        }
+        const server_task       & task = *slot.task;
+        const server_slot_stats & st   = slot.stats;
+
+        const int64_t t_now     = ggml_time_us();
+        const int64_t t_arrival = task.t_arrival_us > 0 ? task.t_arrival_us : slot.obs_t_launch_us;
+
+        server_obs_record rec;
+        obs_fill_request(rec, task, slot.id, slot.n_ctx, slot.n_predict_max);
+        rec.queue_wait_ms = (slot.obs_t_launch_us - t_arrival) / 1e3;
+
+        // an error before any compute means the request was rejected, not served
+        if (slot.obs_error_type && st.n_prompt_processed == 0 && st.n_gen == 0) {
+            rec.kind       = SERVER_OBS_REC_REQUEST_REJECTED;
+            rec.stage      = "prompt";
+            rec.error_type = slot.obs_error_type;
+            rec.error_msg  = slot.obs_error_msg;
+            obs->counters.req_rejected.fetch_add(1, std::memory_order_relaxed);
+            obs->emit(std::move(rec));
+            return;
+        }
+
+        rec.kind = SERVER_OBS_REC_REQUEST_DONE;
+        switch (slot.stop) {
+            case STOP_TYPE_EOS:   rec.finish_reason = "eos";   break;
+            case STOP_TYPE_WORD:  rec.finish_reason = "word";  break;
+            case STOP_TYPE_LIMIT: rec.finish_reason = "limit"; break;
+            default:
+                rec.finish_reason = slot.obs_error_type ? "error" : (task.need_sampling() ? "cancelled" : "done");
+                break;
+        }
+        rec.truncated           = slot.truncated;
+        rec.n_cached_tokens     = st.n_prompt_cached;
+        rec.n_prefill_tokens    = st.n_prompt_processed;
+        rec.n_completion_tokens = st.n_gen;
+        rec.n_ctx_used          = slot.prompt.n_tokens();
+        rec.t_prefill_ms        = st.t_prompt_ms();
+        rec.t_decode_ms         = st.t_gen_ms();
+        rec.t_ttft_ms           = st.n_gen > 0 && st.t_prompt_last > 0 ? (st.t_prompt_last - t_arrival) / 1e3 : -1.0;
+        rec.t_total_ms          = (t_now - t_arrival) / 1e3;
+        rec.prefill_tps         = st.n_prompt_tps();
+        rec.decode_tps          = st.n_gen_tps();
+        rec.n_drafted           = st.n_draft_tokens;
+        rec.n_accepted          = st.n_draft_accepted;
+        rec.n_verif_steps       = st.n_draft_verif_steps;
+        if (st.n_draft_tokens > 0) {
+            rec.accepted_per_pos = slot.n_accepted_per_pos;
+        }
+        rec.energy_valid = obs->request_energy(slot.obs_energy0, st.n_prompt_processed, st.n_gen,
+                                               rec.prefill_joules, rec.decode_joules);
+        if (slot.obs_error_type) {
+            rec.error_type = slot.obs_error_type;
+            rec.error_msg  = slot.obs_error_msg;
+        }
+
+        obs->counters.req_done.fetch_add(1, std::memory_order_relaxed);
+        obs->emit(std::move(rec));
+    }
+
+    void obs_post_decode(uint64_t n_prompt_tokens) {
+        int32_t n_busy = 0, n_prompt = 0;
+        for (const auto & slot : slots) {
+            n_busy   += slot.is_processing();
+            n_prompt += slot.state == SLOT_STATE_STARTED || slot.state == SLOT_STATE_PROCESSING_PROMPT;
+        }
+        auto & c = obs->counters;
+        server_obs_add(c.prefill_tokens,  n_prompt_tokens);
+        server_obs_add(c.decode_calls,    1);
+        server_obs_add(c.busy_slot_calls, n_busy);
+        c.slots_busy    .store(n_busy,   std::memory_order_relaxed);
+        c.slots_prompt  .store(n_prompt, std::memory_order_relaxed);
+        c.queue_deferred.store(queue_tasks.n_deferred.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    }
+
+    void obs_on_idle() {
+        obs->clock.mark(SERVER_OBS_PHASE_IDLE);
+        auto & c = obs->counters;
+        c.slots_busy    .store(0, std::memory_order_relaxed);
+        c.slots_prompt  .store(0, std::memory_order_relaxed);
+        c.queue_deferred.store(queue_tasks.n_deferred.load(std::memory_order_relaxed), std::memory_order_relaxed);
     }
 };
 
@@ -4275,6 +4764,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
 
     auto res = create_response();
     auto completion_id = gen_chatcmplid();
+    const int64_t t_arrival_us = ggml_time_us();
     auto & rd = res->rd;
     auto & params = this->params;
 
@@ -4321,6 +4811,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             server_task task = server_task(type);
 
             task.id = rd.get_new_id();
+            task.t_arrival_us = t_arrival_us;
 
             task.tokens = std::move(inputs[i]);
             task.params = server_schema::eval_llama_cmpl_schema(
@@ -4352,6 +4843,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
 
         rd.post_tasks(std::move(tasks));
     } catch (const std::exception & e) {
+        ctx_server.obs_on_reject_http(e.what(), res_type, json_value(data, "stream", false));
         res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
         return res;
     }
@@ -4734,7 +5226,125 @@ void server_routes::init_routes() {
             res->data = res_task->to_metrics();
         }
 
+        if (ctx_server.obs) {
+            res->data += ctx_server.obs->to_prometheus();
+        }
+
         return res;
+    };
+
+    this->get_telemetry = [this](const server_http_req & req) {
+        // does not wake a sleeping server, the loop-side sections are then omitted
+        auto res = create_response(true);
+        server_observer * obs = ctx_server.obs.get();
+        if (!obs) {
+            res->error(format_error_response("This server does not support telemetry. Start it with `--telemetry` or `--request-log-jsonl`", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+
+        json loop_view;
+        bool sleeping = queue_tasks.is_sleeping();
+        if (!sleeping) {
+            server_task task(SERVER_TASK_TYPE_METRICS);
+            task.id = res->rd.get_new_id();
+            task.metrics_telemetry = true;
+            res->rd.post_task(std::move(task), true); // high-priority task, answered while decoding too
+
+            auto result = res->rd.next([&] {
+                return req.should_stop() || queue_tasks.is_sleeping();
+            });
+            if (!result) {
+                if (req.should_stop()) {
+                    return res;
+                }
+                sleeping = true;
+            } else if (result->is_error()) {
+                res->error(result->to_json());
+                return res;
+            } else {
+                auto * res_task = dynamic_cast<server_task_result_metrics *>(result.get());
+                GGML_ASSERT(res_task != nullptr);
+                loop_view = std::move(res_task->telemetry);
+            }
+        }
+
+        const int64_t t_now = server_observer::now_unix_ms();
+        json out = {
+            {"timestamp_unix_ms",  t_now},
+            {"server_instance_id", obs->instance_id()},
+            {"uptime_seconds",     (t_now - obs->t_start_unix_ms()) / 1e3},
+            {"model_id",           meta->model_name},
+            {"build_info",         meta->build_info},
+            {"sleeping",           sleeping},
+            {"gpu",                obs->gpu_json()},
+            {"energy",             obs->energy_json()},
+        };
+        json scheduler = loop_view.is_null() ? json::object() : loop_view.at("scheduler");
+        scheduler["loop"]                = obs->loop_json();
+        scheduler["loop_totals_seconds"] = obs->loop_totals_json();
+        out["scheduler"] = scheduler;
+        out["memory"]    = loop_view.is_null() ? json(nullptr) : loop_view.at("memory");
+        out["slots"]     = loop_view.is_null() ? json::array() : loop_view.at("slots");
+        out["events"]    = obs->events_json();
+
+        res->ok(out);
+        return res;
+    };
+
+    this->get_events = [this](const server_http_req & req) {
+        server_observer * obs = ctx_server.obs.get();
+        if (!obs) {
+            auto res = create_response(true);
+            res->error(format_error_response("This server does not support events. Start it with `--telemetry` or `--request-log-jsonl`", ERROR_TYPE_NOT_SUPPORTED));
+            return server_http_res_ptr(std::move(res));
+        }
+
+        // the stream reads only the observer, never the server loop, so it neither wakes nor blocks it
+        struct subscription {
+            server_observer * obs;
+            std::shared_ptr<server_obs_subscriber> sub;
+            std::vector<std::string> backlog;
+            ~subscription() { obs->unsubscribe(sub); }
+        };
+        auto s = std::make_shared<subscription>();
+        s->obs = obs;
+        s->sub = obs->subscribe(s->backlog);
+
+        auto res = std::make_unique<server_http_res>();
+        res->status       = 200;
+        res->content_type = "text/event-stream";
+        res->headers["Cache-Control"] = "no-cache";
+        res->next = [s, &req](std::string & output) -> bool {
+            // retained server_start + replay backlog first
+            if (!s->backlog.empty()) {
+                for (const auto & line : s->backlog) {
+                    output += "data: " + line + "\n\n";
+                }
+                s->backlog.clear();
+                s->backlog.shrink_to_fit();
+                return true;
+            }
+            // wake up every second to notice a disconnect, keepalive comment every 15 s
+            std::string line;
+            for (int i = 0; i < 15; i++) {
+                if (req.should_stop()) {
+                    return false;
+                }
+                if (s->sub->next(line, 1000)) {
+                    output = "data: " + line + "\n\n";
+                    while (output.size() < 65536 && s->sub->next(line, 0)) {
+                        output += "data: " + line + "\n\n";
+                    }
+                    return true;
+                }
+                if (s->sub->is_closed()) {
+                    return false;
+                }
+            }
+            output = ": keepalive\n\n";
+            return true;
+        };
+        return server_http_res_ptr(std::move(res));
     };
 
     this->get_slots = [this](const server_http_req & req) {
