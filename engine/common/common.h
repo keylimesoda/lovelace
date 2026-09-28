@@ -632,6 +632,12 @@ struct common_params {
     int32_t checkpoint_min_step = 8192;  // minimum spacing between context checkpoints
     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
 
+    // KV budget scheduling (unified KV only): admission by cell reservation, parking of idle sessions
+    bool    kv_budget           = true;  // admit tasks by KV reservation, park idle slots instead of failing
+    int32_t kv_budget_gen       = 8192;  // max generated tokens reserved per request up front, grows on demand
+    int32_t kv_budget_headroom  = 256;   // cells kept free when admitting new work
+    int32_t prefill_chunk_gen   = 1024;  // max prompt tokens per batch while another slot generates; 0 = n_batch
+
     std::string public_path   = "";                                                                         // NOLINT
     std::string api_prefix    = "";                                                                         // NOLINT
     std::string chat_template = "";                                                                         // NOLINT
@@ -1023,6 +1029,10 @@ struct common_memory {
 
     // aborts execution on failure
     void seq_rm (llama_seq_id seq_id, llama_pos p0, llama_pos p1) const;
+    // returns false if a context cannot remove the range, e.g. a recurrent rollback beyond the pending records
+    // or of a shared cell; the sequence is then in an unspecified state and the caller must clear it (a full
+    // removal, p0 = 0 or -1 and p1 = -1, never fails)
+    bool try_seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) const;
     void seq_add(llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos delta) const;
     void seq_cp (llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1) const;
 };

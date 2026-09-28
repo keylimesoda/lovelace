@@ -1734,6 +1734,47 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CACHE_IDLE_SLOTS").set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--kv-budget"},
+        {"--no-kv-budget"},
+        string_format("with --kv-unified: admit a task only when its KV reservation fits, park idle slots to the prompt cache "
+            "to make room and queue tasks FIFO instead of failing on a full cache (default: %s)", params.kv_budget ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.kv_budget = value;
+        }
+    ).set_env("LLAMA_ARG_KV_BUDGET").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--kv-budget-gen"}, "N",
+        string_format("generated tokens reserved per request at admission, min(max_tokens, N); the reservation grows "
+            "by N when a request outlives it (default: %d)", params.kv_budget_gen),
+        [](common_params & params, int value) {
+            if (value < 1) {
+                throw std::invalid_argument("kv-budget-gen must be positive");
+            }
+            params.kv_budget_gen = value;
+        }
+    ).set_env("LLAMA_ARG_KV_BUDGET_GEN").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--kv-budget-headroom"}, "N",
+        string_format("KV cells kept free when admitting new work (default: %d)", params.kv_budget_headroom),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("kv-budget-headroom must be non-negative");
+            }
+            params.kv_budget_headroom = value;
+        }
+    ).set_env("LLAMA_ARG_KV_BUDGET_HEADROOM").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--prefill-chunk-gen"}, "N",
+        string_format("max prompt tokens per batch while another slot is generating, so a long prefill does not stall "
+            "decoding (default: %d, 0 = --batch-size)", params.prefill_chunk_gen),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("prefill-chunk-gen must be non-negative");
+            }
+            params.prefill_chunk_gen = value;
+        }
+    ).set_env("LLAMA_ARG_PREFILL_CHUNK_GEN").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--context-shift"},
         {"--no-context-shift"},
         string_format("whether to use context shift on infinite text generation (default: %s)", params.ctx_shift ? "enabled" : "disabled"),

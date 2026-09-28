@@ -99,6 +99,29 @@ struct server_obs_counters {
     std::atomic<int32_t> slots_prompt    { 0 };
     std::atomic<int32_t> queue_deferred  { 0 };
 
+    // KV budget scheduling (--kv-budget), loop thread
+    std::atomic<uint64_t> sched_parks        { 0 }; // idle sessions saved to host memory and evicted from VRAM
+    std::atomic<uint64_t> sched_park_drops   { 0 }; // evicted without a new copy (already cached, or no cache room)
+    std::atomic<uint64_t> sched_unparks      { 0 }; // sessions restored from host memory
+    std::atomic<uint64_t> sched_preempts     { 0 }; // generating slots paused to host memory
+    std::atomic<uint64_t> sched_resumes      { 0 };
+    std::atomic<uint64_t> sched_grows        { 0 }; // reservations extended in flight
+    std::atomic<uint64_t> sched_park_bytes   { 0 }; // device -> host, parks and preempts
+    std::atomic<uint64_t> sched_unpark_bytes { 0 }; // host -> device, unparks and resumes
+    std::atomic<uint64_t> sched_park_us      { 0 };
+    std::atomic<uint64_t> sched_unpark_us    { 0 };
+    std::atomic<uint64_t> sched_wait_slot    { 0 }; // requests that waited for a slot
+    std::atomic<uint64_t> sched_wait_kv      { 0 }; // requests that waited for KV cells
+    std::atomic<uint64_t> sched_rollback_fallbacks { 0 }; // truncations the memory refused
+    std::atomic<uint64_t> sched_recompute_tokens   { 0 }; // tokens re-prefilled to recover a sequence
+    std::atomic<uint64_t> sched_kv_overflows       { 0 }; // llama_decode() found no cells despite the budget
+    std::atomic<int32_t>  kv_cells_total     { 0 };
+    std::atomic<int32_t>  kv_cells_used      { 0 }; // cells held by all slots
+    std::atomic<int32_t>  kv_cells_reserved  { 0 }; // cells held or promised (max(used, reservation) per slot)
+    std::atomic<int32_t>  sched_waiting      { 0 }; // requests in the admission queue
+    std::atomic<int32_t>  sched_preempted    { 0 }; // slots paused to host memory
+    std::atomic<int32_t>  sessions_parked    { 0 }; // prompt cache entries
+
     // written from several threads
     std::atomic<uint64_t> req_started  { 0 };
     std::atomic<uint64_t> req_done     { 0 };
@@ -146,6 +169,8 @@ struct server_obs_record {
     int32_t      n_predict  = -1;
     int32_t      n_ctx_slot = 0;
     double       queue_wait_ms = -1.0; // < 0 = unknown
+    const char * wait_reason   = "none"; // KV budget: "none", "slot" or "kv"
+    int32_t      n_unparked_tokens = 0; // tokens restored from host memory at launch
 
     // done
     const char * finish_reason = "eos";

@@ -1603,6 +1603,16 @@ void common_memory::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) cons
     }
 }
 
+bool common_memory::try_seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) const {
+    if (!llama_memory_seq_rm(llama_get_memory(ctx_tgt), seq_id, p0, p1)) {
+        return false;
+    }
+    if (ctx_dft && !llama_memory_seq_rm(llama_get_memory(ctx_dft), seq_id, p0, p1)) {
+        return false;
+    }
+    return true;
+}
+
 void common_memory::seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1) const {
     common_context_seq_cp(ctx_tgt, seq_id_src, seq_id_dst, p0, p1);
     if (ctx_dft) {

@@ -635,9 +635,22 @@ struct server_prompt_cache {
 
     size_t n_tokens() const;
 
-    server_prompt_cache_state * alloc(const server_prompt & prompt, size_t state_size_main, size_t state_size_drft);
+    // take_checkpoints: move the checkpoints out of `prompt` instead of copying them (the caller clears it)
+    server_prompt_cache_state * alloc(server_prompt & prompt, size_t state_size_main, size_t state_size_drft, bool take_checkpoints);
 
-    bool load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot);
+    // the entry load() would restore for tokens_new, given the slot currently holds `prompt`; nullptr = keep `prompt`
+    const server_prompt_cache_state * find(const server_prompt & prompt, const server_tokens & tokens_new) const;
+
+    // removes an entry returned by find() from the cache
+    server_prompt_cache_state take(const server_prompt_cache_state * state);
+
+    // restores a taken entry into the slot's sequence, n_bytes: state bytes restored
+    // on failure the sequence is in an unspecified state and the caller must clear it
+    static bool restore(server_prompt_cache_state & state, server_prompt & prompt, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot, size_t & n_bytes);
+
+    // find() + take() + restore(); keeps `prompt` if no entry is better
+    // n_bytes: state bytes restored into the context, 0 if the slot kept its prompt
+    bool load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot, size_t & n_bytes);
 
     void update();
 };
