@@ -7,3 +7,4 @@ counts.jsonl
 windows.jsonl
 *.bin
 results/
+results-run*.log
