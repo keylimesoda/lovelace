@@ -808,6 +808,61 @@ struct server_slot {
             }
         }
 
+        if (session_id != 0) {
+            const size_t state_bytes_tgt = prompt.n_tokens() > 0
+                    ? llama_state_seq_get_size_ext(ctx_tgt, id, LLAMA_STATE_SEQ_FLAGS_NONE) : 0;
+            const size_t recurrent_bytes_tgt = prompt.n_tokens() > 0
+                    ? llama_state_seq_get_size_ext(ctx_tgt, id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) : 0;
+            const size_t state_bytes_dft = ctx_dft && prompt.n_tokens() > 0
+                    ? llama_state_seq_get_size_ext(ctx_dft, id, LLAMA_STATE_SEQ_FLAGS_NONE) : 0;
+            const size_t recurrent_bytes_dft = ctx_dft && prompt.n_tokens() > 0
+                    ? llama_state_seq_get_size_ext(ctx_dft, id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) : 0;
+            const size_t state_header_bytes = sizeof(uint32_t) + sizeof(llama_seq_id);
+            const size_t recurrent_payload_tgt = recurrent_bytes_tgt > state_header_bytes ? recurrent_bytes_tgt - state_header_bytes : recurrent_bytes_tgt;
+            const size_t recurrent_payload_dft = recurrent_bytes_dft > state_header_bytes ? recurrent_bytes_dft - state_header_bytes : recurrent_bytes_dft;
+            size_t checkpoint_bytes = 0;
+            for (const auto & checkpoint : prompt.checkpoints) {
+                checkpoint_bytes += checkpoint.size();
+            }
+            std::string tier = prompt.n_tokens() > 0 ? "gpu" : "none";
+            size_t mirror_bytes = 0;
+            uint64_t last_sync = 0;
+            if (prompt_cache != nullptr) {
+                for (const auto & state : prompt_cache->states) {
+                    if (state.prompt.session_id == session_id) {
+                        if (tier == "none") {
+                            tier = "ram";
+                        }
+                        mirror_bytes = state.size() + state.prompt.tokens.size() * sizeof(llama_token);
+                        last_sync = state.last_sync_seconds;
+                        break;
+                    }
+                }
+                if (prompt_cache->disk_tiers != nullptr && prompt_cache->disk_tiers->contains(session_id)) {
+                    if (tier == "none") {
+                        tier = "disk";
+                    }
+                    mirror_bytes = prompt_cache->disk_tiers->bytes(session_id);
+                    last_sync = prompt_cache->disk_tiers->last_sync_seconds(session_id);
+                }
+            }
+            const uint64_t now = server_context_now_seconds();
+            res["session"] = {
+                {"id", session_id},
+                {"tier", tier},
+                {"resident_cells", prompt.n_tokens()},
+                {"mirror_bytes", mirror_bytes},
+                {"last_sync_lag_sec", last_sync != 0 && now >= last_sync ? json(now - last_sync) : json(nullptr)},
+                {"state_bytes", state_bytes_tgt + state_bytes_dft},
+                {"kv_bytes", (state_bytes_tgt - std::min(state_bytes_tgt, recurrent_payload_tgt)) +
+                        (state_bytes_dft - std::min(state_bytes_dft, recurrent_payload_dft))},
+                {"recurrent_bytes", recurrent_payload_tgt + recurrent_payload_dft},
+                {"state_header_bytes", (recurrent_bytes_tgt > 0 ? state_header_bytes : 0) +
+                        (recurrent_bytes_dft > 0 ? state_header_bytes : 0)}, 
+                {"checkpoint_bytes", checkpoint_bytes},
+            };
+        }
+
         return res;
     }
 
@@ -3592,6 +3647,7 @@ private:
                         send_error(task, "Unable to save slot", ERROR_TYPE_SERVER);
                         break;
                     }
+
 
                     const int64_t t_end = ggml_time_us();
                     const double t_save_ms = (t_end - t_start) / 1000.0;
