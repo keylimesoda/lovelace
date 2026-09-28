@@ -79,6 +79,15 @@ static constexpr __host__ __device__ int fattn_mma_q_nstages(const int D, const 
 static constexpr __host__ __device__ int fattn_mma_q_smem_total(const int D, const ggml_type type, const int ncols_tiles) {
     return fattn_mma_q_smem_fixed(D, ncols_tiles) + fattn_mma_q_nstages(D, type, ncols_tiles)*fattn_mma_q_smem_stage(D, type);
 }
+// Largest number of 16 row Q tiles for which the kernel fits into shared memory, 0 if none.
+static constexpr __host__ __device__ int fattn_mma_q_max_ncols_tiles(const int D, const ggml_type type) {
+    for (int ncols_tiles = 4; ncols_tiles >= 1; --ncols_tiles) {
+        if (fattn_mma_q_smem_total(D, type, ncols_tiles) <= FATTN_MMA_Q_SMEM_MAX) {
+            return ncols_tiles;
+        }
+    }
+    return 0;
+}
 
 // ------------------------------------------------------------------------------------------------------------------
 // Dequantization from shared memory into mma operands.
@@ -184,12 +193,13 @@ static __device__ __forceinline__ void fattn_mma_q_K_i8(const uint8_t * b, const
             b0 |= ((h0 << 4) & 0x00000010) | ((h0 << 11) & 0x00001000) | ((h0 << 18) & 0x00100000) | ((h0 << 25) & 0x10000000);
             b1 |= ((h1 << 4) & 0x00000010) | ((h1 << 11) & 0x00001000) | ((h1 << 18) & 0x00100000) | ((h1 << 25) & 0x10000000);
         }
+        // per byte subtraction without borrows between bytes, the values are < 128:
         if constexpr (type == GGML_TYPE_Q4_0) {
-            b0 = __vsubss4(b0, 0x08080808);
-            b1 = __vsubss4(b1, 0x08080808);
+            b0 = ((b0 | 0x80808080) - 0x08080808) ^ 0x80808080;
+            b1 = ((b1 | 0x80808080) - 0x08080808) ^ 0x80808080;
         } else if constexpr (type == GGML_TYPE_Q5_0) {
-            b0 = __vsubss4(b0, 0x10101010);
-            b1 = __vsubss4(b1, 0x10101010);
+            b0 = ((b0 | 0x80808080) - 0x10101010) ^ 0x80808080;
+            b1 = ((b1 | 0x80808080) - 0x10101010) ^ 0x80808080;
         }
     }
 }
@@ -681,7 +691,7 @@ static __global__ void flash_attn_ext_mma_q(
                 mx = fmaxf(mx, __shfl_xor_sync(0xFFFFFFFF, mx, 1));
                 mx = fmaxf(mx, __shfl_xor_sync(0xFFFFFFFF, mx, 2));
                 if (lq == 0) {
-                    red[warp*nrows + 16*m + 8*h + lr] = mx;
+                    red[(16*m + 8*h + lr)*FATTN_MMA_Q_NWARPS + warp] = mx;
                 }
             }
         }
@@ -725,8 +735,9 @@ static __global__ void flash_attn_ext_mma_q(
                 const int r = 16*m + 8*h + lr;
                 float mx = KQ_max[m][h];
 #pragma unroll
-                for (int w = 0; w < FATTN_MMA_Q_NWARPS; ++w) {
-                    mx = fmaxf(mx, red[w*nrows + r]);
+                for (int w = 0; w < FATTN_MMA_Q_NWARPS; w += 4) {
+                    const float4 tmp = *(const float4 *) (red + r*FATTN_MMA_Q_NWARPS + w);
+                    mx = fmaxf(mx, fmaxf(fmaxf(tmp.x, tmp.y), fmaxf(tmp.z, tmp.w)));
                 }
                 const float mx_use = mx == -INFINITY ? 0.0f : mx;
                 const float scale_old = expf(KQ_max[m][h] - mx_use);
@@ -735,10 +746,13 @@ static __global__ void flash_attn_ext_mma_q(
                 const float p0 = expf(KQ[m][2*h + 0] - mx_use);
                 const float p1 = expf(KQ[m][2*h + 1] - mx_use);
                 KQ_sum[m][h] = KQ_sum[m][h]*scale_old + (p0 + p1);
+                // the maximum rarely changes after the first tiles:
+                if (__any_sync(0xFFFFFFFF, scale_old != 1.0f)) {
 #pragma unroll
-                for (int j = 0; j < NT; ++j) {
-                    VKQ[m][j][2*h + 0] *= scale_old;
-                    VKQ[m][j][2*h + 1] *= scale_old;
+                    for (int j = 0; j < NT; ++j) {
+                        VKQ[m][j][2*h + 0] *= scale_old;
+                        VKQ[m][j][2*h + 1] *= scale_old;
+                    }
                 }
                 *(half2 *) (tile_P + r*stride_P + c0) = make_half2(p0, p1);
             }
@@ -816,7 +830,7 @@ static __global__ void flash_attn_ext_mma_q(
             sum += __shfl_xor_sync(0xFFFFFFFF, sum, 1);
             sum += __shfl_xor_sync(0xFFFFFFFF, sum, 2);
             if (lq == 0) {
-                red[warp*nrows + 16*m + 8*h + lr] = sum;
+                red[(16*m + 8*h + lr)*FATTN_MMA_Q_NWARPS + warp] = sum;
             }
         }
     }
@@ -832,8 +846,9 @@ static __global__ void flash_attn_ext_mma_q(
             }
             float sum = 0.0f;
 #pragma unroll
-            for (int w = 0; w < FATTN_MMA_Q_NWARPS; ++w) {
-                sum += red[w*nrows + r];
+            for (int w = 0; w < FATTN_MMA_Q_NWARPS; w += 4) {
+                const float4 tmp = *(const float4 *) (red + r*FATTN_MMA_Q_NWARPS + w);
+                sum += (tmp.x + tmp.y) + (tmp.z + tmp.w);
             }
             float mx = KQ_max[m][h];
 
@@ -1006,18 +1021,28 @@ void ggml_cuda_flash_attn_ext_mma_q_case(ggml_backend_cuda_context & ctx, ggml_t
     const ggml_tensor * Q = dst->src[0];
     const ggml_tensor * K = dst->src[1];
 
+    constexpr int ncols_tiles_max = fattn_mma_q_max_ncols_tiles(D, type);
+    static_assert(ncols_tiles_max >= 1, "shared memory");
+
     const int gqa_ratio = Q->ne[2] / K->ne[2];
-    const int ntok_tile = std::min<int64_t>({Q->ne[1], FATTN_MMA_Q_MAX_TOKENS, 64/gqa_ratio});
+    GGML_ASSERT(gqa_ratio <= 16*ncols_tiles_max);
+    const int ntok_tile = std::min<int64_t>({Q->ne[1], FATTN_MMA_Q_MAX_TOKENS, 16*ncols_tiles_max/gqa_ratio});
     const int nrows     = ntok_tile*gqa_ratio;
 
     if (nrows <= 16) {
         ggml_cuda_flash_attn_ext_mma_q_launch<D, type, 1>(ctx, dst, ntok_tile);
     } else if (nrows <= 32) {
-        ggml_cuda_flash_attn_ext_mma_q_launch<D, type, 2>(ctx, dst, ntok_tile);
+        if constexpr (ncols_tiles_max >= 2) {
+            ggml_cuda_flash_attn_ext_mma_q_launch<D, type, 2>(ctx, dst, ntok_tile);
+        }
     } else if (nrows <= 48) {
-        ggml_cuda_flash_attn_ext_mma_q_launch<D, type, 3>(ctx, dst, ntok_tile);
+        if constexpr (ncols_tiles_max >= 3) {
+            ggml_cuda_flash_attn_ext_mma_q_launch<D, type, 3>(ctx, dst, ntok_tile);
+        }
     } else {
-        ggml_cuda_flash_attn_ext_mma_q_launch<D, type, 4>(ctx, dst, ntok_tile);
+        if constexpr (ncols_tiles_max >= 4) {
+            ggml_cuda_flash_attn_ext_mma_q_launch<D, type, 4>(ctx, dst, ntok_tile);
+        }
     }
 }
 

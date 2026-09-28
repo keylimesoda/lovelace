@@ -555,16 +555,17 @@ static bool ggml_cuda_fattn_mma_q_applies(const int cc, const ggml_tensor * dst)
             ggml_cuda_get_fattn_mma_q_case(K->ne[0], K->type) == nullptr) {
         return false;
     }
-    if (Q->ne[2] % K->ne[2] != 0 || Q->ne[2] / K->ne[2] > 64 || K->ne[3] != Q->ne[3] || V->ne[3] != Q->ne[3]) {
-        return false;
-    }
-    // the K/V rows are copied in chunks of fattn_mma_q_cpy_bytes:
+    // the K/V rows are copied in chunks of fattn_mma_q_cpy_bytes, the Q rows of a block are limited by shared memory:
     int cpy_bytes = 0;
+    int max_rows  = 0;
     switch (K->ne[0]) {
-        case  64: cpy_bytes = fattn_mma_q_cpy_bytes( 64, K->type); break;
-        case 128: cpy_bytes = fattn_mma_q_cpy_bytes(128, K->type); break;
-        case 256: cpy_bytes = fattn_mma_q_cpy_bytes(256, K->type); break;
+        case  64: cpy_bytes = fattn_mma_q_cpy_bytes( 64, K->type); max_rows = 16*fattn_mma_q_max_ncols_tiles( 64, K->type); break;
+        case 128: cpy_bytes = fattn_mma_q_cpy_bytes(128, K->type); max_rows = 16*fattn_mma_q_max_ncols_tiles(128, K->type); break;
+        case 256: cpy_bytes = fattn_mma_q_cpy_bytes(256, K->type); max_rows = 16*fattn_mma_q_max_ncols_tiles(256, K->type); break;
         default: return false;
+    }
+    if (Q->ne[2] % K->ne[2] != 0 || Q->ne[2] / K->ne[2] > max_rows || K->ne[3] != Q->ne[3] || V->ne[3] != Q->ne[3]) {
+        return false;
     }
     for (const ggml_tensor * t : {K, V}) {
         if (((uintptr_t) t->data) % cpy_bytes != 0 || t->nb[1] % cpy_bytes != 0 || t->nb[2] % cpy_bytes != 0 || t->nb[3] % cpy_bytes != 0) {
