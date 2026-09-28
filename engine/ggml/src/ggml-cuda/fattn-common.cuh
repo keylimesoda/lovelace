@@ -639,6 +639,75 @@ constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
     }
 }
 
+// Values 8*j...8*j+7 (j < 4) of a quantized block of 32 values as f16, rounded the same way as the to_fp16 conversion.
+// The block only needs to be 2 byte aligned.
+template <ggml_type type>
+static __device__ __forceinline__ void dequantize_block_8_f16(const char * __restrict__ block, const int j, half2 * __restrict__ dst) {
+    const uint16_t * b16 = (const uint16_t *) block;
+    // 4 bytes (values < 128) -> 2 half2 of (1024 + value), exact:
+    auto u8x4_to_h2 = [](const uint32_t q, half2 * h) {
+        const uint32_t lo = __byte_perm(q, 0x64646464, 0x5140);
+        const uint32_t hi = __byte_perm(q, 0x64646464, 0x5342);
+        h[0] = *(const half2 *) &lo;
+        h[1] = *(const half2 *) &hi;
+    };
+    if constexpr (type == GGML_TYPE_Q8_0) {
+        const half2 d = __half2half2(*(const half *) block);
+#pragma unroll
+        for (int l = 0; l < 2; ++l) {
+            const uint32_t q = (b16[1 + 4*j + 2*l] | (uint32_t(b16[2 + 4*j + 2*l]) << 16)) ^ 0x80808080;
+            half2 h[2];
+            u8x4_to_h2(q, h);
+            dst[2*l + 0] = __hmul2(__hsub2(h[0], make_half2(1152.0f, 1152.0f)), d);
+            dst[2*l + 1] = __hmul2(__hsub2(h[1], make_half2(1152.0f, 1152.0f)), d);
+        }
+    } else {
+        static_assert(type == GGML_TYPE_Q4_0 || type == GGML_TYPE_Q4_1 || type == GGML_TYPE_Q5_0 || type == GGML_TYPE_Q5_1, "bad type");
+        constexpr int  iqs   = type == GGML_TYPE_Q4_0 ? 1 : type == GGML_TYPE_Q4_1 ? 2 : type == GGML_TYPE_Q5_0 ? 3 : 4; // in 16 bit
+        constexpr bool has_m = type == GGML_TYPE_Q4_1 || type == GGML_TYPE_Q5_1;
+        const int shift = 4*(j / 2);
+        const uint16_t * qs = b16 + iqs + 4*(j % 2);
+        uint32_t q[2] = {
+            ((qs[0] | (uint32_t(qs[1]) << 16)) >> shift) & 0x0F0F0F0F,
+            ((qs[2] | (uint32_t(qs[3]) << 16)) >> shift) & 0x0F0F0F0F,
+        };
+        if constexpr (type == GGML_TYPE_Q5_0 || type == GGML_TYPE_Q5_1) {
+            const uint16_t * qh16 = b16 + (type == GGML_TYPE_Q5_0 ? 1 : 2);
+            const uint32_t qh = (qh16[0] | (uint32_t(qh16[1]) << 16)) >> (8*j);
+#pragma unroll
+            for (int l = 0; l < 2; ++l) {
+                const uint32_t h = qh >> (4*l);
+                q[l] |= ((h << 4) & 0x00000010) | ((h << 11) & 0x00001000) | ((h << 18) & 0x00100000) | ((h << 25) & 0x10000000);
+            }
+        }
+        half2 d;
+        half2 m;
+        half2 off;
+        if constexpr (has_m) {
+            const half2 dm = *(const half2 *) block;
+            d   = __low2half2(dm);
+            m   = __high2half2(dm);
+            off = make_half2(1024.0f, 1024.0f);
+        } else {
+            d   = __half2half2(*(const half *) block);
+            m   = make_half2(0.0f, 0.0f);
+            off = type == GGML_TYPE_Q4_0 ? make_half2(1032.0f, 1032.0f) : make_half2(1040.0f, 1040.0f);
+        }
+#pragma unroll
+        for (int l = 0; l < 2; ++l) {
+            half2 h[2];
+            u8x4_to_h2(q[l], h);
+            if constexpr (has_m) {
+                dst[2*l + 0] = __hfma2(__hsub2(h[0], off), d, m);
+                dst[2*l + 1] = __hfma2(__hsub2(h[1], off), d, m);
+            } else {
+                dst[2*l + 0] = __hmul2(__hsub2(h[0], off), d);
+                dst[2*l + 1] = __hmul2(__hsub2(h[1], off), d);
+            }
+        }
+    }
+}
+
 template <ggml_type type_V, typename T, int ne>
 constexpr __device__ dequantize_V_t get_dequantize_V() {
     if constexpr (type_V == GGML_TYPE_F16) {

@@ -232,9 +232,10 @@ static void init_tensor_kq_mask_unified(ggml_tensor * tensor, int64_t n_tokens, 
     std::mt19937 gen(0x5E0);
     const int64_t n_prefill = ne0 - ne0/8;
     int64_t i = 0;
-    for (int32_t s = 0; i < ne0; s = (s + 1) % n_seq) {
-        const int64_t run = i < n_prefill ? 256 + gen() % 4096 : 1 + gen() % 4;
-        const int32_t seq = i < n_prefill ? int32_t(gen() % n_seq) : s;
+    for (int32_t s = 0, r = 0; i < ne0; s = (s + 1) % n_seq, ++r) {
+        // the first runs go to each sequence once so that every token sees some cells
+        const int64_t run = i < n_prefill ? (r < n_seq ? 64 : 256 + gen() % 4096) : 1 + gen() % 4;
+        const int32_t seq = i < n_prefill && r >= n_seq ? int32_t(gen() % n_seq) : s;
         for (int64_t j = 0; j < run && i < ne0; ++j, ++i) {
             cell_seq[i] = seq;
         }
@@ -11241,6 +11242,23 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 24576, 24, true, false, 0, 0, GGML_PREC_F32, type_KV, type_KV,
             {0, 1, 2, 3}, true, false, 0, 6));
     }
+    // quantized KV with large batches (prefill, draft context), K/V dequantized per tile in the f16 MMA kernel
+    for (std::pair<ggml_type, ggml_type> types_KV : std::vector<std::pair<ggml_type, ggml_type>>{
+            {GGML_TYPE_Q4_0, GGML_TYPE_Q4_0}, {GGML_TYPE_Q4_1, GGML_TYPE_Q4_1}, {GGML_TYPE_Q5_0, GGML_TYPE_Q5_0},
+            {GGML_TYPE_Q5_1, GGML_TYPE_Q5_1}, {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0}, {GGML_TYPE_Q8_0, GGML_TYPE_Q5_0}}) {
+        for (int64_t kv : {1000, 2048}) {
+            for (int64_t nb : {65, 200}) {
+                test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, kv, nb, true, false, 0, 0, GGML_PREC_F32, types_KV.first, types_KV.second));
+            }
+        }
+        test_cases.emplace_back(new test_flash_attn_ext(128, 128, 4, {4, 1}, 1024, 130, true, true, 0, 0, GGML_PREC_F32, types_KV.first, types_KV.second));
+        test_cases.emplace_back(new test_flash_attn_ext(128, 128, 4, {1, 1}, 512, 100, true, false, 8.0f, 10.0f, GGML_PREC_F32, types_KV.first, types_KV.second));
+        test_cases.emplace_back(new test_flash_attn_ext( 64,  64, 4, {2, 1}, 1024, 128, true, false, 0, 0, GGML_PREC_F32, types_KV.first, types_KV.second,
+            {0, 2, 1, 3}));
+        test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 8192, 96, true, false, 0, 0, GGML_PREC_F32, types_KV.first, types_KV.second,
+            {0, 1, 2, 3}, true, false, 0, 6));
+    }
+
     // mixed K/V types, e.g. q8_0 K with 4/5 bit V
     for (std::pair<ggml_type, ggml_type> types_KV : std::vector<std::pair<ggml_type, ggml_type>>{
             {GGML_TYPE_Q8_0, GGML_TYPE_Q4_0}, {GGML_TYPE_Q8_0, GGML_TYPE_Q4_1}, {GGML_TYPE_Q8_0, GGML_TYPE_Q5_0},

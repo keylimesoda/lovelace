@@ -601,6 +601,59 @@ static bool ggml_cuda_fattn_mma_q_applies(const int cc, const ggml_tensor * dst)
     return Q->ne[1] <= 64;
 }
 
+#define FATTN_MMA_F16_Q_CASE(D, type_K_case, type_V_case)                                                      \
+    if constexpr (GGML_CUDA_FA_##type_K_case##_##type_V_case) {                                                \
+        if (head_size == (D) && type_K == GGML_TYPE_##type_K_case && type_V == GGML_TYPE_##type_V_case) {      \
+            return ggml_cuda_flash_attn_ext_mma_f16_q_case<D, GGML_TYPE_##type_K_case, GGML_TYPE_##type_V_case>; \
+        }                                                                                                      \
+    }                                                                                                          \
+
+#define FATTN_MMA_F16_Q_CASES_ALL_D(type_K_case, type_V_case) \
+    FATTN_MMA_F16_Q_CASE( 64, type_K_case, type_V_case)       \
+    FATTN_MMA_F16_Q_CASE(128, type_K_case, type_V_case)       \
+    FATTN_MMA_F16_Q_CASE(256, type_K_case, type_V_case)       \
+
+#define FATTN_MMA_F16_Q_CASES_ALL_V(type_K_case)       \
+    FATTN_MMA_F16_Q_CASES_ALL_D(type_K_case, Q4_0)     \
+    FATTN_MMA_F16_Q_CASES_ALL_D(type_K_case, Q4_1)     \
+    FATTN_MMA_F16_Q_CASES_ALL_D(type_K_case, Q5_0)     \
+    FATTN_MMA_F16_Q_CASES_ALL_D(type_K_case, Q5_1)     \
+    FATTN_MMA_F16_Q_CASES_ALL_D(type_K_case, Q8_0)     \
+
+// f16 MMA kernel that dequantizes the given K/V types per tile, nullptr if its template instance was not compiled:
+static fattn_vec_case_t ggml_cuda_get_fattn_mma_f16_q_case(const int64_t head_size, const ggml_type type_K, const ggml_type type_V) {
+    FATTN_MMA_F16_Q_CASES_ALL_V(Q4_0)
+    FATTN_MMA_F16_Q_CASES_ALL_V(Q4_1)
+    FATTN_MMA_F16_Q_CASES_ALL_V(Q5_0)
+    FATTN_MMA_F16_Q_CASES_ALL_V(Q5_1)
+    FATTN_MMA_F16_Q_CASES_ALL_V(Q8_0)
+
+    return nullptr;
+}
+
+// Whether quantized K/V can use the f16 MMA kernel without an f16 copy of K and V:
+static bool ggml_cuda_fattn_mma_f16_q_applies(const int cc, const ggml_tensor * dst) {
+    const ggml_tensor * Q = dst->src[0];
+    const ggml_tensor * K = dst->src[1];
+    const ggml_tensor * V = dst->src[2];
+
+    if (!GGML_CUDA_CC_IS_NVIDIA(cc) || !ampere_mma_available(cc)) {
+        return false;
+    }
+    if (!fattn_mma_q_type_supported(K->type) || !fattn_mma_q_type_supported(V->type) ||
+            K->ne[0] != V->ne[0] || K->ne[0] != Q->ne[0] ||
+            ggml_cuda_get_fattn_mma_f16_q_case(K->ne[0], K->type, V->type) == nullptr) {
+        return false;
+    }
+    // the rows are read with 16 bit loads, the strides are used in units of 4 bytes:
+    for (const ggml_tensor * t : {K, V}) {
+        if (((uintptr_t) t->data) % 4 != 0 || t->nb[1] % 4 != 0 || t->nb[2] % 4 != 0 || t->nb[3] % 4 != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Best FlashAttention kernel for a specific GPU:
 enum best_fattn_kernel {
     BEST_FATTN_KERNEL_NONE    =   0,
@@ -608,6 +661,7 @@ enum best_fattn_kernel {
     BEST_FATTN_KERNEL_VEC     = 100,
     BEST_FATTN_KERNEL_MMA_Q   = 300,
     BEST_FATTN_KERNEL_MMA_F16 = 400,
+    BEST_FATTN_KERNEL_MMA_F16_Q = 401, // f16 MMA kernel, quantized K/V dequantized per tile
 };
 
 // K/V types for which there is a vector kernel template instance, other kernels convert these to f16:
@@ -754,6 +808,9 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
                 return BEST_FATTN_KERNEL_VEC;
             }
         }
+        if ((ggml_is_quantized(K->type) || ggml_is_quantized(V->type)) && ggml_cuda_fattn_mma_f16_q_applies(cc, dst)) {
+            return BEST_FATTN_KERNEL_MMA_F16_Q;
+        }
         return BEST_FATTN_KERNEL_MMA_F16;
     }
 
@@ -839,6 +896,7 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
             need_f16_V = V->type == GGML_TYPE_F32 || f16_fallback;
         } break;
         case BEST_FATTN_KERNEL_MMA_Q:
+        case BEST_FATTN_KERNEL_MMA_F16_Q:
         case BEST_FATTN_KERNEL_NONE:
             break;
     }
@@ -865,6 +923,9 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
             break;
         case BEST_FATTN_KERNEL_MMA_F16:
             ggml_cuda_flash_attn_ext_mma_f16(ctx, dst);
+            break;
+        case BEST_FATTN_KERNEL_MMA_F16_Q:
+            ggml_cuda_get_fattn_mma_f16_q_case(dst->src[0]->ne[0], dst->src[1]->type, dst->src[2]->type)(ctx, dst);
             break;
     }
 }
