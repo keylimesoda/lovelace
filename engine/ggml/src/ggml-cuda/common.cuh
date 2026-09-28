@@ -1443,6 +1443,49 @@ struct ggml_cuda_stream_context {
     }
 };
 
+// src1 quantized for MMVQ/MMQ, reused by later matrix multiplications that read the same activations within one
+// graph evaluation (e.g. the Q/K/V or gate/up projections of a layer). A slot is keyed by the src1 node and its data,
+// which ggml does not overwrite before its last consumer, and the whole cache is dropped at the start of every graph.
+struct ggml_cuda_src1_quant_cache {
+    static constexpr int    n_slots    = 4;
+    static constexpr size_t slot_bytes = 1024*1024;
+
+    struct slot {
+        const ggml_tensor * src1   = nullptr;
+        const void        * data   = nullptr;
+        size_t              extent = 0; // bytes of src1 data
+        int                 layout = -1;
+        size_t              nbytes = 0; // bytes of the quantized data
+    };
+
+    char * buf  = nullptr;
+    slot   slots[n_slots];
+    int    next = 0;
+
+    void reset() {
+        for (slot & s : slots) {
+            s = slot();
+        }
+        next = 0;
+    }
+
+    // Drops the slots whose src1 data overlaps the data written by node.
+    void invalidate(const ggml_tensor * node) {
+        const char * lo = (const char *) node->data;
+        const char * hi = lo + ggml_nbytes(node);
+        for (slot & s : slots) {
+            const char * s_lo = (const char *) s.data;
+            if (s.src1 != nullptr && s_lo < hi && lo < s_lo + s.extent) {
+                s = slot();
+            }
+        }
+    }
+
+    // Returns the buffer holding src1 quantized to layout, *hit tells whether it is already filled.
+    // Returns nullptr if the cache cannot hold it, the caller then quantizes into a temporary buffer.
+    char * get(const ggml_tensor * src1, int layout, size_t nbytes, cudaStream_t stream, bool * hit);
+};
+
 struct ggml_backend_cuda_context {
     int device;
     std::string name;
@@ -1560,6 +1603,19 @@ struct ggml_backend_cuda_context {
 
     ggml_cuda_pool & pool() {
         return pool(device);
+    }
+
+    ggml_cuda_src1_quant_cache src1_quant_cache;
+
+    // Returns src1 quantized to layout in *dst if an earlier matrix multiplication of this graph already did so,
+    // otherwise points *dst at a buffer to quantize into that later ones can reuse. Returns false if the cache is
+    // not usable, e.g. on the concurrent streams whose ordering the cache does not track.
+    bool src1_quant_cache_get(const ggml_tensor * src1, int layout, size_t nbytes, char ** dst, bool * hit) {
+        if (curr_stream_no != 0) {
+            return false;
+        }
+        *dst = src1_quant_cache.get(src1, layout, nbytes, stream(), hit);
+        return *dst != nullptr;
     }
 };
 

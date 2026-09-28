@@ -100,7 +100,8 @@ enum mmvq_parameter_table_id {
     MMVQ_PARAMETERS_RDNA2,
     MMVQ_PARAMETERS_RDNA3_0,
     MMVQ_PARAMETERS_RDNA4,
-    MMVQ_PARAMETERS_GB10
+    MMVQ_PARAMETERS_GB10,
+    MMVQ_PARAMETERS_ADA,
 };
 
 static constexpr __device__ mmvq_parameter_table_id get_device_table_id() {
@@ -116,6 +117,8 @@ static constexpr __device__ mmvq_parameter_table_id get_device_table_id() {
     return MMVQ_PARAMETERS_TURING;
 #elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ == GGML_CUDA_CC_DGX_SPARK
     return MMVQ_PARAMETERS_GB10;
+#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ == GGML_CUDA_CC_ADA_LOVELACE
+    return MMVQ_PARAMETERS_ADA;
 #else
     return MMVQ_PARAMETERS_GENERIC;
 #endif
@@ -139,6 +142,9 @@ static __host__ mmvq_parameter_table_id get_device_table_id(int cc) {
     }
     if (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) == GGML_CUDA_CC_DGX_SPARK) {
         return MMVQ_PARAMETERS_GB10;
+    }
+    if (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) == GGML_CUDA_CC_ADA_LOVELACE) {
+        return MMVQ_PARAMETERS_ADA;
     }
     return MMVQ_PARAMETERS_GENERIC;
 }
@@ -449,7 +455,7 @@ static constexpr __device__ int get_mmvq_mmid_max_batch_for_device() {
 #endif
 }
 
-static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_dst, mmvq_parameter_table_id table_id, bool small_k = false, bool halve_iters = false) {
+static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_dst, mmvq_parameter_table_id table_id, bool small_k = false, bool halve_iters = false, bool narrow = false) {
     if (table_id == MMVQ_PARAMETERS_GENERIC) {
         switch (ncols_dst) {
             case 1:
@@ -573,10 +579,30 @@ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_d
         }
         return generic;
     }
+    if (table_id == MMVQ_PARAMETERS_ADA) {
+        // Few rows: more warps per row so the few blocks retire the K loop in fewer trips.
+        if (halve_iters) {
+            return 8;
+        }
+        // Expensive vec_dot: one warp per pair of rows keeps more independent rows in flight per SM.
+        if (narrow) {
+            return 1;
+        }
+        return calc_nwarps(type, ncols_dst, MMVQ_PARAMETERS_GENERIC, small_k);
+    }
     return 1;
 }
 
-static constexpr __host__ __device__ int calc_rows_per_block(int ncols_dst, int table_id, bool small_k = false, int nwarps = 1) {
+static constexpr __host__ __device__ int calc_rows_per_block(int ncols_dst, int table_id, bool small_k = false, int nwarps = 1, bool halve_iters = false, bool narrow = false) {
+    if (table_id == MMVQ_PARAMETERS_ADA) {
+        if (halve_iters) {
+            return 1;
+        }
+        if (narrow) {
+            return 2;
+        }
+        return calc_rows_per_block(ncols_dst, MMVQ_PARAMETERS_GENERIC, small_k, nwarps);
+    }
     if (table_id == MMVQ_PARAMETERS_GENERIC || table_id == MMVQ_PARAMETERS_GCN || table_id == MMVQ_PARAMETERS_TURING || table_id == MMVQ_PARAMETERS_GB10) {
         switch (ncols_dst) {
             case 1:
@@ -596,8 +622,8 @@ static constexpr __host__ __device__ int calc_rows_per_block(int ncols_dst, int 
     return 1;
 }
 
-template <ggml_type type, int ncols_dst, bool has_fusion, bool small_k = false, bool halve_iters = false>
-__launch_bounds__(calc_nwarps(type, ncols_dst, get_device_table_id(), small_k, halve_iters)*ggml_cuda_get_physical_warp_size(), 1)
+template <ggml_type type, int ncols_dst, bool has_fusion, bool small_k = false, bool halve_iters = false, bool narrow = false>
+__launch_bounds__(calc_nwarps(type, ncols_dst, get_device_table_id(), small_k, halve_iters, narrow)*ggml_cuda_get_physical_warp_size(), 1)
 static __global__ void mul_mat_vec_q(
         const void * vx_ptr, const void * vy_ptr, const int32_t * ids_ptr, const ggml_cuda_mm_fusion_args_device fusion, float * dst_ptr,
         const uint32_t ncols_x, const uint3 nchannels_y, const uint32_t stride_row_x, const uint32_t stride_col_y,
@@ -614,8 +640,8 @@ static __global__ void mul_mat_vec_q(
     constexpr int qi  = ggml_cuda_type_traits<type>::qi;
     constexpr int vdr = get_vdr_mmvq(type);
     constexpr mmvq_parameter_table_id table_id = get_device_table_id();
-    constexpr int nwarps = calc_nwarps(type, ncols_dst, table_id, small_k, halve_iters);
-    constexpr int rows_per_cuda_block = calc_rows_per_block(ncols_dst, table_id, small_k, nwarps);
+    constexpr int nwarps = calc_nwarps(type, ncols_dst, table_id, small_k, halve_iters, narrow);
+    constexpr int rows_per_cuda_block = calc_rows_per_block(ncols_dst, table_id, small_k, nwarps, halve_iters, narrow);
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
 
     constexpr vec_dot_q_cuda_t vec_dot_q_cuda = get_vec_dot_q_cuda(type);
@@ -995,19 +1021,36 @@ static __global__ void mul_mat_vec_q_moe(
     }
 }
 
+// Types whose multi-column kernels on Ada prefer one warp per pair of rows (see should_use_narrow).
+static constexpr __host__ bool mmvq_ada_narrow_type(const ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_Q3_K:
+        case GGML_TYPE_IQ2_XXS:
+        case GGML_TYPE_IQ2_XS:
+        case GGML_TYPE_IQ2_S:
+        case GGML_TYPE_IQ3_XXS:
+        case GGML_TYPE_IQ3_S:
+        case GGML_TYPE_IQ4_XS:
+            return true;
+        default:
+            return false;
+    }
+}
+
 template<ggml_type type>
 static std::pair<dim3, dim3> calc_launch_params(
         const int ncols_dst, const int nrows_x, const int nchannels_dst, const int nsamples_or_ntokens,
-        const int warp_size, const mmvq_parameter_table_id table_id, const bool small_k = false, const bool halve_iters = false) {
-    const int nwarps = calc_nwarps(type, ncols_dst, table_id, small_k, halve_iters);
-    const int rpb = calc_rows_per_block(ncols_dst, table_id, small_k, nwarps);
+        const int warp_size, const mmvq_parameter_table_id table_id, const bool small_k = false, const bool halve_iters = false,
+        const bool narrow = false) {
+    const int nwarps = calc_nwarps(type, ncols_dst, table_id, small_k, halve_iters, narrow);
+    const int rpb = calc_rows_per_block(ncols_dst, table_id, small_k, nwarps, halve_iters, narrow);
     const int64_t nblocks = (nrows_x + rpb - 1) / rpb;
     const dim3 block_nums(nblocks, nchannels_dst, nsamples_or_ntokens);
     const dim3 block_dims(warp_size, nwarps, 1);
     return {block_nums, block_dims};
 }
 
-template<ggml_type type, int c_ncols_dst, bool small_k = false, bool halve_iters = false>
+template<ggml_type type, int c_ncols_dst, bool small_k = false, bool halve_iters = false, bool narrow = false>
 static void mul_mat_vec_q_switch_fusion(
         const void * vx, const void * vy, const int32_t * ids, const ggml_cuda_mm_fusion_args_device fusion, float * dst,
         const uint32_t ncols_x, const uint3 nchannels_y, const uint32_t stride_row_x, const uint32_t stride_col_y,
@@ -1022,7 +1065,7 @@ static void mul_mat_vec_q_switch_fusion(
     if constexpr (c_ncols_dst == 1) {
         if (has_fusion) {
             const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(block_nums, block_dims, nbytes_shared, stream);
-            ggml_cuda_kernel_launch(mul_mat_vec_q<type, c_ncols_dst, true, small_k, halve_iters>, launch_params,
+            ggml_cuda_kernel_launch(mul_mat_vec_q<type, c_ncols_dst, true, small_k, halve_iters, narrow>, launch_params,
                  vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
                  channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
                  sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
@@ -1033,7 +1076,7 @@ static void mul_mat_vec_q_switch_fusion(
     GGML_ASSERT(!has_fusion && "fusion only supported for ncols_dst=1");
 
     const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(block_nums, block_dims, nbytes_shared, stream);
-    ggml_cuda_kernel_launch(mul_mat_vec_q<type, c_ncols_dst, false, small_k, halve_iters>, launch_params,
+    ggml_cuda_kernel_launch(mul_mat_vec_q<type, c_ncols_dst, false, small_k, halve_iters, narrow>, launch_params,
         vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
         channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
         sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
@@ -1142,6 +1185,10 @@ static void mul_mat_vec_q_switch_ncols_dst(
 
     // Whether doubling nwarps pays off on the ncols_dst == 1 path, where K sets the K loop trip count.
     const auto should_halve_iters = [&] {
+        if (table_id == MMVQ_PARAMETERS_ADA) {
+            // Fewer rows than SMs leave most of the GPU idle, spreading each row over more warps shortens the K loop.
+            return !has_ids && nrows_x < ggml_cuda_info().devices[device].nsm;
+        }
         if (table_id != MMVQ_PARAMETERS_GB10) {
             return false;
         }
@@ -1162,6 +1209,21 @@ static void mul_mat_vec_q_switch_ncols_dst(
         return idle * 8 <= iters_wide * 2;
     };
 
+    // Ada: types with an expensive vec_dot (grid lookups, many bit ops) run out of registers and issue slots before
+    // bandwidth with several columns. One warp per pair of rows keeps more independent rows in flight per SM,
+    // as long as the K loop stays short enough for a single warp.
+    const auto should_use_narrow = [&](int c_ncols_dst) {
+        if (table_id != MMVQ_PARAMETERS_ADA || has_ids || c_ncols_dst == 1 || nrows_x < 2048) {
+            return false;
+        }
+        if (!mmvq_ada_narrow_type(type) || (type == GGML_TYPE_Q3_K && c_ncols_dst > 4) ||
+                (type == GGML_TYPE_IQ4_XS && c_ncols_dst <= 4)) {
+            return false;
+        }
+        const int iters_1warp = (blocks_per_row_x + blocks_per_iter_1warp - 1) / blocks_per_iter_1warp;
+        return iters_1warp <= (c_ncols_dst <= 4 ? 12 : 24);
+    };
+
     if (has_ids && ncols_dst > 1) {
         // Multi-token MUL_MAT_ID path - dedicated MoE kernel
         mul_mat_vec_q_moe_launch<type>(
@@ -1171,6 +1233,32 @@ static void mul_mat_vec_q_switch_ncols_dst(
             ncols_dst, ids_stride, warp_size, nchannels_dst, stream);
         return;
     }
+
+    // ncols_dst > 1, the Ada block shapes are only compiled for the types that can select them.
+    const auto launch_multi = [&](auto ncols_dst_tag) {
+        constexpr int c_ncols_dst = decltype(ncols_dst_tag)::value;
+
+        const auto launch = [&](auto halve_iters_tag, auto narrow_tag) {
+            constexpr bool c_halve_iters = decltype(halve_iters_tag)::value;
+            constexpr bool c_narrow      = decltype(narrow_tag)::value && mmvq_ada_narrow_type(type);
+
+            const std::pair<dim3, dim3> dims = calc_launch_params<type>(c_ncols_dst, nrows_x, nchannels_dst,
+                                                                          nsamples_dst, warp_size, table_id, false, c_halve_iters, c_narrow);
+            mul_mat_vec_q_switch_fusion<type, c_ncols_dst, false, c_halve_iters, c_narrow>(
+                vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, stride_row_x, stride_col_y, stride_col_dst,
+                channel_ratio_fd, stride_channel_x, stride_channel_y, stride_channel_dst, sample_ratio_fd,
+                stride_sample_x, stride_sample_y, stride_sample_dst, dims.first, dims.second, 0, ids_stride,
+                stream);
+        };
+
+        if (table_id == MMVQ_PARAMETERS_ADA && should_halve_iters()) {
+            launch(std::true_type{},  std::false_type{});
+        } else if (should_use_narrow(c_ncols_dst)) {
+            launch(std::false_type{}, std::true_type{});
+        } else {
+            launch(std::false_type{}, std::false_type{});
+        }
+    };
 
     switch (ncols_dst) {
         case 1: {
@@ -1183,7 +1271,9 @@ static void mul_mat_vec_q_switch_ncols_dst(
                 // Types the table does not promote would compile a second, identical kernel.
                 constexpr bool c_promoted =
                     calc_nwarps(type, c_ncols_dst, MMVQ_PARAMETERS_GB10, false, true) !=
-                    calc_nwarps(type, c_ncols_dst, MMVQ_PARAMETERS_GB10, false, false);
+                    calc_nwarps(type, c_ncols_dst, MMVQ_PARAMETERS_GB10, false, false) ||
+                    calc_nwarps(type, c_ncols_dst, MMVQ_PARAMETERS_ADA,  false, true) !=
+                    calc_nwarps(type, c_ncols_dst, MMVQ_PARAMETERS_ADA,  false, false);
 
                 constexpr bool c_halve_iters = decltype(halve_iters_tag)::value && c_promoted;
 
@@ -1204,62 +1294,27 @@ static void mul_mat_vec_q_switch_ncols_dst(
                 launch(std::false_type{}, std::false_type{});
             }
         } break;
-        case 2: {
-            constexpr int c_ncols_dst = 2;
-            std::pair<dim3, dim3> dims = calc_launch_params<type>(c_ncols_dst, nrows_x, nchannels_dst, nsamples_dst, warp_size, table_id);
-            mul_mat_vec_q_switch_fusion<type, c_ncols_dst>(vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, stride_row_x, stride_col_y, stride_col_dst,
-                 channel_ratio_fd, stride_channel_x, stride_channel_y, stride_channel_dst,
-                 sample_ratio_fd, stride_sample_x, stride_sample_y, stride_sample_dst,
-                 dims.first, dims.second, 0, ids_stride, stream);
-        } break;
-        case 3: {
-            constexpr int c_ncols_dst = 3;
-            std::pair<dim3, dim3> dims = calc_launch_params<type>(c_ncols_dst, nrows_x, nchannels_dst, nsamples_dst, warp_size, table_id);
-            mul_mat_vec_q_switch_fusion<type, c_ncols_dst>(vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, stride_row_x, stride_col_y, stride_col_dst,
-                 channel_ratio_fd, stride_channel_x, stride_channel_y, stride_channel_dst,
-                 sample_ratio_fd, stride_sample_x, stride_sample_y, stride_sample_dst,
-                 dims.first, dims.second, 0, ids_stride, stream);
-        } break;
-        case 4: {
-            constexpr int c_ncols_dst = 4;
-            std::pair<dim3, dim3> dims = calc_launch_params<type>(c_ncols_dst, nrows_x, nchannels_dst, nsamples_dst, warp_size, table_id);
-            mul_mat_vec_q_switch_fusion<type, c_ncols_dst>(vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, stride_row_x, stride_col_y, stride_col_dst,
-                 channel_ratio_fd, stride_channel_x, stride_channel_y, stride_channel_dst,
-                 sample_ratio_fd, stride_sample_x, stride_sample_y, stride_sample_dst,
-                 dims.first, dims.second, 0, ids_stride, stream);
-        } break;
-        case 5: {
-            constexpr int c_ncols_dst = 5;
-            std::pair<dim3, dim3> dims = calc_launch_params<type>(c_ncols_dst, nrows_x, nchannels_dst, nsamples_dst, warp_size, table_id);
-            mul_mat_vec_q_switch_fusion<type, c_ncols_dst>(vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, stride_row_x, stride_col_y, stride_col_dst,
-                 channel_ratio_fd, stride_channel_x, stride_channel_y, stride_channel_dst,
-                 sample_ratio_fd, stride_sample_x, stride_sample_y, stride_sample_dst,
-                 dims.first, dims.second, 0, ids_stride, stream);
-        } break;
-        case 6: {
-            constexpr int c_ncols_dst = 6;
-            std::pair<dim3, dim3> dims = calc_launch_params<type>(c_ncols_dst, nrows_x, nchannels_dst, nsamples_dst, warp_size, table_id);
-            mul_mat_vec_q_switch_fusion<type, c_ncols_dst>(vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, stride_row_x, stride_col_y, stride_col_dst,
-                 channel_ratio_fd, stride_channel_x, stride_channel_y, stride_channel_dst,
-                 sample_ratio_fd, stride_sample_x, stride_sample_y, stride_sample_dst,
-                 dims.first, dims.second, 0, ids_stride, stream);
-        } break;
-        case 7: {
-            constexpr int c_ncols_dst = 7;
-            std::pair<dim3, dim3> dims = calc_launch_params<type>(c_ncols_dst, nrows_x, nchannels_dst, nsamples_dst, warp_size, table_id);
-            mul_mat_vec_q_switch_fusion<type, c_ncols_dst>(vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, stride_row_x, stride_col_y, stride_col_dst,
-                 channel_ratio_fd, stride_channel_x, stride_channel_y, stride_channel_dst,
-                 sample_ratio_fd, stride_sample_x, stride_sample_y, stride_sample_dst,
-                 dims.first, dims.second, 0, ids_stride, stream);
-        } break;
-        case 8: {
-            constexpr int c_ncols_dst = 8;
-            std::pair<dim3, dim3> dims = calc_launch_params<type>(c_ncols_dst, nrows_x, nchannels_dst, nsamples_dst, warp_size, table_id);
-            mul_mat_vec_q_switch_fusion<type, c_ncols_dst>(vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, stride_row_x, stride_col_y, stride_col_dst,
-                 channel_ratio_fd, stride_channel_x, stride_channel_y, stride_channel_dst,
-                 sample_ratio_fd, stride_sample_x, stride_sample_y, stride_sample_dst,
-                 dims.first, dims.second, 0, ids_stride, stream);
-        } break;
+        case 2:
+            launch_multi(std::integral_constant<int, 2>{});
+            break;
+        case 3:
+            launch_multi(std::integral_constant<int, 3>{});
+            break;
+        case 4:
+            launch_multi(std::integral_constant<int, 4>{});
+            break;
+        case 5:
+            launch_multi(std::integral_constant<int, 5>{});
+            break;
+        case 6:
+            launch_multi(std::integral_constant<int, 6>{});
+            break;
+        case 7:
+            launch_multi(std::integral_constant<int, 7>{});
+            break;
+        case 8:
+            launch_multi(std::integral_constant<int, 8>{});
+            break;
         default:
             GGML_ABORT("fatal error");
             break;
@@ -1498,12 +1553,21 @@ void ggml_cuda_mul_mat_vec_q(
     }
 
     const int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
-    ggml_cuda_pool_alloc<char> src1_q8_1(ctx.pool(), ne13*ne12 * ne11*ne10_padded * sizeof(block_q8_1)/QK8_1);
-    {
+    const size_t  nbytes_src1_q8_1 = ne13*ne12 * ne11*ne10_padded * sizeof(block_q8_1)/QK8_1;
+
+    // Matrix multiplications reading the same activations share one quantization of them.
+    constexpr int quant_cache_layout = 0;
+    ggml_cuda_pool_alloc<char> src1_q8_1_tmp(ctx.pool());
+    char * src1_q8_1  = nullptr;
+    bool   src1_ready = false;
+    if (ids || !ctx.src1_quant_cache_get(src1, quant_cache_layout, nbytes_src1_q8_1, &src1_q8_1, &src1_ready)) {
+        src1_q8_1 = src1_q8_1_tmp.alloc(nbytes_src1_q8_1);
+    }
+    if (!src1_ready) {
         const int64_t s11 = src1->nb[1] / ts_src1;
         const int64_t s12 = src1->nb[2] / ts_src1;
         const int64_t s13 = src1->nb[3] / ts_src1;
-        quantize_row_q8_1_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream);
+        quantize_row_q8_1_cuda(src1_d, nullptr, src1_q8_1, src0->type, ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream);
     }
 
     const int64_t s01 = src0->nb[1] / ts_src0;
@@ -1529,7 +1593,7 @@ void ggml_cuda_mul_mat_vec_q(
     const int64_t ids_stride = ids ? ids->nb[1] / ggml_type_size(ids->type) : 0;
 
     mul_mat_vec_q_switch_type(
-        src0->data, src0->type, src1_q8_1.get(), ids_d, fusion_local, dst_d, ne00,
+        src0->data, src0->type, src1_q8_1, ids_d, fusion_local, dst_d, ne00,
         ne01,              ncols_dst,     s01, stride_col_y,     stride_col_dst,
         ne02, nchannels_y, nchannels_dst, s02, stride_channel_y, stride_channel_dst,
         ne03,              ne3,           s03, s13,              s3,               ids_stride, stream);

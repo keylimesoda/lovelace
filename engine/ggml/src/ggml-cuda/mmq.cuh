@@ -216,6 +216,7 @@ struct ggml_cuda_mmq_config {
 #include "mmq-config-pascal-older.cuh"
 #include "mmq-config-pascal-dp4a.cuh"
 #include "mmq-config-ampere.cuh"
+#include "mmq-config-ada.cuh"
 #include "mmq-config-blackwell.cuh"
 
 #include "mmq-config-gcn.cuh"
@@ -253,6 +254,9 @@ static __host__ ggml_cuda_mmq_config ggml_cuda_mmq_get_config(const ggml_type ty
         }
         return ggml_cuda_mmq_get_config_blackwell(type, J, fallback);
     }
+    if (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) == GGML_CUDA_CC_ADA_LOVELACE) {
+        return ggml_cuda_mmq_get_config_ada(type, J, fallback);
+    }
     if (ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA) {
         return ggml_cuda_mmq_get_config_ampere(type, J, fallback);
     }
@@ -284,6 +288,8 @@ static constexpr __device__ ggml_cuda_mmq_config ggml_cuda_mmq_get_config(ggml_t
         return ggml_cuda_mmq_get_config_ampere(type, J, fallback);
     }
     return ggml_cuda_mmq_get_config_blackwell(type, J, fallback);
+#elif __CUDA_ARCH__ == GGML_CUDA_CC_ADA_LOVELACE
+    return ggml_cuda_mmq_get_config_ada(type, J, fallback);
 #elif __CUDA_ARCH__ >= GGML_CUDA_CC_VOLTA
     return ggml_cuda_mmq_get_config_ampere(type, J, fallback);
 #elif __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A
@@ -877,13 +883,55 @@ static constexpr __device__ ggml_cuda_mmq_write_back_t ggml_cuda_mmq_get_write_b
 
 // ---------------------------------------------------------------------------------------------
 
+// Whether the x data for the next K iteration is prefetched into L2 while the current one is processed.
+// The small-J tiles spend most of their time waiting on DRAM for the x tile, loading it straight from L2 hides most of that.
+// Not for IQ4_XS/IQ4_NL/Q4_K/Q5_K, whose cheap tile loads already keep up (observation).
+static constexpr __device__ bool mmq_prefetch_x(const ggml_type type, const int J) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == GGML_CUDA_CC_ADA_LOVELACE
+    return J <= 32 && type != GGML_TYPE_IQ4_XS && type != GGML_TYPE_IQ4_NL && type != GGML_TYPE_Q4_K && type != GGML_TYPE_Q5_K;
+#else
+    GGML_UNUSED_VARS(type, J);
+    return false;
+#endif // defined(__CUDA_ARCH__) && __CUDA_ARCH__ == GGML_CUDA_CC_ADA_LOVELACE
+}
+
+// Minimum number of K iterations a CUDA block has to process for the prefetch to pay off. With fewer, the prefetches
+// mostly add to the initial burst of requests (observation).
+static constexpr int MMQ_PREFETCH_X_MIN_ITERS = 8;
+
+template <ggml_type type, int I, int nthreads, int blocks_per_iter, bool fallback>
+static __device__ __forceinline__ void mmq_prefetch_x_tile(const char * __restrict__ x, const int kbx0, const int stride, const int i_max) {
+#if defined(__CUDA_ARCH__) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    constexpr int bs         = ggml_cuda_type_traits<type>::bs;
+    constexpr int nbytes_row = blocks_per_iter*bs;
+    constexpr int nlines     = (nbytes_row + 127)/128 + 1; // +1 because a row segment can straddle an extra line
+
+    const int tid = threadIdx.y*blockDim.x + threadIdx.x;
+#pragma unroll
+    for (int l0 = 0; l0 < I*nlines; l0 += nthreads) {
+        const int l = l0 + tid;
+        if (l0 + nthreads > I*nlines && l >= I*nlines) {
+            break;
+        }
+        int i = l / nlines;
+        if (fallback) {
+            i = min(i, i_max);
+        }
+        const char * p = x + (int64_t(kbx0) + int64_t(i)*stride)*bs + min((l % nlines)*128, nbytes_row - 1);
+        asm volatile("prefetch.global.L2 [%0];" :: "l"(p));
+    }
+#else
+    GGML_UNUSED_VARS(x, kbx0, stride, i_max);
+#endif // defined(__CUDA_ARCH__) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+}
+
 template <ggml_type type, int J, bool fallback, bool fixup, ggml_prec prec_src1 = GGML_PREC_Q8>
 static __device__ __forceinline__ void mul_mat_q_process_tile(
         const char * __restrict__ x, const int offset_x, const int * __restrict__ y,
         const int * __restrict__ ids_dst, float * __restrict__ dst, float * __restrict__ tmp_fixup,
         const float * __restrict__ y_scale,
         const int stride_row_x, const int ncols_y, const int stride_col_dst,
-        const int tile_x_max_i, const int tile_y_max_j, const int kb0_start, const int kb0_stop) {
+        const int tile_x_max_i, const int tile_y_max_j, const int kb0_start, const int kb0_stop, const bool prefetch_x) {
 
     constexpr int              warp_size  = ggml_cuda_get_physical_warp_size();
     constexpr int              nwarps     = ggml_cuda_mmq_get_nthreads(type, J, fallback, prec_src1) / warp_size;
@@ -914,6 +962,12 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
     constexpr int sz = sizeof(block_q8_1_mmq) / sizeof(int);
 
     for (int kb0 = kb0_start; kb0 < kb0_stop; kb0 += blocks_per_iter) {
+        if constexpr (mmq_prefetch_x(type, J)) {
+            if (prefetch_x && kb0 + blocks_per_iter < kb0_stop) {
+                mmq_prefetch_x_tile<type, I, nwarps*warp_size, blocks_per_iter, fallback>(
+                    x, offset_x + kb0 + blocks_per_iter, stride_row_x, tile_x_max_i);
+            }
+        }
         load_tiles(x, tile_x, offset_x + kb0, tile_x_max_i, stride_row_x);
         {
             const int * by0 = y + ncols_y * (kb0 * qk / ne_block) * sz;
@@ -996,6 +1050,8 @@ static __global__ void mul_mat_q(
 
         ids_dst_shared[j] = j;
     }
+    // The x tiles of the IQ2/IQ3 types are dequantized through lookup grids, which this block reads for every tile.
+    ggml_cuda_iq_grid_load_smem<type>(threadIdx.y*warp_size + threadIdx.x, nwarps*warp_size);
     __syncthreads();
 
     if constexpr (!ggml_cuda_mmq_get_stream_k(type, J, fallback, prec_src1)) {
@@ -1064,7 +1120,8 @@ static __global__ void mul_mat_q(
         mul_mat_q_process_tile<type, J, fallback, fixup, prec_src1>
             (x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, y_scale_tile,
              stride_row_x, ncols_y, stride_col_dst,
-             tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00.z);
+             tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00.z,
+             mmq_prefetch_x(type, J) && blocks_per_ne00.z >= MMQ_PREFETCH_X_MIN_ITERS*(ggml_cuda_mmq_get_K_vram(type, J, fallback, prec_src1)/qk));
         return;
     }
 
@@ -1077,6 +1134,8 @@ static __global__ void mul_mat_q(
 
     kbc      -= fastmodulo(kbc,      blocks_per_ne00) % blocks_per_iter;
     kbc_stop -= fastmodulo(kbc_stop, blocks_per_ne00) % blocks_per_iter;
+
+    const bool prefetch_x = mmq_prefetch_x(type, J) && kbc_stop - kbc >= MMQ_PREFETCH_X_MIN_ITERS*blocks_per_iter;
 
     // kb0 == k index when doing the matrix multiplication for an output tile.
     int kb0_start = fastmodulo(kbc, blocks_per_ne00);
@@ -1158,7 +1217,7 @@ static __global__ void mul_mat_q(
         mul_mat_q_process_tile<type, J, fallback, fixup, prec_src1>
             (x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, y_scale_tile,
              stride_row_x, ncols_y, stride_col_dst,
-             tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop);
+             tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop, prefetch_x);
 
         kbc += blocks_per_ne00.z;
         kbc -= fastmodulo(kbc, blocks_per_ne00);
@@ -1242,7 +1301,7 @@ static __global__ void mul_mat_q(
     mul_mat_q_process_tile<type, J, fallback, fixup, prec_src1>
         (x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, y_scale_tile,
          stride_row_x, ncols_y, stride_col_dst,
-         tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop);
+         tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop, prefetch_x);
 }
 
 template <ggml_type type, int J, bool fallback, ggml_prec prec_src1 = GGML_PREC_Q8>
@@ -1446,10 +1505,14 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
 
     // For the stream-k kernel it is possible to run it with tiling by setting the number of CUDA blocks equal to the number of tiles.
     // This is worthwhile if the efficiency of tiling is high and skipping the fixup kernel is more important.
+    // Configs that target more than one resident block per SM get as many stream-k blocks as can be resident.
+    // But only with at least 2 K iterations per block, else the partial tiles and fixups outweigh the latency hiding.
+    const int64_t niters_k   = int64_t(ntx) * nty * ntzw * (args.ncols_x / config.K_vram);
+    const int     nblocks_sk = niters_k >= int64_t(2) * nsm * config.occupancy ? nsm * config.occupancy : nsm;
     const int ntiles_dst = ntx * nty * ntzw;
-    const int tiles_nwaves = (ntiles_dst + nsm - 1) / nsm;
-    const int tiles_efficiency_percent = 100 * ntiles_dst / (nsm*tiles_nwaves);
-    const dim3 block_nums_stream_k(GGML_CUDA_CC_IS_NVIDIA(cc) && tiles_efficiency_percent >= 90 ? ntiles_dst : nsm, 1, 1);
+    const int tiles_nwaves = (ntiles_dst + nblocks_sk - 1) / nblocks_sk;
+    const int tiles_efficiency_percent = 100 * ntiles_dst / (nblocks_sk*tiles_nwaves);
+    const dim3 block_nums_stream_k(GGML_CUDA_CC_IS_NVIDIA(cc) && tiles_efficiency_percent >= 90 ? ntiles_dst : nblocks_sk, 1, 1);
 
     GGML_ASSERT(ntiles_dst * blocks_per_ne00_fd.z < (1 << 30)); // Assert that variable kbc will not overflow.
 
@@ -1497,7 +1560,7 @@ void mul_mat_q_switch_J(ggml_backend_cuda_context & ctx, const mmq_args & args, 
             continue;
         }
 
-        if (mmq_get_nbytes_shared(config, cc) > smpbo) {
+        if (mmq_get_nbytes_shared(config, cc) + ggml_cuda_iq_grid_smem_nbytes(type) > smpbo) {
             continue;
         }
 

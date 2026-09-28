@@ -1131,7 +1131,7 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
 
 #pragma unroll
         for (int l = 0; l < QR2_XXS; ++l) {
-            const uint2 grid_pos = ((const uint2*)iq2xxs_grid)[aux8[l]];
+            const uint2 grid_pos = ggml_cuda_iq2xxs_grid<ggml_cuda_iq_grid_in_smem(GGML_TYPE_IQ2_XXS)>(aux8[l]);
             const uint32_t signs = unpack_ksigns(aux32 >> (7 * l));
 
             const int signs0 = __vcmpne4(signs & 0x08040201, 0);
@@ -1194,7 +1194,7 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
 
     #pragma unroll
         for (int l = 0; l < QR2_XS; ++l) {
-            const uint2 grid_pos = ((const uint2*)iq2xs_grid)[q2[l] & 0x1FF];
+            const uint2 grid_pos = ggml_cuda_iq2xs_grid<ggml_cuda_iq_grid_in_smem(GGML_TYPE_IQ2_XS)>(q2[l] & 0x1FF);
             const uint32_t signs = unpack_ksigns(q2[l] >> 9);
 
             const int signs0 = __vcmpne4(signs & 0x08040201, 0);
@@ -1328,7 +1328,8 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
 
 #pragma unroll
         for (int l = 0; l < QR3_XXS; ++l) {
-            const int2 grid_pos = make_int2(iq3xxs_grid[q3[2*l+0]], iq3xxs_grid[q3[2*l+1]]);
+            constexpr bool smem = ggml_cuda_iq_grid_in_smem(GGML_TYPE_IQ3_XXS);
+            const int2 grid_pos = make_int2(ggml_cuda_iq3xxs_grid<smem>(q3[2*l+0]), ggml_cuda_iq3xxs_grid<smem>(q3[2*l+1]));
             const uint32_t signs = unpack_ksigns(aux32 >> (7*l));
 
             const int signs0 = __vcmpne4(signs & 0x08040201, 0);
@@ -1396,9 +1397,10 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
 
 #pragma unroll
         for (int l = 0; l < QR3_S; ++l) {
+            constexpr bool smem = ggml_cuda_iq_grid_in_smem(GGML_TYPE_IQ3_S);
             const int2 grid_pos = make_int2(
-                iq3s_grid[qs[2*l+0] | ((qh << (8 - 2*l)) & 0x100)],
-                iq3s_grid[qs[2*l+1] | ((qh << (7 - 2*l)) & 0x100)]);
+                ggml_cuda_iq3s_grid<smem>(qs[2*l+0] | ((qh << (8 - 2*l)) & 0x100)),
+                ggml_cuda_iq3s_grid<smem>(qs[2*l+1] | ((qh << (7 - 2*l)) & 0x100)));
 
             const int signs0 = __vcmpne4(((signs_packed_8[l] & 0x03) << 7) | ((signs_packed_8[l] & 0x0C) << 21), 0x00000000);
             const int signs1 = __vcmpne4(((signs_packed_8[l] & 0x30) << 3) | ((signs_packed_8[l] & 0xC0) << 17), 0x00000000);

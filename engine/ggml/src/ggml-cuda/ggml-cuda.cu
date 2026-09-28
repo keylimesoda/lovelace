@@ -713,6 +713,36 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
             }
         }
     }
+    if (src1_quant_cache.buf != nullptr) {
+        CUDA_CHECK(cudaFree(src1_quant_cache.buf));
+    }
+}
+
+char * ggml_cuda_src1_quant_cache::get(const ggml_tensor * src1, int layout, size_t nbytes, cudaStream_t stream, bool * hit) {
+    *hit = false;
+    if (nbytes > slot_bytes) {
+        return nullptr;
+    }
+    for (int i = 0; i < n_slots; ++i) {
+        const slot & s = slots[i];
+        if (s.src1 == src1 && s.data == src1->data && s.layout == layout && s.nbytes >= nbytes) {
+            *hit = true;
+            return buf + i*slot_bytes;
+        }
+    }
+    if (buf == nullptr) {
+        // The buffer is baked into captured CUDA graphs, so it is allocated once and never outside of a capture.
+        cudaStreamCaptureStatus capture_status;
+        CUDA_CHECK(cudaStreamIsCapturing(stream, &capture_status));
+        if (capture_status != cudaStreamCaptureStatusNone) {
+            return nullptr;
+        }
+        CUDA_CHECK(cudaMalloc(&buf, n_slots*slot_bytes));
+    }
+    const int i = next;
+    next = (next + 1) % n_slots;
+    slots[i] = { src1, src1->data, ggml_nbytes(src1), layout, nbytes };
+    return buf + i*slot_bytes;
 }
 
 
@@ -4349,6 +4379,9 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     continue;
                 }
 
+                // A node that writes into the memory of a cached src1 (in-place ops, reused memory) makes it stale.
+                cuda_ctx->src1_quant_cache.invalidate(node);
+
                 int nodes_to_skip = ggml_cuda_try_fuse(cuda_ctx, cgraph, i);
 
                 if (nodes_to_skip != 0) {
@@ -4358,6 +4391,9 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                             nodes_to_skip + 1, ggml_op_name(node->op), node->name,
                             ggml_op_name(cgraph->nodes[last_fused]->op), cgraph->nodes[last_fused]->name);
 #endif
+                    for (int j = 1; j <= nodes_to_skip; ++j) {
+                        cuda_ctx->src1_quant_cache.invalidate(cgraph->nodes[i + j]);
+                    }
                     i += nodes_to_skip;
                     continue;
                 }
@@ -4448,6 +4484,9 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
 
     ggml_cuda_set_device(cuda_ctx->device);
+
+    // Tensors of an earlier graph may have been freed and their memory reused, so no quantized src1 carries over.
+    cuda_ctx->src1_quant_cache.reset();
 
     bool use_cuda_graph             = false;
     bool cuda_graph_update_required = false;
