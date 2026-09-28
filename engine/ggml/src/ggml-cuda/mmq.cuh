@@ -883,6 +883,43 @@ static constexpr __device__ ggml_cuda_mmq_write_back_t ggml_cuda_mmq_get_write_b
 
 // ---------------------------------------------------------------------------------------------
 
+// Whether the x data for the next K iteration is prefetched into L2 while the current one is processed.
+// The small-J tiles spend most of their time waiting on DRAM for the x tile, loading it straight from L2 hides most of that.
+static constexpr __device__ bool mmq_prefetch_x(const int J) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == GGML_CUDA_CC_ADA_LOVELACE
+    return J <= 32;
+#else
+    GGML_UNUSED(J);
+    return false;
+#endif // defined(__CUDA_ARCH__) && __CUDA_ARCH__ == GGML_CUDA_CC_ADA_LOVELACE
+}
+
+template <ggml_type type, int I, int nthreads, int blocks_per_iter, bool fallback>
+static __device__ __forceinline__ void mmq_prefetch_x_tile(const char * __restrict__ x, const int kbx0, const int stride, const int i_max) {
+#if defined(__CUDA_ARCH__) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    constexpr int bs         = ggml_cuda_type_traits<type>::bs;
+    constexpr int nbytes_row = blocks_per_iter*bs;
+    constexpr int nlines     = (nbytes_row + 127)/128 + 1; // +1 because a row segment can straddle an extra line
+
+    const int tid = threadIdx.y*blockDim.x + threadIdx.x;
+#pragma unroll
+    for (int l0 = 0; l0 < I*nlines; l0 += nthreads) {
+        const int l = l0 + tid;
+        if (l0 + nthreads > I*nlines && l >= I*nlines) {
+            break;
+        }
+        int i = l / nlines;
+        if (fallback) {
+            i = min(i, i_max);
+        }
+        const char * p = x + (int64_t(kbx0) + int64_t(i)*stride)*bs + min((l % nlines)*128, nbytes_row - 1);
+        asm volatile("prefetch.global.L2 [%0];" :: "l"(p));
+    }
+#else
+    GGML_UNUSED_VARS(x, kbx0, stride, i_max);
+#endif // defined(__CUDA_ARCH__) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+}
+
 template <ggml_type type, int J, bool fallback, bool fixup, ggml_prec prec_src1 = GGML_PREC_Q8>
 static __device__ __forceinline__ void mul_mat_q_process_tile(
         const char * __restrict__ x, const int offset_x, const int * __restrict__ y,
@@ -919,7 +956,16 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
 
     constexpr int sz = sizeof(block_q8_1_mmq) / sizeof(int);
 
+    // Only worth it for a long enough K range, a short one mostly adds its requests to the initial burst (observation).
+    const bool prefetch = mmq_prefetch_x(J) && kb0_stop - kb0_start >= 4*blocks_per_iter;
+
     for (int kb0 = kb0_start; kb0 < kb0_stop; kb0 += blocks_per_iter) {
+        if constexpr (mmq_prefetch_x(J)) {
+            if (prefetch && kb0 + blocks_per_iter < kb0_stop) {
+                mmq_prefetch_x_tile<type, I, nwarps*warp_size, blocks_per_iter, fallback>(
+                    x, offset_x + kb0 + blocks_per_iter, stride_row_x, tile_x_max_i);
+            }
+        }
         load_tiles(x, tile_x, offset_x + kb0, tile_x_max_i, stride_row_x);
         {
             const int * by0 = y + ncols_y * (kb0 * qk / ne_block) * sz;
