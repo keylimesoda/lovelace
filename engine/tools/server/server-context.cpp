@@ -315,36 +315,57 @@ struct server_slot {
     server_prompt_data park_data;      // parked sequence state of a preempted slot
     llama_tokens       recompute_tokens;
 
-    // copies the sequence state to the prompt cache, returns the state bytes copied (0 = not saved)
-    // take_checkpoints: move the checkpoints instead of copying them, the caller clears the prompt right after
+    // asynchronous transfers of the sequence state (server_prompt_cache::save / restore): while one is in progress,
+    // the sequence must not be decoded or modified
+    enum xfer_kind {
+        XFER_NONE,
+        XFER_PARK,   // the session is saved to the prompt cache, its cells are freed when the copy completes
+        XFER_SAVE,   // the session is saved to the prompt cache for its owner, the slot keeps the cells
+        XFER_UNPARK, // the session is restored from the prompt cache into xfer_in
+    };
+
+    server_prompt_cache * prompt_cache = nullptr;
+    server_prompt_data    xfer_in;              // buffers of an unpark in progress
+    xfer_kind             xfer         = XFER_NONE;
+    int64_t               xfer_t0      = 0;     // when the transfer was issued
+    int64_t               xfer_us_host = 0;     // host time spent issuing and waiting for it
+    size_t                xfer_bytes   = 0;
+    int32_t               xfer_tokens  = 0;
+
+    bool xfer_pending() const {
+        return !xfer_in.done() || (prompt_cache && prompt_cache->saving(id));
+    }
+
+    void xfer_wait() const {
+        xfer_in.wait();
+        if (prompt_cache) {
+            prompt_cache->wait_saving(id);
+        }
+    }
+
+    // starts copying the sequence state to the prompt cache, returns the state bytes being copied (0 = not saved)
+    // until the copy completes (xfer_pending()), the sequence must not be modified
+    // take_checkpoints: move the checkpoints instead of copying them, the caller clears the prompt after the copy
     size_t prompt_save(server_prompt_cache & prompt_cache, bool take_checkpoints = false) {
         if (prompt.tokens.size() == 0) {
             return 0;
         }
 
-        const size_t cur_size_tgt =           llama_state_seq_get_size_ext(ctx_tgt, id, LLAMA_STATE_SEQ_FLAGS_NONE);
-        const size_t cur_size_dft = ctx_dft ? llama_state_seq_get_size_ext(ctx_dft, id, LLAMA_STATE_SEQ_FLAGS_NONE) : 0;
-
-        const size_t cur_size = cur_size_tgt + cur_size_dft;
-
-        SRV_TRC(" - saving prompt with length %d, total state size = %.3f MiB (draft: %.3f MiB)\n",
-                (int) prompt.tokens.size(), cur_size / (1024.0 * 1024.0), cur_size_dft / (1024.0 * 1024.0));
-
-        auto * cur = prompt_cache.alloc(prompt, cur_size_tgt, cur_size_dft, take_checkpoints);
+        auto * cur = prompt_cache.save(prompt, ctx_tgt, ctx_dft, id, take_checkpoints);
         if (cur == nullptr) {
             return 0;
         }
 
-        llama_state_seq_get_data_ext(ctx_tgt, cur->data.main.data(), cur_size_tgt, id, LLAMA_STATE_SEQ_FLAGS_NONE);
-        if (ctx_dft) {
-            llama_state_seq_get_data_ext(ctx_dft, cur->data.drft.data(), cur_size_dft, id, LLAMA_STATE_SEQ_FLAGS_NONE);
-        }
+        SRV_TRC(" - saving prompt with length %d, total state size = %.3f MiB (draft: %.3f MiB)\n",
+                (int) prompt.tokens.size(), cur->data.size() / (1024.0 * 1024.0), cur->data.drft.size() / (1024.0 * 1024.0));
 
-        return cur_size;
+        return cur->data.size();
     }
 
     // returns false if a cache entry could not be restored, the caller must clear the prompt then
     bool prompt_load(server_prompt_cache & prompt_cache, const server_tokens & tokens, size_t & n_bytes) {
+        xfer_wait();
+
         bool res = prompt_cache.load(prompt, tokens, ctx_tgt, ctx_dft, id, n_bytes);
         if (!res) {
             SLT_WRN(*this, "%s", "failed to load prompt from cache\n");
@@ -355,6 +376,9 @@ struct server_slot {
 
     void prompt_clear() {
         SLT_TRC(*this, "clearing prompt with %zu tokens\n", prompt.tokens.size());
+
+        // the cells may be reused right away
+        xfer_wait();
 
         mem.seq_rm(id, -1, -1);
 
@@ -978,6 +1002,9 @@ private:
 
     int n_empty_consecutive = 0;
 
+    // pinned host memory for the prompt cache and the context checkpoints, sized to --cache-ram
+    std::unique_ptr<common_state_arena> state_arena;
+
     std::unique_ptr<server_prompt_cache> prompt_cache;
 
     // KV budget scheduling (--kv-budget, unified KV only), see server-sched.h
@@ -986,6 +1013,7 @@ private:
         SCHED_DROPPED,   // the task failed to launch and was answered with an error
         SCHED_WAIT_SLOT, // no idle slot
         SCHED_WAIT_KV,   // the reservation does not fit, even after parking every idle slot
+        SCHED_WAIT_XFER, // it fits once the sessions being parked have been copied to host memory
     };
 
     struct sched_entry {
@@ -1018,8 +1046,10 @@ private:
         uint64_t n_kv_overflow  = 0; // llama_decode() found no free cells despite the budget
         uint64_t bytes_park     = 0;
         uint64_t bytes_unpark   = 0;
-        int64_t  us_park        = 0;
+        int64_t  us_park        = 0; // device time of the copies
         int64_t  us_unpark      = 0;
+        int64_t  us_park_host   = 0; // time the server loop spent issuing and waiting for them
+        int64_t  us_unpark_host = 0;
     } sched_stats;
 
     server_metrics metrics;
@@ -1044,6 +1074,11 @@ private:
     int64_t t_last_load_progress_ms = 0;
 
     void destroy() {
+        // host state buffers wait for their transfers, which need the contexts
+        prompt_cache.reset();
+        slots.clear();
+        state_arena.reset();
+
         spec.reset();
         spec_init.reset();
 
@@ -1466,9 +1501,26 @@ private:
             }
             SRV_TRC("%s", "use `--cache-ram 0` to disable the prompt cache\n");
 
-            prompt_cache = std::make_unique<server_prompt_cache>(params_base.cache_ram_mib, n_ctx);
+            // the entries and the context checkpoints live in fixed chunks of one pinned arena, so that the state
+            // transfers run asynchronously at PCIe speed
+            if (params_base.cache_ram_mib > 0) {
+                const int64_t t_start = ggml_time_us();
+                // about 2k chunks, of at most 16 MiB: small enough that an entry wastes little, large enough for few copies
+                const size_t size  = (size_t) params_base.cache_ram_mib << 20;
+                const size_t chunk = std::clamp<size_t>(size / 2048, (size_t) 64 << 10, (size_t) 16 << 20);
+                state_arena = std::make_unique<common_state_arena>(size, chunk);
+                SRV_INF("prompt cache: %.0f MiB of %s host memory in %zu chunks of %zu KiB (%.1f s)\n",
+                        state_arena->n_total() * state_arena->chunk_size() / 1048576.0, state_arena->pinned() ? "pinned" : "pageable",
+                        state_arena->n_total(), state_arena->chunk_size() >> 10, (ggml_time_us() - t_start) / 1e6);
+            }
+
+            prompt_cache = std::make_unique<server_prompt_cache>(params_base.cache_ram_mib, n_ctx, state_arena.get());
         } else {
             SRV_TRC("%s", "prompt cache is disabled - use `--cache-ram N` to enable it\n");
+        }
+
+        for (auto & slot : slots) {
+            slot.prompt_cache = prompt_cache.get();
         }
 
         // KV budget scheduling: only a unified cache is shared, a per-slot cache cannot be exhausted by other slots
@@ -1820,7 +1872,7 @@ private:
         if (victim) {
             if (kv_budget_on) {
                 SRV_WRN("KV budget: parking slot %d with %d tokens to free cells\n", victim->id, victim->prompt.n_tokens());
-                sched_park(*victim);
+                sched_park(*victim, /* wait */ true);
             } else {
                 SRV_WRN("purging slot %d with %zu tokens\n", victim->id, victim->prompt.tokens.size());
                 victim->prompt_clear();
@@ -1844,12 +1896,15 @@ private:
     }
 
     // mirror the slots into the budget before planning
+    //  - a slot being parked counts as empty: its cells are freed as soon as the copy completes
+    //  - a slot with another transfer in progress cannot be parked yet
     void sched_sync() {
         for (size_t i = 0; i < slots.size(); i++) {
             const auto & slot = slots[i];
             auto & s = kv_budget.slots[i];
-            s.active      = slot.is_processing();
-            s.n_used      = slot.state == SLOT_STATE_PREEMPTED ? 0 : slot.prompt.n_tokens();
+            const bool parking = slot.xfer == server_slot::XFER_PARK;
+            s.active      = slot.is_processing() || (!parking && slot.xfer_pending());
+            s.n_used      = slot.state == SLOT_STATE_PREEMPTED || parking ? 0 : slot.prompt.n_tokens();
             s.n_reserved  = slot.n_reserved;
             s.t_last_used = slot.t_last_used;
         }
@@ -1865,46 +1920,129 @@ private:
         return false;
     }
 
-    void sched_account_transfer(bool park, size_t n_bytes, int64_t t_us) {
+    // t_us: device time of the copies, host_us: time the server loop spent issuing and waiting for them
+    void sched_account_transfer(bool park, size_t n_bytes, int64_t t_us, int64_t host_us) {
         if (park) {
-            sched_stats.bytes_park += n_bytes;
-            sched_stats.us_park    += t_us;
+            sched_stats.bytes_park   += n_bytes;
+            sched_stats.us_park      += t_us;
+            sched_stats.us_park_host += host_us;
         } else {
-            sched_stats.bytes_unpark += n_bytes;
-            sched_stats.us_unpark    += t_us;
+            sched_stats.bytes_unpark   += n_bytes;
+            sched_stats.us_unpark      += t_us;
+            sched_stats.us_unpark_host += host_us;
         }
     }
 
-    // save an idle slot's session to the prompt cache and free its cells
-    void sched_park(server_slot & slot) {
+    bool sched_parks_pending() const {
+        for (const auto & slot : slots) {
+            if (slot.xfer == server_slot::XFER_PARK) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // start saving an idle slot's session to the prompt cache and free its cells once the copy completes (see
+    // sched_poll_xfers), while the other slots keep decoding; wait: complete the park before returning
+    void sched_park(server_slot & slot, bool wait = false) {
         GGML_ASSERT(!slot.is_processing());
 
-        const int32_t n_tokens = slot.prompt.n_tokens();
-        if (n_tokens == 0) {
-            return;
+        if (slot.xfer != server_slot::XFER_PARK) {
+            const int32_t n_tokens = slot.prompt.n_tokens();
+            if (n_tokens == 0) {
+                return;
+            }
+
+            // an earlier transfer of the sequence (e.g. the unpark of a cancelled task) completes first
+            sched_finish_xfer(slot, true);
+
+            const int64_t t_start = ggml_time_us();
+            const size_t  n_bytes = prompt_cache ? slot.prompt_save(*prompt_cache, /* take_checkpoints */ true) : 0;
+
+            if (n_bytes == 0) {
+                // already contained in a cache entry, or the cache is off or has no room
+                slot.prompt_clear();
+                if (prompt_cache) {
+                    prompt_cache->update();
+                }
+                sched_stats.n_park_drop++;
+                SLT_INF(slot, "evicted session without a new copy: %d tokens\n", n_tokens);
+                obs_sched_event("park", slot, n_tokens, 0, 0, ggml_time_us() - t_start);
+                return;
+            }
+
+            slot.xfer         = server_slot::XFER_PARK;
+            slot.xfer_t0      = t_start;
+            slot.xfer_us_host = ggml_time_us() - t_start;
+            slot.xfer_bytes   = n_bytes;
+            slot.xfer_tokens  = n_tokens;
         }
 
-        const int64_t t_start = ggml_time_us();
-        const size_t  n_bytes = prompt_cache ? slot.prompt_save(*prompt_cache, /* take_checkpoints */ true) : 0;
-        const int64_t t_copy  = ggml_time_us() - t_start;
+        if (wait) {
+            sched_finish_xfer(slot, true);
+        }
+    }
 
-        slot.prompt_clear();
-        if (prompt_cache) {
-            prompt_cache->update();
+    // account a transfer of the slot that has completed (or wait for it), park: free the cells
+    // returns false if the transfer is still in progress
+    bool sched_finish_xfer(server_slot & slot, bool wait) {
+        if (slot.xfer == server_slot::XFER_NONE) {
+            return true;
+        }
+        if (!wait && slot.xfer_pending()) {
+            return false;
         }
 
-        if (n_bytes > 0) {
-            sched_stats.n_park++;
-            sched_account_transfer(true, n_bytes, t_copy);
-            SLT_INF(slot, "parked session: %d tokens, %.1f MiB in %.1f ms (%.2f GB/s)\n",
-                    n_tokens, n_bytes / 1048576.0, t_copy / 1e3, n_bytes / 1e3 / std::max<int64_t>(1, t_copy));
+        const int64_t t_wait = ggml_time_us();
+        int64_t t_us = -1;
+        if (slot.xfer == server_slot::XFER_UNPARK) {
+            slot.xfer_in.wait();
+            t_us = slot.xfer_in.t_us();
+            slot.xfer_in = {};
         } else {
-            // already contained in a cache entry, or the cache is off or has no room
-            sched_stats.n_park_drop++;
-            SLT_INF(slot, "evicted session without a new copy: %d tokens\n", n_tokens);
+            t_us = prompt_cache->finish_saving(slot.id);
+        }
+        const int64_t t_now = ggml_time_us();
+        slot.xfer_us_host += t_now - t_wait;
+        if (t_us < 0) {
+            // the entry was evicted before its copy was accounted
+            t_us = t_now - slot.xfer_t0;
         }
 
-        obs_sched_event("park", slot, n_tokens, n_bytes, t_copy);
+        const bool park = slot.xfer != server_slot::XFER_UNPARK;
+        const char * action = park ? "park" : "unpark";
+
+        if (slot.xfer == server_slot::XFER_PARK) {
+            slot.prompt_clear();
+            prompt_cache->update();
+            sched_dirty = true;
+        }
+
+        (park ? sched_stats.n_park : sched_stats.n_unpark)++;
+        sched_account_transfer(park, slot.xfer_bytes, t_us, slot.xfer_us_host);
+
+        SLT_INF(slot, "%s session: %d tokens, %.1f MiB in %.1f ms (%.2f GB/s), done %.1f ms after issue, host %.1f ms\n",
+                park ? "parked" : "unparked", slot.xfer_tokens, slot.xfer_bytes / 1048576.0, t_us / 1e3,
+                slot.xfer_bytes / 1e3 / std::max<int64_t>(1, t_us), (t_now - slot.xfer_t0) / 1e3, slot.xfer_us_host / 1e3);
+
+        obs_sched_event(action, slot, slot.xfer_tokens, slot.xfer_bytes, t_us, slot.xfer_us_host);
+
+        slot.xfer = server_slot::XFER_NONE;
+
+        return true;
+    }
+
+    // complete the transfers that have finished: parked slots free their cells, unparked slots may run
+    // wait: complete all of them, returns true if any was in progress
+    bool sched_poll_xfers(bool wait) {
+        bool any = false;
+        for (auto & slot : slots) {
+            if (slot.xfer != server_slot::XFER_NONE) {
+                any = true;
+                sched_finish_xfer(slot, wait);
+            }
+        }
+        return any;
     }
 
     // pause a generating slot at a token boundary: its whole state goes to host memory, its cells are freed
@@ -1916,17 +2054,18 @@ private:
         const size_t size_tgt =           llama_state_seq_get_size_ext(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
         const size_t size_dft = ctx_dft ? llama_state_seq_get_size_ext(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE) : 0;
 
-        try {
-            slot.park_data.main.resize(size_tgt);
-            slot.park_data.drft.resize(size_dft);
-            llama_state_seq_get_data_ext(ctx_tgt, slot.park_data.main.data(), size_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
-            if (ctx_dft) {
-                llama_state_seq_get_data_ext(ctx_dft, slot.park_data.drft.data(), size_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
-            }
-        } catch (const std::bad_alloc &) {
+        auto & data = slot.park_data;
+        if (prompt_cache && state_arena) {
+            prompt_cache->make_room(state_arena->n_chunks(size_tgt) + state_arena->n_chunks(size_dft));
+        }
+        bool ok = data.main.alloc(state_arena.get(), size_tgt) && data.drft.alloc(state_arena.get(), size_dft);
+        ok = ok && data.main.get_async(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+        ok = ok && (!ctx_dft || data.drft.get_async(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE));
+        data.wait();
+        if (!ok) {
             // resumed by re-prefilling the history instead
             SLT_WRN(slot, "%s", "no host memory to park the state, it will be recomputed on resume\n");
-            slot.park_data = {};
+            data = {};
         }
 
         const int64_t t_copy = ggml_time_us() - t_start;
@@ -1941,12 +2080,12 @@ private:
         sched_dirty = true;
 
         sched_stats.n_preempt++;
-        sched_account_transfer(true, slot.park_data.size(), t_copy);
+        sched_account_transfer(true, data.size(), data.t_us() > 0 ? data.t_us() : t_copy, t_copy);
 
         SLT_WRN(slot, "preempted at %d tokens, the KV budget cannot grow its reservation: parked %.1f MiB in %.1f ms\n",
-                slot.prompt.n_tokens(), slot.park_data.size() / 1048576.0, t_copy / 1e3);
+                slot.prompt.n_tokens(), data.size() / 1048576.0, t_copy / 1e3);
 
-        obs_sched_event("preempt", slot, slot.prompt.n_tokens(), slot.park_data.size(), t_copy);
+        obs_sched_event("preempt", slot, slot.prompt.n_tokens(), data.size(), t_copy, t_copy);
     }
 
     // resume the oldest preempted slot if its reservation fits, returns false to keep waiting
@@ -1961,22 +2100,27 @@ private:
             return false;
         }
         for (int id : plan.victims) {
-            sched_park(slots[id]);
+            sched_park(slots[id], /* wait */ true);
+        }
+        // cells of earlier parks are freed first
+        for (auto & other : slots) {
+            if (other.xfer == server_slot::XFER_PARK) {
+                sched_finish_xfer(other, true);
+            }
         }
 
         const int64_t t_start = ggml_time_us();
 
-        bool ok = !slot.park_data.main.empty();
-        if (ok) {
-            auto & data = slot.park_data;
-            ok = llama_state_seq_set_data_ext(ctx_tgt, data.main.data(), data.main.size(), slot.id, LLAMA_STATE_SEQ_FLAGS_NONE) == data.main.size();
-            if (ok && ctx_dft) {
-                ok = llama_state_seq_set_data_ext(ctx_dft, data.drft.data(), data.drft.size(), slot.id, LLAMA_STATE_SEQ_FLAGS_NONE) == data.drft.size();
-            }
-        }
+        auto & data = slot.park_data;
+
+        bool ok = !data.main.empty();
+        ok = ok && data.main.set_async(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+        ok = ok && (!ctx_dft || data.drft.set_async(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE));
+        data.wait();
 
         const int64_t t_copy  = ggml_time_us() - t_start;
-        const size_t  n_bytes = slot.park_data.size();
+        const size_t  n_bytes = data.size();
+        const int64_t t_dev   = data.t_us() > 0 ? data.t_us() : t_copy;
 
         slot.park_data  = {};
         slot.t_preempt  = 0;
@@ -1984,7 +2128,7 @@ private:
         slot.state      = SLOT_STATE_GENERATING;
 
         if (ok) {
-            sched_account_transfer(false, n_bytes, t_copy);
+            sched_account_transfer(false, n_bytes, t_dev, t_copy);
             SLT_INF(slot, "resumed at %d tokens: restored %.1f MiB in %.1f ms\n", slot.prompt.n_tokens(), n_bytes / 1048576.0, t_copy / 1e3);
         } else {
             SLT_WRN(slot, "%s", "resuming by re-prefilling the history, the parked state is unusable\n");
@@ -1995,7 +2139,7 @@ private:
         }
 
         sched_stats.n_resume++;
-        obs_sched_event("resume", slot, slot.prompt.n_tokens(), ok ? n_bytes : 0, t_copy);
+        obs_sched_event("resume", slot, slot.prompt.n_tokens(), ok ? n_bytes : 0, t_dev, t_copy);
 
         return true;
     }
@@ -2021,8 +2165,9 @@ private:
             sched_sync();
             const auto plan = kv_budget.plan_commit(slot.id, need, false);
             if (plan.fits) {
+                // the growing slot may need the cells in this very step
                 for (int id : plan.victims) {
-                    sched_park(slots[id]);
+                    sched_park(slots[id], /* wait */ true);
                 }
                 SLT_INF(slot, "KV reservation grown from %d to %d cells\n", slot.n_reserved, need);
                 slot.n_reserved = need;
@@ -2119,6 +2264,7 @@ private:
             if (slot == nullptr || slot->is_processing()) {
                 return SCHED_WAIT_SLOT;
             }
+            sched_finish_xfer(*slot, true);
             id_slot = slot->id;
         } else {
             auto & cands = sched_cands;
@@ -2126,7 +2272,7 @@ private:
             for (size_t i = 0; i < slots.size(); i++) {
                 const auto & slot = slots[i];
                 auto & c = cands[i];
-                c.idle        = !slot.is_processing();
+                c.idle        = !slot.is_processing() && slot.xfer == server_slot::XFER_NONE;
                 c.n_used      = slot.prompt.n_tokens();
                 c.n_lcp       = c.idle && c.n_used > 0 ? (int32_t) slot.prompt.tokens.get_common_prefix(task.tokens) : 0;
                 c.t_last_used = slot.t_last_used;
@@ -2177,49 +2323,59 @@ private:
             return SCHED_WAIT_KV;
         }
 
+        // parks copy the sessions while the other slots keep decoding, and free the cells when done
         for (int id : plan.victims) {
             sched_park(slots[id]);
         }
         for (auto * child : child_slots) {
-            sched_park(*child);
+            sched_park(*child, /* wait */ true);
+        }
+        if (cached && n_resident > 0) {
+            // the resident session makes room for the cached one
+            sched_park(slot);
+        }
+        if (sched_parks_pending()) {
+            // admitted by a later attempt, once the cells are free
+            return SCHED_WAIT_XFER;
         }
 
-        // take the entry out first: saving the resident prompt below may evict cache entries
         server_prompt_cache_state state_new;
         if (cached) {
             state_new = prompt_cache->take(cached);
         }
 
         if (swap && n_resident > 0) {
-            // keep a copy of the resident session for its owner; move its checkpoints when it is replaced
+            // keep a copy of the resident session for its owner, the slot keeps the cells and reuses the common prefix
+            // once the copy completes
             const int64_t t_start = ggml_time_us();
-            const size_t  n_bytes = slot.prompt_save(*prompt_cache, /* take_checkpoints */ cached != nullptr);
-            const int64_t t_copy  = ggml_time_us() - t_start;
+            const size_t  n_bytes = slot.prompt_save(*prompt_cache, /* take_checkpoints */ false);
             if (n_bytes > 0) {
-                sched_stats.n_park++;
-                sched_account_transfer(true, n_bytes, t_copy);
-                SLT_INF(slot, "parked session: %d tokens, %.1f MiB in %.1f ms (%.2f GB/s)\n",
-                        n_resident, n_bytes / 1048576.0, t_copy / 1e3, n_bytes / 1e3 / std::max<int64_t>(1, t_copy));
-                obs_sched_event("park", slot, n_resident, n_bytes, t_copy);
+                slot.xfer         = server_slot::XFER_SAVE;
+                slot.xfer_t0      = t_start;
+                slot.xfer_us_host = ggml_time_us() - t_start;
+                slot.xfer_bytes   = n_bytes;
+                slot.xfer_tokens  = n_resident;
             }
         }
 
         if (cached) {
+            // the prompt is processed once the copy completes
             const int64_t t_start = ggml_time_us();
             size_t n_bytes = 0;
-            if (!server_prompt_cache::restore(state_new, slot.prompt, ctx_tgt, ctx_dft, slot.id, n_bytes)) {
+            if (!server_prompt_cache::restore(state_new, slot.prompt, slot.xfer_in, ctx_tgt, ctx_dft, slot.id, n_bytes)) {
                 SLT_WRN(slot, "%s", "failed to restore a parked session, the prompt is processed from scratch\n");
+                state_new.data.wait();
                 slot.prompt_clear();
                 n_bytes = 0;
             }
-            const int64_t t_copy = ggml_time_us() - t_start;
             if (n_bytes > 0) {
-                sched_stats.n_unpark++;
-                sched_account_transfer(false, n_bytes, t_copy);
+                slot.xfer         = server_slot::XFER_UNPARK;
+                slot.xfer_t0      = t_start;
+                slot.xfer_us_host = ggml_time_us() - t_start;
+                slot.xfer_bytes   = n_bytes;
+                slot.xfer_tokens  = slot.prompt.n_tokens();
+
                 slot.obs_n_unparked = slot.prompt.n_tokens();
-                SLT_INF(slot, "unparked session: %d tokens, %.1f MiB in %.1f ms (%.2f GB/s)\n",
-                        slot.prompt.n_tokens(), n_bytes / 1048576.0, t_copy / 1e3, n_bytes / 1e3 / std::max<int64_t>(1, t_copy));
-                obs_sched_event("unpark", slot, slot.prompt.n_tokens(), n_bytes, t_copy);
             }
         }
 
@@ -2281,7 +2437,7 @@ private:
 
             auto & entry = sched_queue.front();
             const auto res = sched_try_admit(entry);
-            if (res == SCHED_WAIT_SLOT || res == SCHED_WAIT_KV) {
+            if (res == SCHED_WAIT_SLOT || res == SCHED_WAIT_KV || res == SCHED_WAIT_XFER) {
                 if (strcmp(entry.wait_reason, "none") == 0) {
                     entry.wait_reason = res == SCHED_WAIT_SLOT ? "slot" : "kv";
                     (res == SCHED_WAIT_SLOT ? sched_stats.n_wait_slot : sched_stats.n_wait_kv)++;
@@ -2990,8 +3146,14 @@ private:
         //       this is not true for SWA models: https://github.com/ggml-org/llama.cpp/pull/24411#issuecomment-4677983225
         cur.update_pos(slot.prompt.n_tokens() - n_tokens_cur, pos_min, pos_max);
 
-        cur.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-        cur.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+        // checkpoints live in the pinned arena next to the prompt cache, which makes room for them
+        if (state_arena) {
+            const size_t n_tgt =           llama_state_seq_get_size_ext(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+            const size_t n_dft = ctx_dft ? llama_state_seq_get_size_ext(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) : 0;
+            prompt_cache->make_room(state_arena->n_chunks(n_tgt) + state_arena->n_chunks(n_dft));
+        }
+        cur.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY, state_arena.get());
+        cur.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY, state_arena.get());
         // stash the draft's speculative state with the checkpoint
         common_speculative_get_state(spec.get(), slot.id, cur.data_spec);
 
@@ -3459,18 +3621,27 @@ private:
 
         // admit waiting work into the slots and cells freed by the last iteration
         if (kv_budget_on) {
+            sched_poll_xfers(/* wait */ false);
             sched_admit();
         }
 
         // check if all slots are idle
         {
-            bool all_idle = true;
-
-            for (auto & slot : slots) {
-                if (slot.is_processing()) {
-                    all_idle = false;
-                    break;
+            auto check_idle = [&]() {
+                for (auto & slot : slots) {
+                    if (slot.is_processing()) {
+                        return false;
+                    }
                 }
+                return true;
+            };
+
+            bool all_idle = check_idle();
+
+            // no decode for the state transfers to overlap with: complete them, which may admit waiting work
+            if (all_idle && kv_budget_on && sched_poll_xfers(/* wait */ true)) {
+                sched_admit();
+                all_idle = check_idle();
             }
 
             if (all_idle) {
@@ -3510,6 +3681,11 @@ private:
         }
 
         GGML_ASSERT(batch.slot_batched || batch.size() == 0);
+
+        // the only work left waits for state transfers
+        if (batch.size() == 0 && kv_budget_on && sched_poll_xfers(/* wait */ true)) {
+            return;
+        }
 
         if (batch.slot_batched) {
             auto & slot_batched      = batch.slot_batched;
@@ -3814,7 +3990,8 @@ private:
                     return; // batch is full, skip remaining slots
                 }
 
-                if (!slot.is_processing() || slot.state == SLOT_STATE_PREEMPTED) {
+                // a slot whose state is still being copied waits, other slots keep going
+                if (!slot.is_processing() || slot.state == SLOT_STATE_PREEMPTED || slot.xfer_pending()) {
                     return;
                 }
 
@@ -5038,6 +5215,8 @@ public:
                     {"unpark_bytes",        sched_stats.bytes_unpark},
                     {"park_seconds",        sched_stats.us_park / 1e6},
                     {"unpark_seconds",      sched_stats.us_unpark / 1e6},
+                    {"park_host_seconds",   sched_stats.us_park_host / 1e6},
+                    {"unpark_host_seconds", sched_stats.us_unpark_host / 1e6},
                     {"park_gbps",           sched_stats.us_park   > 0 ? sched_stats.bytes_park   / 1e3 / sched_stats.us_park   : 0.0},
                     {"unpark_gbps",         sched_stats.us_unpark > 0 ? sched_stats.bytes_unpark / 1e3 / sched_stats.us_unpark : 0.0},
                     {"waited_slot",         sched_stats.n_wait_slot},
@@ -5407,8 +5586,9 @@ private:
     }
 
     // one record per park / unpark / preempt / resume, the transfers are rare and heavy
-    void obs_sched_event(const char * event, const server_slot & slot, int32_t n_tokens, size_t n_bytes, int64_t t_us) {
-        SRV_DBG("sched %s: slot %d, %d tokens, %zu bytes, %" PRId64 " us\n", event, slot.id, n_tokens, n_bytes, t_us);
+    // t_us: device time of the copies, host_us: time the server loop spent on them
+    void obs_sched_event(const char * event, const server_slot & slot, int32_t n_tokens, size_t n_bytes, int64_t t_us, int64_t host_us) {
+        SRV_DBG("sched %s: slot %d, %d tokens, %zu bytes, %" PRId64 " us, host %" PRId64 " us\n", event, slot.id, n_tokens, n_bytes, t_us, host_us);
         if (!obs) {
             return;
         }
@@ -5425,6 +5605,7 @@ private:
             {"n_tokens", n_tokens},
             {"bytes",    n_bytes},
             {"ms",       t_us / 1e3},
+            {"host_ms",  host_us / 1e3},
             {"gbps",     t_us > 0 ? n_bytes / 1e3 / t_us : 0.0},
         };
         obs->emit(std::move(rec));

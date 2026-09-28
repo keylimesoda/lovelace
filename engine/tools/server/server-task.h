@@ -593,18 +593,37 @@ struct server_prompt {
     }
 };
 
+// the sequence state of a prompt cache entry, see common_state_buf
 struct server_prompt_data {
-    std::vector<uint8_t> main;
-    std::vector<uint8_t> drft;
+    common_state_buf main;
+    common_state_buf drft;
 
     size_t size() const {
         return main.size() + drft.size();
+    }
+
+    // the transfers into or out of the buffers are complete
+    bool done() const {
+        return main.done() && drft.done();
+    }
+
+    void wait() const {
+        main.wait();
+        drft.wait();
+    }
+
+    // device time of the last transfers in microseconds
+    int64_t t_us() const {
+        return std::max<int64_t>(0, main.t_us()) + std::max<int64_t>(0, drft.t_us());
     }
 };
 
 struct server_prompt_cache_state {
     server_prompt prompt;
     server_prompt_data data;
+
+    // slot whose sequence is still being copied into the entry (-1 = none), the slot must not modify it until then
+    int id_slot_save = -1;
 
     size_t size() const {
         size_t res = data.size();
@@ -618,12 +637,18 @@ struct server_prompt_cache_state {
 };
 
 struct server_prompt_cache {
-    server_prompt_cache(int32_t limit_size_mib, size_t limit_tokens) {
+    // arena: host memory for the entries and checkpoints (nullptr = heap memory), its size then sets the limit
+    server_prompt_cache(int32_t limit_size_mib, size_t limit_tokens, common_state_arena * arena) : arena(arena) {
         this->limit_size   = 1024ull*1024ull*(limit_size_mib < 0 ? 0 : limit_size_mib);
         this->limit_tokens = limit_tokens;
+        if (arena) {
+            this->limit_size = arena->n_total() * arena->chunk_size();
+        }
     }
 
     std::list<server_prompt_cache_state> states;
+
+    common_state_arena * arena = nullptr;
 
     // in bytes, 0 = no limit
     size_t limit_size = 0;
@@ -635,8 +660,21 @@ struct server_prompt_cache {
 
     size_t n_tokens() const;
 
+    // starts copying the slot's sequence into a new entry, see server_prompt_cache_state::id_slot_save
     // take_checkpoints: move the checkpoints out of `prompt` instead of copying them (the caller clears it)
-    server_prompt_cache_state * alloc(server_prompt & prompt, size_t state_size_main, size_t state_size_drft, bool take_checkpoints);
+    // returns nullptr if the prompt is already contained in an entry or there is no room
+    server_prompt_cache_state * save(server_prompt & prompt, llama_context * ctx_tgt, llama_context * ctx_dft, int id_slot, bool take_checkpoints);
+
+    // a sequence copy into an entry started by save() is still in progress for the slot
+    bool saving(int id_slot) const;
+    void wait_saving(int id_slot) const;
+
+    // waits for the copies of the slot and detaches them from it, returns the device time of the newest one in
+    // microseconds (-1 if none is left, e.g. evicted meanwhile)
+    int64_t finish_saving(int id_slot);
+
+    // evicts the oldest entries until the arena has n_chunks free chunks, false if it still has fewer
+    bool make_room(size_t n_chunks);
 
     // the entry load() would restore for tokens_new, given the slot currently holds `prompt`; nullptr = keep `prompt`
     const server_prompt_cache_state * find(const server_prompt & prompt, const server_tokens & tokens_new) const;
@@ -644,11 +682,13 @@ struct server_prompt_cache {
     // removes an entry returned by find() from the cache
     server_prompt_cache_state take(const server_prompt_cache_state * state);
 
-    // restores a taken entry into the slot's sequence, n_bytes: state bytes restored
-    // on failure the sequence is in an unspecified state and the caller must clear it
-    static bool restore(server_prompt_cache_state & state, server_prompt & prompt, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot, size_t & n_bytes);
+    // starts restoring a taken entry into the slot's sequence; its buffers move to `data`, which must be kept until
+    // data.done(), and the slot's sequence must not be decoded or modified until then
+    // n_bytes: state bytes restored; on failure the sequence is in an unspecified state and the caller must clear it
+    static bool restore(server_prompt_cache_state & state, server_prompt & prompt, server_prompt_data & data,
+            llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot, size_t & n_bytes);
 
-    // find() + take() + restore(); keeps `prompt` if no entry is better
+    // find() + take() + restore() + wait; keeps `prompt` if no entry is better
     // n_bytes: state bytes restored into the context, 0 if the slot kept its prompt
     bool load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot, size_t & n_bytes);
 
