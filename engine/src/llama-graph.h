@@ -276,6 +276,10 @@ public:
     ggml_tensor * s_copy_main;   // I32 [n_seqs]
     ggml_tensor * s_copy_extra;  // I32 [n_rs - n_seqs]
 
+    // [ReplaySSM] (records to fold, source row) per row, see ggml_gated_delta_net_rr
+    ggml_tensor * rs_fold      = nullptr; // I32 [2, n_rs]
+    ggml_tensor * rs_fold_main = nullptr; // I32 [2, n_seqs]
+
     const llama_memory_recurrent_context * mctx;
 
     // used in view offsets, need to match for valid graph reuse

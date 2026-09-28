@@ -33,6 +33,87 @@ static llm_graph_type ctx_type_to_graph_type(llama_context_type ctx_type) {
     throw std::runtime_error("Unsupported ctx type");
 }
 
+// [ReplaySSM] the record + fold ops write their records in place, so they must run on the device that holds the
+// recurrent state of every recurrent layer
+static bool llama_rs_replay_supported(const llama_model & model, const llama_cparams & cparams) {
+    const auto & hparams = model.hparams;
+
+    const int64_t S_v = hparams.ssm_d_state;
+    const int64_t H_k = hparams.ssm_n_group;
+    const int64_t H_v = hparams.ssm_dt_rank;
+    const int64_t W   = hparams.ssm_d_conv;
+    const int64_t K   = cparams.n_rs_seq + 1;
+
+    if (S_v == 0 || H_k == 0 || H_v == 0 || H_v % H_k != 0 || W < 2 || (int64_t) hparams.ssm_d_inner != S_v*H_v) {
+        return false;
+    }
+
+    ggml_init_params params = {
+        /*.mem_size   =*/ ggml_tensor_overhead()*16,
+        /*.mem_buffer =*/ NULL,
+        /*.no_alloc   =*/ true,
+    };
+
+    ggml_context_ptr ctx { ggml_init(params) };
+    if (!ctx) {
+        throw std::runtime_error("failed to create ggml context");
+    }
+
+    ggml_context * ctx0 = ctx.get();
+
+    ggml_tensor * rs  = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, 2, 1);
+    ggml_tensor * gdn = ggml_gated_delta_net_rr(ctx0,
+            ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, S_v, H_k, 1, 1),
+            ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, S_v, H_k, 1, 1),
+            ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, S_v, H_v, 1, 1),
+            ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, 1,   H_v, 1, 1),
+            ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, 1,   H_v, 1, 1),
+            ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, S_v, S_v, H_v, 1),
+            ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, hparams.n_embd_rec(), K, 1),
+            rs, K, 0);
+    ggml_tensor * fold = ggml_ssm_conv_fold(ctx0,
+            ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, W - 1, hparams.n_embd_recx(), 1),
+            ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, hparams.n_embd_recx(), K, 1),
+            ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, hparams.n_embd_recx(), 1, 1),
+            rs, K, 0);
+
+    for (uint32_t il = 0; il < hparams.n_layer(); ++il) {
+        if (!hparams.is_recr(il)) {
+            continue;
+        }
+
+        ggml_backend_dev_t dev = model.dev_layer(il);
+        if (!cparams.offload_kqv && ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_CPU) {
+            // the records would live in host memory while the layer runs on the device
+            return false;
+        }
+
+        ggml_backend_buffer_ptr buf { ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dev), 0) };
+        for (ggml_tensor * op : { gdn, fold }) {
+            for (int i = 0; i < GGML_MAX_SRC; i++) {
+                if (op->src[i] != nullptr) {
+                    op->src[i]->buffer = buf.get();
+                }
+            }
+        }
+
+        if (!ggml_backend_dev_supports_op(dev, gdn) || !ggml_backend_dev_supports_op(dev, fold)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static const char * llama_rs_mode_name(llama_rs_mode mode) {
+    switch (mode) {
+        case LLAMA_RS_MODE_NONE:     return "none";
+        case LLAMA_RS_MODE_SNAPSHOT: return "snapshot";
+        case LLAMA_RS_MODE_REPLAY:   return "replay";
+    }
+    return "unknown";
+}
+
 struct llm_fused_op_probe {
     llm_fused_op op;
     const char * name;
@@ -276,6 +357,25 @@ llama_context::llama_context(
     // initialized later
     cparams.pipeline_parallel = false;
 
+    // the recurrent memory layout depends on the rollback mode, so resolve it before creating the memory
+    cparams.rs_mode = LLAMA_RS_MODE_NONE;
+    if (cparams.n_rs_seq > 0) {
+        cparams.rs_mode = LLAMA_RS_MODE_SNAPSHOT;
+
+        // debug override to A/B the two modes with one binary: LLAMA_RS_ROLLBACK=snapshot|replay
+        const char * LLAMA_RS_ROLLBACK = getenv("LLAMA_RS_ROLLBACK");
+        if (LLAMA_RS_ROLLBACK && strcmp(LLAMA_RS_ROLLBACK, "snapshot") == 0) {
+            LLAMA_LOG_WARN("%s: recurrent rollback forced to snapshot mode\n", __func__);
+        } else {
+            if (LLAMA_RS_ROLLBACK && strcmp(LLAMA_RS_ROLLBACK, "replay") != 0) {
+                LLAMA_LOG_WARN("%s: ignoring unknown LLAMA_RS_ROLLBACK=%s\n", __func__, LLAMA_RS_ROLLBACK);
+            }
+            if (llm_arch_supports_rs_replay(model.arch) && llama_rs_replay_supported(model, cparams)) {
+                cparams.rs_mode = LLAMA_RS_MODE_REPLAY;
+            }
+        }
+    }
+
     {
         const char * LLAMA_GRAPH_REUSE_DISABLE = getenv("LLAMA_GRAPH_REUSE_DISABLE");
         graph_reuse_disable = LLAMA_GRAPH_REUSE_DISABLE ? (atoi(LLAMA_GRAPH_REUSE_DISABLE) != 0) : graph_reuse_disable;
@@ -315,6 +415,7 @@ llama_context::llama_context(
     LLAMA_LOG_INFO("%s: freq_base             = %.1f\n", __func__, cparams.rope_freq_base);
     LLAMA_LOG_INFO("%s: freq_scale            = %g\n",   __func__, cparams.rope_freq_scale);
     LLAMA_LOG_INFO("%s: n_rs_seq              = %u\n",   __func__, cparams.n_rs_seq);
+    LLAMA_LOG_INFO("%s: rs_mode               = %s\n",   __func__, llama_rs_mode_name(cparams.rs_mode));
     LLAMA_LOG_INFO("%s: n_outputs_max         = %u\n",   __func__, cparams.n_outputs_max);
     LLAMA_LOG_INFO("%s: n_outputs_max_per_seq = %u\n",   __func__, cparams.n_outputs_max_per_seq);
 

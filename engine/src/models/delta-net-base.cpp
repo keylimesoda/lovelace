@@ -446,6 +446,42 @@ std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_ne
     return build_delta_net_chunking(q, k, v, g, b, s, il);
 }
 
+ggml_tensor * llm_build_delta_net_base::build_rs_rec_extra_get(llm_graph_input_rs * inp, ggml_tensor * rec) const {
+    const auto * mctx_cur = inp->mctx;
+
+    const int64_t n_seqs = ubatch.n_seqs;
+    const int64_t n_rs   = mctx_cur->get_n_rs();
+
+    if (n_rs == n_seqs) {
+        return nullptr;
+    }
+
+    ggml_tensor * rows = ggml_reshape_2d(ctx0, rec, rec->ne[0]*rec->ne[1], rec->ne[2]);
+
+    ggml_tensor * rec_extra = ggml_get_rows(ctx0, rows, inp->s_copy_extra);
+    ggml_build_forward_expand(gf, rec_extra);
+
+    return rec_extra;
+}
+
+void llm_build_delta_net_base::build_rs_rec_extra_set(llm_graph_input_rs * inp, ggml_tensor * rec, ggml_tensor * rec_extra) const {
+    if (rec_extra == nullptr) {
+        return;
+    }
+
+    const auto * mctx_cur = inp->mctx;
+
+    const int64_t n_seqs  = ubatch.n_seqs;
+    const int64_t n_rs    = mctx_cur->get_n_rs();
+    const int64_t kv_head = mctx_cur->get_head();
+
+    ggml_tensor * rows = ggml_reshape_2d(ctx0, rec, rec->ne[0]*rec->ne[1], rec->ne[2]);
+
+    ggml_build_forward_expand(gf,
+        ggml_cpy(ctx0, rec_extra,
+            ggml_view_2d(ctx0, rows, rows->ne[0], n_rs - n_seqs, rows->nb[1], (kv_head + n_seqs)*rows->nb[1])));
+}
+
 ggml_tensor * llm_build_delta_net_base::build_conv_state(
         llm_graph_input_rs * inp,
         ggml_tensor *        conv_states_all,
@@ -466,6 +502,24 @@ ggml_tensor * llm_build_delta_net_base::build_conv_state(
     conv_states = ggml_reshape_3d(ctx0, conv_states, conv_kernel_size - 1, conv_channels, n_seqs);
     cb(conv_states, "conv_states_reshaped", il);
 
+    const bool replay = cparams.rs_mode == LLAMA_RS_MODE_REPLAY;
+
+    if (replay) {
+        // [ReplaySSM] fold the pending input columns of each seq's source row into its committed history and
+        // record the last min(n_seq_tokens, K) columns of this ubatch
+        ggml_tensor * recx = mctx_cur->get_recx_l(il);
+        GGML_ASSERT(recx != nullptr);
+
+        ggml_tensor * recx_extra = build_rs_rec_extra_get(inp, recx);
+
+        conv_states = ggml_ssm_conv_fold(ctx0, conv_states, recx, qkv_mixed, inp->rs_fold_main,
+                cparams.n_rs_seq + 1, kv_head);
+        cb(conv_states, "conv_states_folded", il);
+        ggml_build_forward_expand(gf, conv_states);
+
+        build_rs_rec_extra_set(inp, recx, recx_extra);
+    }
+
     qkv_mixed = ggml_transpose(ctx0, qkv_mixed);
     cb(qkv_mixed, "qkv_mixed_transposed", il);
 
@@ -476,8 +530,10 @@ ggml_tensor * llm_build_delta_net_base::build_conv_state(
 
     const size_t row_size  = ggml_row_size(conv_states_all->type, row_count);
 
-    if (cparams.n_rs_seq == 0) {
-        const int64_t s_idx  = conv_input->ne[0] - conv_states->ne[0];
+    if (cparams.n_rs_seq == 0 || replay) {
+        // replay mode commits the history before the last min(n_seq_tokens, K) tokens, which are recorded instead
+        const int64_t n_seq_tokens = conv_input->ne[0] - conv_states->ne[0];
+        const int64_t s_idx  = replay ? n_seq_tokens - std::min<int64_t>(n_seq_tokens, cparams.n_rs_seq + 1) : n_seq_tokens;
         const int64_t s_slot = 0;
 
         ggml_tensor * conv_state_last =
@@ -542,6 +598,47 @@ ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
     const int64_t H_v          = s->ne[2];
     const int64_t n_seqs       = s->ne[3];
     const int64_t n_seq_tokens = q->ne[2];
+
+    if (cparams.rs_mode == LLAMA_RS_MODE_REPLAY) {
+        // [ReplaySSM] replay the pending records of each seq's source row, store one committed state (before the
+        // last min(n_seq_tokens, K) tokens) and record those tokens; the state write is fusable as in the K=1 path
+        ggml_tensor * rec = mctx_cur->get_rec_l(il);
+        GGML_ASSERT(rec != nullptr);
+
+        ggml_tensor * rec_extra = build_rs_rec_extra_get(inp, rec);
+
+        ggml_tensor * result = ggml_gated_delta_net_rr(ctx0, q, k, v, g, b, s, rec, inp->rs_fold_main,
+                cparams.n_rs_seq + 1, kv_head);
+        if (n_seq_tokens == 1) {
+            res->add_fused_node({LLM_FUSED_OP_GDN_AR, result, il});
+        } else {
+            res->add_fused_node({LLM_FUSED_OP_GDN_CH, result, il});
+        }
+
+        ggml_tensor * output = ggml_view_4d(ctx0, result,
+                S_v, H_v, n_seq_tokens, n_seqs,
+                ggml_row_size(result->type, S_v),
+                ggml_row_size(result->type, S_v * H_v),
+                ggml_row_size(result->type, S_v * H_v * n_seq_tokens), 0);
+        cb(output, "attn_output", il);
+
+        ggml_tensor * new_state = ggml_view_4d(ctx0, result,
+                S_v, S_v, H_v, n_seqs,
+                ggml_row_size(result->type, S_v),
+                ggml_row_size(result->type, S_v * S_v),
+                ggml_row_size(result->type, S_v * S_v * H_v),
+                ggml_row_size(result->type, S_v * H_v * n_seq_tokens * n_seqs));
+        cb(new_state, "new_state", il);
+
+        ggml_build_forward_expand(gf,
+                ggml_cpy(ctx0, new_state,
+                    ggml_view_2d(ctx0, ssm_states_all, hparams.n_embd_s(), n_seqs, ssm_states_all->nb[1],
+                        kv_head * hparams.n_embd_s() * ggml_element_size(ssm_states_all))));
+
+        build_rs_rec_extra_set(inp, rec, rec_extra);
+
+        return output;
+    }
 
     const bool keep = cparams.n_rs_seq > 0;
 

@@ -86,6 +86,12 @@ struct llm_build_delta_net_base : public llm_graph_context {
             int64_t              conv_channels,
             int                  il);
 
+    // [ReplaySSM] the moved rows [head + n_seqs, head + n_rs) take their pending records along, like their states in
+    // build_rs(): the records are gathered before and scattered after the op that records the rows of the ubatch,
+    // because the sources may be either
+    ggml_tensor * build_rs_rec_extra_get(llm_graph_input_rs * inp, ggml_tensor * rec) const;
+    void          build_rs_rec_extra_set(llm_graph_input_rs * inp, ggml_tensor * rec, ggml_tensor * rec_extra) const;
+
     // run delta-net attention and write the new recurrent state(s) back to ssm_states_all
     // s: (head_v_dim, head_v_dim, num_v_heads, n_seqs); returns output: (head_v_dim, num_v_heads, n_seq_tokens, n_seqs)
     ggml_tensor * build_recurrent_attn(
