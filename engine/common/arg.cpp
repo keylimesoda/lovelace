@@ -1728,7 +1728,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--cache-idle-slots"},
         {"--no-cache-idle-slots"},
-        "save idle slots to the prompt cache on new task, and clear them when using unified KV (default: enabled, requires cache-ram)",
+        "save idle slots to the prompt cache on new task, and clear them when using unified KV (default: enabled, requires cache-ram; "
+        "superseded by `--kv-budget`, which parks idle slots on demand)",
         [](common_params & params, bool value) {
             params.cache_idle_slots = value;
         }
