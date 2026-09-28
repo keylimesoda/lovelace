@@ -5298,6 +5298,7 @@ public:
                 {"gen_reserve",       params_base.kv_budget_gen},
                 {"headroom",          params_base.kv_budget_headroom},
                 {"prefill_chunk_gen", params_base.prefill_chunk_gen},
+                {"timeslice",         params_base.kv_timeslice},
                 {"totals", {
                     {"parks",               sched_stats.n_park},
                     {"park_drops",          sched_stats.n_park_drop},
