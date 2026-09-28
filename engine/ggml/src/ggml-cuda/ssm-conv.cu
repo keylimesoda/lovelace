@@ -204,3 +204,147 @@ void ggml_cuda_op_ssm_conv(ggml_backend_cuda_context & ctx, ggml_tensor * dst, g
                           out->nb[2], nc, nr, n_t, n_s, stream);
     }
 }
+
+// l2 norm of a 128-channel head held one channel per thread (threadIdx.x) of the seq threadIdx.y; reduced in the order
+// of rms_norm_f32<256> + scale, so the fused chain is bit-identical to the unfused graph
+static __device__ __forceinline__ float ssm_conv_chain_l2(const float y, const float eps, const float scale_out, float (*s_sum)[4]) {
+    const int warp = threadIdx.x / WARP_SIZE;
+    const int lane = threadIdx.x % WARP_SIZE;
+
+    float tmp = warp_reduce_sum(y * y);
+    if (lane == 0) {
+        s_sum[threadIdx.y][warp] = tmp;
+    }
+    __syncthreads();
+    tmp = lane < 4 ? s_sum[threadIdx.y][lane] : 0.0f;
+    tmp = warp_reduce_sum(tmp);
+    __syncthreads(); // s_sum is rewritten by the next token
+
+    const int   ncols = 128;
+    const float mean  = tmp / ncols;
+    const float scale = rsqrtf(mean + eps);
+    return scale_out * (scale * y);
+}
+
+// thread (c, s): channel c of seq s, all seqs of the ubatch in one block; the last block computes the gates
+template <int NS>
+static __global__ void __launch_bounds__(128 * NS) ssm_conv_chain_f32(const ggml_cuda_ssm_conv_chain p) {
+    constexpr int d_conv = 4;
+    constexpr int n_hist = d_conv - 1;
+    constexpr int block  = 128;
+
+    __shared__ float s_sum[NS][block / WARP_SIZE];
+
+    const int tid = threadIdx.x;
+    const int s   = threadIdx.y;
+
+    ggml_cuda_pdl_sync();
+
+    if (blockIdx.x == p.C / block) {
+        const int64_t n = p.H_v * p.T * p.n_seqs;
+        for (int64_t e = s * block + tid; e < n; e += block * blockDim.y) {
+            const int64_t h = e % p.H_v;
+            p.gate[e] = ggml_cuda_op_softplus_single(p.alpha[e] + p.dt[h]) * p.A[h];
+            p.beta[e] = ggml_cuda_op_sigmoid_single(p.b[e]);
+        }
+        return;
+    }
+
+    const int64_t c = (int64_t) blockIdx.x * block + tid;
+
+    float w[d_conv];
+#pragma unroll
+    for (int j = 0; j < d_conv; ++j) {
+        w[j] = p.w[c * d_conv + j];
+    }
+
+    // gather the history of every seq before the first write: the conv cache and the records are updated in place,
+    // and the source row of one seq can be the destination row of another
+    float hist[n_hist];
+    {
+        const float * cs = p.cache + p.ids[s] * p.cache_row + c * n_hist;
+        if (p.recx != nullptr) {
+            const int     m       = p.rs[2 * s + 0];
+            const int64_t src_row = p.rs[2 * s + 1];
+#pragma unroll
+            for (int i = 0; i < n_hist; ++i) {
+                const int idx = i + m;
+                hist[i] = idx < n_hist ? cs[idx] : p.recx[(src_row * p.rec_K + idx - n_hist) * p.C + c];
+            }
+        } else {
+#pragma unroll
+            for (int i = 0; i < n_hist; ++i) {
+                hist[i] = cs[i];
+            }
+        }
+    }
+    __syncthreads();
+
+    const float * x = p.x + s * p.sx2 + c;
+
+    // window[k]: history for k < n_hist, then the inputs
+    const auto window = [&](const int64_t k) {
+        return k < n_hist ? (k == 0 ? hist[0] : k == 1 ? hist[1] : hist[2]) : x[(k - n_hist) * p.sx1];
+    };
+
+    if (p.recx != nullptr) {
+        const int64_t n_rec    = min(p.T, p.rec_K);
+        const int64_t j_commit = p.T - n_rec;
+        for (int64_t u = 0; u < n_rec; ++u) {
+            p.recx[((p.rec_dst_row0 + s) * p.rec_K + u) * p.C + c] = x[(j_commit + u) * p.sx1];
+        }
+    }
+
+    for (int k = 0; k < p.n_cpy; ++k) {
+        float * dst = p.cpy_dst[k] + s * p.cpy_row[k] + c * n_hist;
+#pragma unroll
+        for (int i = 0; i < n_hist; ++i) {
+            dst[i] = window(p.cpy_off[k] + i);
+        }
+    }
+
+    const bool l2   = p.qn != nullptr && blockIdx.x < 2 * p.H_k;
+    const bool is_q = blockIdx.x < p.H_k;
+
+    float xw[d_conv] = { hist[0], hist[1], hist[2], 0.0f };
+    for (int64_t t = 0; t < p.T; ++t) {
+        xw[d_conv - 1] = x[t * p.sx1];
+
+        float sumf = 0.0f;
+#pragma unroll
+        for (int j = 0; j < d_conv; ++j) {
+            sumf += xw[j] * w[j];
+        }
+#pragma unroll
+        for (int j = 0; j < d_conv - 1; ++j) {
+            xw[j] = xw[j + 1];
+        }
+
+        const float y = ggml_cuda_op_silu_single(sumf);
+        p.y[(s * p.T + t) * p.C + c] = y;
+
+        if (l2) {
+            const int64_t hk = is_q ? blockIdx.x : blockIdx.x - p.H_k;
+            const float   o  = ssm_conv_chain_l2(y, is_q ? p.q_eps : p.k_eps, is_q ? p.q_scale : p.k_scale, s_sum);
+            (is_q ? p.qn : p.kn)[((s * p.T + t) * p.H_k + hk) * block + tid] = o;
+        }
+    }
+}
+
+void ggml_cuda_op_ssm_conv_chain(ggml_backend_cuda_context & ctx, const ggml_cuda_ssm_conv_chain & p) {
+    GGML_ASSERT(p.C % 128 == 0 && p.T <= GGML_CUDA_SSM_CONV_CHAIN_MAX_TOKENS);
+    GGML_ASSERT(p.n_seqs <= GGML_CUDA_SSM_CONV_CHAIN_MAX_SEQS && p.n_cpy <= GGML_CUDA_SSM_CONV_CHAIN_MAX_CPY);
+
+    const dim3 grid(p.C / 128 + (p.gate != nullptr ? 1 : 0));
+    const ggml_cuda_kernel_launch_params launch_params(grid, dim3(128, p.n_seqs), 0, ctx.stream());
+
+    if (p.n_seqs == 1) {
+        ggml_cuda_kernel_launch(ssm_conv_chain_f32<1>, launch_params, p);
+    } else if (p.n_seqs == 2) {
+        ggml_cuda_kernel_launch(ssm_conv_chain_f32<2>, launch_params, p);
+    } else if (p.n_seqs <= 4) {
+        ggml_cuda_kernel_launch(ssm_conv_chain_f32<4>, launch_params, p);
+    } else {
+        ggml_cuda_kernel_launch(ssm_conv_chain_f32<8>, launch_params, p);
+    }
+}
