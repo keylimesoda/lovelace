@@ -45,3 +45,13 @@ K/V/Q strides aligned, and at most 64 query tokens. Otherwise the previous kerne
 Q is quantized to 8 bit per 32 values for KQ, the same as the vector kernel does for quantized K. P and V are f16.
 `test-backend-ops -o FLASH_ATTN_EXT` passes (all 4027 cases, plus the new cases for GQA 6/8/16, mixed K/V types,
 sinks, and unified KV masks).
+
+## Large batches (prefill, draft context)
+
+Above the fattn-mma-q range the f16 MMA kernel is used with K/V types as template parameters
+(`ggml_cuda_flash_attn_ext_mma_f16_q_case`, `BEST_FATTN_KERNEL_MMA_F16_Q`): each K/V tile is dequantized
+into the f16 shared memory tile while it is loaded (8 values per thread, same rounding as the to_fp16 conversion,
+so results are identical to the old convert-then-FA path). No full-KV f16 conversion buffer is reserved: at
+-c 262144 -ub 1024 q5_0 the CUDA0 compute buffer drops from 1696 to 780 MiB, and in the production config the
+MTP draft context's from 1698 to 650 MiB. The loads are synchronous and each K/V tile is dequantized once per
+Q tile, which costs prefill throughput at depth (pp2048 q5_0: -11% at 64k, -15% at 192k).
