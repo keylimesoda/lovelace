@@ -630,6 +630,7 @@ struct common_params {
     int32_t n_ctx_checkpoints   = 32;    // max number of context checkpoints per slot
     int32_t kv_unified_per_slot = 0;     // max context per parallel slot; 0 = unset
     int32_t checkpoint_min_step = 8192;  // minimum spacing between context checkpoints
+    int32_t n_ctx_checkpoints_recent = 3; // checkpoints at the starts of the last N messages, regardless of the spacing
     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
 
     // KV budget scheduling (unified KV only): admission by cell reservation, parking of idle sessions
