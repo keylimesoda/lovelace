@@ -23,7 +23,8 @@ IQ4=/home/ric/models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf
 WINDOWS=windows.jsonl
 SHORT=32k,64k,128k,170k
 ALL=32k,64k,128k,170k,250k
-KV_CANDIDATES=(q8_0 q4_0 q5_0 q4_1)
+# "K/V" = asymmetric (K type / V type); a single name = both
+KV_CANDIDATES=(q8_0 q4_0 q5_0 q8_0/q4_0 q8_0/q5_0)
 VRAM_GIB=${VRAM_GIB:-22.5}
 DRY_RUN=${DRY_RUN:-0}
 UV=/tmp/uvtool/bin/uv
@@ -40,18 +41,19 @@ KLD=(docker run --rm --gpus all --user 1000:1000 --ulimit memlock=-1:-1
     -e LD_LIBRARY_PATH="$LLAMA_LIB" -e GGML_OP_OFFLOAD_MIN_BATCH=1
     lovelace-engine-runtime:cuda13.1 ./build/lovelace-kld)
 
-plan() { # model buckets kv-type label -> stdout: -ot value ("" = fits); stderr: plan + estimate
+plan() { # model buckets kv-type(K[/V]) label -> stdout: -ot value ("" = fits); stderr: plan + estimate
+    local k=${3%/*} v=${3#*/}
     "$UV" run -q --no-project --with numpy --with pyyaml python plan_vram.py \
-        --model "$1" --windows "$WINDOWS" --buckets "$2" --ctk "$3" --ctv "$3" \
+        --model "$1" --windows "$WINDOWS" --buckets "$2" --ctk "$k" --ctv "$v" \
         -b "$B" -ub "$UB" --max-outputs "$MAX_OUT" --vram-gib "$VRAM_GIB" --label "$4"
 }
 
-step() { # base|compare out model buckets kv-type label [base-file]
+step() { # base|compare out model buckets kv-type(K[/V]) label [base-file]
     local cmd=$1 out=$2 model=$3 buckets=$4 kv=$5 label=$6 base=${7:-}
     local ot
     ot=$(plan "$model" "$buckets" "$kv" "$label")
     local args=("$cmd" --model "$model" --windows "$WINDOWS" --buckets "$buckets" --out "$out.part"
-        -ctk "$kv" -ctv "$kv" "${CTX[@]}")
+        -ctk "${kv%/*}" -ctv "${kv#*/}" "${CTX[@]}")
     [[ -n $base ]] && args+=(--base "$base")
     [[ -n $ot ]] && args+=(-ot "$ot")
     echo "+ lovelace-kld ${args[*]}"
@@ -78,7 +80,7 @@ mkdir -p results
 echo "== (2) KV quantization, buckets $ALL"
 step base results/kv-base-iq4xs-f16.bin "$IQ4" "$ALL" f16 kv-base-iq4xs-f16
 for t in "${KV_CANDIDATES[@]}"; do
-    step compare "results/kv-iq4xs-$t.json" "$IQ4" "$ALL" "$t" "kv-iq4xs-$t" results/kv-base-iq4xs-f16.bin
+    step compare "results/kv-iq4xs-${t//\//-}.json" "$IQ4" "$ALL" "$t" "kv-iq4xs-${t//\//-}" results/kv-base-iq4xs-f16.bin
 done
 
 echo "== (1) weight quantization, buckets $SHORT"
@@ -87,5 +89,5 @@ step compare results/wq-iq4xs-f16.json "$IQ4" "$SHORT" f16 wq-iq4xs-f16 results/
 
 [[ $DRY_RUN == 1 ]] && exit 0
 results=(results/wq-iq4xs-f16.json)
-for t in "${KV_CANDIDATES[@]}"; do results+=("results/kv-iq4xs-$t.json"); done
+for t in "${KV_CANDIDATES[@]}"; do results+=("results/kv-iq4xs-${t//\//-}.json"); done
 python3 summarize.py "${results[@]}" | tee results/summary.txt
