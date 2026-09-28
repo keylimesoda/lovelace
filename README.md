@@ -18,11 +18,11 @@ The serving image expects the built engine at `engine/build-sm89/bin`, the dashb
 sudo install -d -o 1000 -g 1000 /var/log/lovelace /var/lib/lovelace
 ```
 
-Build the dashboard and serving image, then start a profile:
+Build the engine, dashboard and serving image, then start a profile:
 
 ```sh
-cd apps/web && bun install && bun run build
-cd ..
+deploy/build-engine.sh llama-server
+(cd apps/web && bun install && bun run build)
 docker build -f deploy/serve.Dockerfile -t lovelace-serve:latest .
 deploy/serve.sh balanced
 ```
