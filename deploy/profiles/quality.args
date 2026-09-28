@@ -1,0 +1,28 @@
+-m /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf
+-ngl 99
+-np 6
+--kv-unified
+-c ${CTX}
+-ctk q8_0
+-ctv q5_0
+--spec-type draft-mtp
+--spec-draft-n-max 3
+-ctkd q5_0
+-ctvd q5_0
+-fa on
+-ub 1024
+-b 2048
+--jinja
+--reasoning-preserve
+--cache-ram 32768
+-ctxcp 8
+--kv-budget
+--prefill-chunk-gen 1024
+--host 127.0.0.1
+--port 8090
+--telemetry
+--request-log-jsonl /var/log/lovelace/requests.jsonl
+--web-dir /opt/lovelace/web
+--metrics
+--slots
+--alias qwen3.8-27b
