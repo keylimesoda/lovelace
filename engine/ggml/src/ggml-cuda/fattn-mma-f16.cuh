@@ -391,7 +391,7 @@ static constexpr __device__ int ggml_cuda_fattn_mma_get_nstages(
 // ------------------------------------------------------------------------------------------------------------------
 
 template<int stride_tile, bool swz, int nwarps, int nbatch_fa, bool use_cp_async, bool oob_check, bool use_sparse,
-    ggml_type type = GGML_TYPE_F16>
+    ggml_type type = GGML_TYPE_F16, int D2_quantized = 0>
 static __device__ __forceinline__ void flash_attn_ext_f16_load_tile(
         const half2 * const __restrict__ KV, half2 * const __restrict__ tile_KV, const int D2, const int stride_KV,
         const int k_VKQ_0, const int i_sup, const int32_t * const __restrict__ indices) {
@@ -402,18 +402,40 @@ static __device__ __forceinline__ void flash_attn_ext_f16_load_tile(
         static_assert(!use_cp_async && !use_sparse, "quantized K/V are loaded synchronously and densely");
         constexpr int bs = type == GGML_TYPE_Q4_0 ? sizeof(block_q4_0) : type == GGML_TYPE_Q4_1 ? sizeof(block_q4_1) :
                            type == GGML_TYPE_Q5_0 ? sizeof(block_q5_0) : type == GGML_TYPE_Q5_1 ? sizeof(block_q5_1) : sizeof(block_q8_0);
+        static_assert(D2_quantized % 4 == 0, "bad D2_quantized");
+        constexpr int chunks_per_row = D2_quantized / 4;
+        constexpr int nchunks        = nbatch_fa*chunks_per_row;
+        constexpr int nthreads       = nwarps*warp_size;
+        // the loads of a batch of chunks are issued together, the dequantization then waits only once:
+        constexpr int nbatch = 4;
         const char * KV_c = (const char *) KV;
-        const int chunks_per_row = D2 / 4;
-        for (int idx = threadIdx.y*warp_size + threadIdx.x; idx < nbatch_fa*chunks_per_row; idx += nwarps*warp_size) {
-            const int i = idx / chunks_per_row;
-            const int k = idx % chunks_per_row;
-            __align__(16) half2 tmp[4] = {{0.0f, 0.0f}, {0.0f, 0.0f}, {0.0f, 0.0f}, {0.0f, 0.0f}};
-            if (!oob_check || i < i_sup) {
-                dequantize_block_8_f16<type>(KV_c + int64_t(k_VKQ_0 + i)*stride_KV*sizeof(half2) + (k/4)*bs, k % 4, tmp);
+#pragma unroll 1
+        for (int idx0 = 0; idx0 < nchunks; idx0 += nbatch*nthreads) {
+            __align__(16) half2 tmp[nbatch][4];
+#pragma unroll
+            for (int b = 0; b < nbatch; ++b) {
+                const int idx = idx0 + b*nthreads + threadIdx.y*warp_size + threadIdx.x;
+                const int i   = idx / chunks_per_row;
+                const int k   = idx % chunks_per_row;
+#pragma unroll
+                for (int l = 0; l < 4; ++l) {
+                    tmp[b][l] = make_half2(0.0f, 0.0f);
+                }
+                if ((idx0 + (b + 1)*nthreads <= nchunks || idx < nchunks) && (!oob_check || i < i_sup)) {
+                    dequantize_block_8_f16<type>(KV_c + int64_t(k_VKQ_0 + i)*stride_KV*sizeof(half2) + (k/4)*bs, k % 4, tmp[b]);
+                }
             }
-            ggml_cuda_memcpy_1<16>((char *) tile_KV + swizzle_bytes<swz, half2>(i, 4*k, stride_tile), tmp);
+#pragma unroll
+            for (int b = 0; b < nbatch; ++b) {
+                const int idx = idx0 + b*nthreads + threadIdx.y*warp_size + threadIdx.x;
+                if (idx0 + (b + 1)*nthreads <= nchunks || idx < nchunks) {
+                    const int i = idx / chunks_per_row;
+                    const int k = idx % chunks_per_row;
+                    ggml_cuda_memcpy_1<16>((char *) tile_KV + swizzle_bytes<swz, half2>(i, 4*k, stride_tile), tmp[b]);
+                }
+            }
         }
-        GGML_UNUSED(indices);
+        GGML_UNUSED_VARS(D2, indices);
         return;
     }
     // K/V data is loaded with decreasing granularity for D for better memory bandwidth.
@@ -686,7 +708,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
             const int k0_diff = k0_stop - k0_start;
             constexpr bool use_cp_async = nstages == 1;
             static_assert(type_K == GGML_TYPE_F16 || nbatch_K2 == DKQ/2, "quantized K needs whole rows");
-            flash_attn_ext_f16_load_tile<stride_tile_K, swz, nwarps, nbatch_fa, use_cp_async, oob_check, use_sparse, type_K>
+            flash_attn_ext_f16_load_tile<stride_tile_K, swz, nwarps, nbatch_fa, use_cp_async, oob_check, use_sparse, type_K, DKQ/2>
                 (K_h2 + k0_start, tile_K, k0_diff, stride_K, k_VKQ_0, k_VKQ_sup, indices);
             if (use_cp_async) {
                 cp_async_wait_all();
@@ -1040,7 +1062,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
             if (!V_is_K_view || i0_stop > 2*nbatch_K2) {
                 constexpr bool use_cp_async = nstages == 1;
                 static_assert(type_V == GGML_TYPE_F16 || 2*nbatch_V2 == DV, "quantized V needs whole rows");
-                flash_attn_ext_f16_load_tile<stride_tile_V, swz, nwarps, nbatch_fa, use_cp_async, oob_check, use_sparse, type_V>
+                flash_attn_ext_f16_load_tile<stride_tile_V, swz, nwarps, nbatch_fa, use_cp_async, oob_check, use_sparse, type_V, DV/2>
                     (V_h2 + i0_start/2, tile_V, i0_diff/2, stride_V, k_VKQ_0, k_VKQ_sup, indices);
                 if (use_cp_async) {
                     cp_async_wait_all();
