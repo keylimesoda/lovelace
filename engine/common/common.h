@@ -638,6 +638,7 @@ struct common_params {
     int32_t kv_budget_gen       = 8192;  // max generated tokens reserved per request up front, grows on demand
     int32_t kv_budget_headroom  = 256;   // cells kept free when admitting new work
     int32_t prefill_chunk_gen   = 1024;  // max prompt tokens per batch while another slot generates; 0 = n_batch
+    float   kv_timeslice        = 0.0f;  // round-robin quantum and wait threshold in seconds; 0 = run to completion
 
     std::string public_path   = "";                                                                         // NOLINT
     std::string api_prefix    = "";                                                                         // NOLINT

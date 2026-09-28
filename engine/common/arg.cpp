@@ -1788,6 +1788,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_PREFILL_CHUNK_GEN").set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--kv-timeslice"}, "S",
+        string_format("KV budget: round-robin time slicing. Once the next queued request has waited S seconds for KV cells, the "
+            "generating slot that has run longest (at least S seconds) is paused at a token boundary and parked, and resumes "
+            "after the waiting request has started (default: %.0f, 0 = run each request to completion)", (double) params.kv_timeslice),
+        [](common_params & params, const std::string & value) {
+            params.kv_timeslice = std::stof(value);
+            if (params.kv_timeslice < 0) {
+                throw std::invalid_argument("kv-timeslice must be non-negative");
+            }
+        }
+    ).set_env("LLAMA_ARG_KV_TIMESLICE").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--context-shift"},
         {"--no-context-shift"},
         string_format("whether to use context shift on infinite text generation (default: %s)", params.ctx_shift ? "enabled" : "disabled"),

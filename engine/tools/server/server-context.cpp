@@ -312,6 +312,8 @@ struct server_slot {
     // KV budget scheduling (see server-sched.h)
     int32_t            n_reserved = 0; // cells reserved for the running task
     int64_t            t_preempt  = 0; // > 0 while preempted, resume order
+    bool               rr_preempt = false; // preempted by time slicing: resumes after the requests that waited before
+    int64_t            t_slice    = 0; // start of the current time slice of generation (0 = not generating yet)
     server_prompt_data park_data;      // parked sequence state of a preempted slot
     llama_tokens       recompute_tokens;
 
@@ -448,6 +450,8 @@ struct server_slot {
 
         n_reserved = 0;
         t_preempt  = 0;
+        rr_preempt = false;
+        t_slice    = 0;
         park_data  = {};
         recompute_tokens.clear();
 
@@ -1019,6 +1023,7 @@ private:
     struct sched_entry {
         server_task  task;
         const char * wait_reason = "none"; // first reason the task had to wait
+        int64_t      t_enqueue   = 0;
     };
 
     bool                    kv_budget_on = false;
@@ -2046,7 +2051,8 @@ private:
     }
 
     // pause a generating slot at a token boundary: its whole state goes to host memory, its cells are freed
-    void sched_preempt(server_slot & slot) {
+    // rr: paused by time slicing, it resumes after the requests waiting now (else before any queued request)
+    void sched_preempt(server_slot & slot, bool rr = false) {
         GGML_ASSERT(slot.state == SLOT_STATE_GENERATING && slot.spec_draft.empty() && slot.spec_i_batch.empty());
 
         const int64_t t_start = ggml_time_us();
@@ -2074,6 +2080,7 @@ private:
 
         slot.state      = SLOT_STATE_PREEMPTED;
         slot.t_preempt  = ggml_time_us();
+        slot.rr_preempt = rr;
         slot.n_reserved = 0;
 
         sched_preempted.push_back(slot.id);
@@ -2082,8 +2089,8 @@ private:
         sched_stats.n_preempt++;
         sched_account_transfer(true, data.size(), data.t_us() > 0 ? data.t_us() : t_copy, t_copy);
 
-        SLT_WRN(slot, "preempted at %d tokens, the KV budget cannot grow its reservation: parked %.1f MiB in %.1f ms\n",
-                slot.prompt.n_tokens(), data.size() / 1048576.0, t_copy / 1e3);
+        SLT_WRN(slot, "preempted at %d tokens, %s: parked %.1f MiB in %.1f ms\n", slot.prompt.n_tokens(),
+                rr ? "its time slice is over" : "the KV budget cannot grow its reservation", data.size() / 1048576.0, t_copy / 1e3);
 
         obs_sched_event("preempt", slot, slot.prompt.n_tokens(), data.size(), t_copy, t_copy);
     }
@@ -2124,6 +2131,8 @@ private:
 
         slot.park_data  = {};
         slot.t_preempt  = 0;
+        slot.rr_preempt = false;
+        slot.t_slice    = ggml_time_us();
         slot.n_reserved = need;
         slot.state      = SLOT_STATE_GENERATING;
 
@@ -2177,6 +2186,61 @@ private:
 
             sched_preempt(slot);
         }
+    }
+
+    // round-robin time slicing (--kv-timeslice): once the next queued request has waited a slice for KV cells, pause
+    // the generating slot that has run longest, if its cells let that request in; runs at a token boundary
+    void sched_timeslice() {
+        const int64_t slice = (int64_t) (params_base.kv_timeslice * 1e6);
+        if (slice <= 0 || sched_queue.empty()) {
+            return;
+        }
+
+        const int64_t t_now = ggml_time_us();
+
+        auto & head = sched_queue.front();
+        if (strcmp(head.wait_reason, "kv") != 0 || t_now - head.t_enqueue < slice) {
+            return;
+        }
+
+        server_slot * victim = nullptr;
+        for (auto & slot : slots) {
+            if (slot.state != SLOT_STATE_GENERATING) {
+                continue;
+            }
+            if (slot.t_slice == 0) {
+                slot.t_slice = t_now; // the slice starts with the generation
+                continue;
+            }
+            if (!slot.spec_draft.empty() || !slot.spec_i_batch.empty() || slot.task->is_parent() || slot.task->is_child() ||
+                t_now - slot.t_slice < slice) {
+                continue;
+            }
+            if (victim == nullptr || slot.t_slice < victim->t_slice) {
+                victim = &slot;
+            }
+        }
+        if (victim == nullptr) {
+            return;
+        }
+
+        // the cells the head needs, against what the running slots leave (idle slots can be parked)
+        const server_task & task = head.task;
+        const int32_t n_predict = task.params.n_predict != -1 ? task.params.n_predict : params_base.n_predict;
+        const int64_t need      = sched_reservation(task.n_tokens(), n_predict);
+
+        sched_sync();
+        int64_t committed = 0;
+        for (size_t i = 0; i < slots.size(); i++) {
+            if (kv_budget.slots[i].active && (int) i != victim->id) {
+                committed += server_kv_budget::committed(kv_budget.slots[i]);
+            }
+        }
+        if (committed + need > (int64_t) kv_budget.n_cells - kv_budget.headroom) {
+            return;
+        }
+
+        sched_preempt(*victim, /* rr */ true);
     }
 
     // truncate the slot's sequence to its first n_keep tokens without ever aborting:
@@ -2421,7 +2485,12 @@ private:
         sched_dirty = false;
 
         while (true) {
-            if (!sched_preempted.empty()) {
+            // a slot paused by time slicing lets the requests that were already waiting go first
+            const bool resume_first = !sched_preempted.empty() && (sched_queue.empty() ||
+                    !slots[sched_preempted.front()].rr_preempt ||
+                    slots[sched_preempted.front()].t_preempt < sched_queue.front().t_enqueue);
+
+            if (resume_first) {
                 server_slot & slot = slots[sched_preempted.front()];
                 if (slot.state == SLOT_STATE_PREEMPTED && !sched_try_resume(slot)) {
                     break;
@@ -2463,7 +2532,7 @@ private:
             return;
         }
 
-        sched_queue.push_back({ std::move(task), "none" });
+        sched_queue.push_back({ std::move(task), "none", ggml_time_us() });
         sched_n_waiting.store((int32_t) sched_queue.size(), std::memory_order_relaxed);
         sched_dirty = true;
 
@@ -3775,6 +3844,7 @@ private:
         // no generating slot may outgrow its KV reservation in this iteration
         if (kv_budget_on) {
             sched_check_growth();
+            sched_timeslice();
         }
 
         // apply context-shift if needed
