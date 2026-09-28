@@ -15,6 +15,7 @@ layer and all KV on the GPU (FFN weights streamed from pinned RAM where needed).
 
 GPU-5 is kept. ISTA frees ~1 GB of VRAM (~40k KV cells) for 1.33x the KL; GPU-4 frees ~2 GB for 2.3x the KL and
 3.3x the ΔNLL, a much larger gap than ByteShape's aggregate benchmark suggests (98.72% vs 99.63% of BF16).
+
 ## KV-cache quantization (reference: GPU-5 weights, f16 KV; buckets 32k–250k, 15,359 scored positions)
 
 | K / V | bytes/token | KL mean | top-1 agree | ΔNLL | KL @ 250k |
