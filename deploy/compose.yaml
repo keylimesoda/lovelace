@@ -1,0 +1,95 @@
+services:
+  lovelace:
+    image: lovelace-serve:latest
+    container_name: lovelace
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    gpus: all
+    network_mode: host
+    labels:
+      com.lovelace.managed: serve
+    volumes:
+      - type: bind
+        source: ${HOME}/models
+        target: /models
+        read_only: true
+      - type: bind
+        source: /var/log/lovelace
+        target: /var/log/lovelace
+    command:
+      - /opt/lovelace/bin/llama-server
+      - -m
+      - /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf
+      - -ngl
+      - "99"
+      - -np
+      - "6"
+      - --kv-unified
+      - -c
+      - ${CTX:-327680}
+      - -ctk
+      - q5_0
+      - -ctv
+      - q5_0
+      - --spec-type
+      - draft-mtp
+      - --spec-draft-n-max
+      - "3"
+      - -ctkd
+      - q5_0
+      - -ctvd
+      - q5_0
+      - -fa
+      - "on"
+      - -ub
+      - "1024"
+      - -b
+      - "2048"
+      - --jinja
+      - --reasoning-preserve
+      - --cache-ram
+      - "32768"
+      - -ctxcp
+      - "8"
+      - --kv-budget
+      - --prefill-chunk-gen
+      - "1024"
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8090"
+      - --telemetry
+      - --request-log-jsonl
+      - /var/log/lovelace/requests.jsonl
+      - --web-dir
+      - /opt/lovelace/web
+      - --metrics
+      - --slots
+      - --alias
+      - qwen3.8-27b
+
+  lovelace-proxy:
+    image: lovelace-serve:latest
+    container_name: lovelace-proxy
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    network_mode: host
+    labels:
+      com.lovelace.managed: serve
+    depends_on:
+      - lovelace
+    volumes:
+      - type: bind
+        source: /var/lib/lovelace
+        target: /var/lib/lovelace
+    command:
+      - python3
+      - /opt/lovelace/proxy/capture_proxy.py
+      - --listen
+      - 127.0.0.1:8080
+      - --upstream
+      - http://127.0.0.1:8090
+      - --out
+      - /var/lib/lovelace/captures
