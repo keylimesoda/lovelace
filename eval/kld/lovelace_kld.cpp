@@ -9,6 +9,7 @@
 
 #include "kld_math.h"
 
+#include "ggml-backend.h"
 #include "ggml.h"
 #include "llama.h"
 #include "nlohmann/json.hpp"
@@ -22,6 +23,7 @@
 #include <ctime>
 #include <fstream>
 #include <functional>
+#include <list>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -50,10 +52,14 @@ struct Args {
     int         n_ctx      = 0;  // 0 = size from the longest window
     int         ngl        = -1;
     std::string ctk = "f16", ctv = "f16", fa = "on";
-    int         n_ubatch  = 512;
-    int         n_batch   = 2048;
-    int         n_threads = 8;
-    bool        verbose   = false;
+    std::string load_mode = "auto";  // llama load mode: auto|none|mmap|mlock|mmap+mlock|dio
+    int         n_ubatch    = 512;
+    int         n_batch     = 2048;
+    int         max_outputs = 256;  // logit rows per llama_decode call (llama n_outputs_max)
+    int         n_threads   = 8;
+    bool        verbose     = false;
+    std::vector<std::string> overrides;  // -ot "<tensor regex>=<buffer type>"
+    std::vector<std::string> buckets;    // --buckets: only these depth buckets (empty = all)
 };
 
 const char * USAGE =
@@ -63,7 +69,21 @@ const char * USAGE =
     "  lovelace-kld tokcount --model M --windows W.jsonl --out counts.jsonl\n"
     "  lovelace-kld selftest\n"
     "ctx args: -c N (0 = longest window) -ngl N -ctk T -ctv T -fa on|off|auto -ub N -b N -t N\n"
+    "          -ot REGEX=BUFT[,...] (repeatable; BUFT e.g. CPU, CUDA_Host, CUDA0)\n"
+    "          --max-outputs N (logit rows per decode call, default 256) --buckets B[,B...]\n"
+    "          --load-mode auto|none|mmap|... (none: -ot=CPU weights go to pinned host memory)\n"
     "          --max-scored N (base only, default 1024) --verbose\n";
+
+std::vector<std::string> split_commas(const std::string & s) {
+    std::vector<std::string> out;
+    size_t                   start = 0;
+    while (start <= s.size()) {
+        const size_t end = std::min(s.find(',', start), s.size());
+        if (end > start) out.push_back(s.substr(start, end - start));
+        start = end + 1;
+    }
+    return out;
+}
 
 Args parse_args(int argc, char ** argv) {
     if (argc < 2) {
@@ -99,6 +119,11 @@ Args parse_args(int argc, char ** argv) {
         else if (k == "-ub" || k == "--ubatch-size") a.n_ubatch = ival();
         else if (k == "-b" || k == "--batch-size") a.n_batch = ival();
         else if (k == "-t" || k == "--threads") a.n_threads = ival();
+        else if (k == "-ot" || k == "--override-tensor") {
+            for (auto & o : split_commas(val())) a.overrides.push_back(o);
+        } else if (k == "--buckets") a.buckets = split_commas(val());
+        else if (k == "--max-outputs") a.max_outputs = ival();
+        else if (k == "--load-mode") a.load_mode = val();
         else if (k == "--verbose") a.verbose = true;
         else if (k == "-h" || k == "--help") {
             fputs(USAGE, stdout);
@@ -117,6 +142,12 @@ Args parse_args(int argc, char ** argv) {
     if (a.topk < 1) die("--topk must be >= 1");
     if (a.max_scored < 1) die("--max-scored must be >= 1");
     if (a.n_batch < 1 || a.n_ubatch < 1 || a.n_ubatch > a.n_batch) die("need 1 <= -ub <= -b");
+    if (a.max_outputs < 1) die("--max-outputs must be >= 1");
+    try {
+        llama_load_mode_from_str(a.load_mode.c_str());
+    } catch (const std::exception & e) {
+        die(e.what());
+    }
     if (a.fa != "on" && a.fa != "off" && a.fa != "auto") die("-fa must be on|off|auto");
     return a;
 }
@@ -177,6 +208,17 @@ std::vector<Window> load_windows(const std::string & path) {
     return out;
 }
 
+bool bucket_selected(const Args & a, const std::string & bucket) {
+    return a.buckets.empty() || std::find(a.buckets.begin(), a.buckets.end(), bucket) != a.buckets.end();
+}
+
+// --buckets names must exist in the windows file (catches typos that would silently select nothing)
+void check_buckets(const Args & a, const std::vector<Window> & windows) {
+    for (const auto & b : a.buckets)
+        if (std::none_of(windows.begin(), windows.end(), [&](const Window & w) { return w.bucket == b; }))
+            die("--buckets: no windows in bucket " + b + " in " + a.windows);
+}
+
 std::vector<llama_token> tokenize(const llama_vocab * vocab, const char * text, size_t len) {
     if (len > size_t(INT32_MAX)) die("text too long to tokenize");
     std::vector<llama_token> tok(len + 16);
@@ -221,17 +263,48 @@ Tokenized tokenize_window(const llama_vocab * vocab, const Window & w, int max_s
 
 int g_log_level = GGML_LOG_LEVEL_WARN;
 
+// warnings/errors, plus llama.cpp's per-device model/KV/compute "buffer size" lines (VRAM check)
 void log_cb(ggml_log_level level, const char * text, void *) {
     static int last = GGML_LOG_LEVEL_INFO;
     if (level != GGML_LOG_LEVEL_CONT) last = level;
-    if (last >= g_log_level) fputs(text, stderr);
+    if (last >= g_log_level || (level == GGML_LOG_LEVEL_INFO && strstr(text, "buffer size"))) fputs(text, stderr);
+}
+
+// -ot "<regex>=<buffer type>" -> llama's NULL-terminated override list. Buffer types are the device
+// buffer types (CPU, CUDA0) as in llama.cpp's -ot, plus the devices' pinned host types (CUDA_Host).
+std::vector<llama_model_tensor_buft_override> tensor_overrides(const std::vector<std::string> & specs) {
+    static std::list<std::string> patterns;  // outlive the model load; list: stable c_str()
+    std::map<std::string, ggml_backend_buffer_type_t> bufts;
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        for (auto * buft : {ggml_backend_dev_buffer_type(dev), ggml_backend_dev_host_buffer_type(dev)})
+            if (buft) bufts[ggml_backend_buft_name(buft)] = buft;
+    }
+    std::vector<llama_model_tensor_buft_override> out;
+    for (const auto & s : specs) {
+        const size_t eq = s.rfind('=');
+        if (eq == std::string::npos || eq == 0) die("-ot needs <tensor regex>=<buffer type>: " + s);
+        const auto it = bufts.find(s.substr(eq + 1));
+        if (it == bufts.end()) {
+            std::string known;
+            for (const auto & b : bufts) known += " " + b.first;
+            die("unknown buffer type in -ot " + s + " (available:" + known + ")");
+        }
+        patterns.push_back(s.substr(0, eq));
+        out.push_back({patterns.back().c_str(), it->second});
+    }
+    if (!out.empty()) out.push_back({nullptr, nullptr});
+    return out;
 }
 
 llama_model * load_model(const Args & a, bool vocab_only) {
     llama_model_params mp = llama_model_default_params();
     mp.n_gpu_layers       = vocab_only ? 0 : a.ngl;
     mp.vocab_only         = vocab_only;
-    llama_model * m       = llama_model_load_from_file(a.model.c_str(), mp);
+    mp.load_mode          = llama_load_mode_from_str(a.load_mode.c_str());
+    const auto ot         = tensor_overrides(vocab_only ? std::vector<std::string>{} : a.overrides);
+    if (!ot.empty()) mp.tensor_buft_overrides = ot.data();
+    llama_model * m = llama_model_load_from_file(a.model.c_str(), mp);
     if (!m) die("failed to load " + a.model);
     return m;
 }
@@ -241,6 +314,7 @@ llama_context * make_context(llama_model * model, const Args & a, uint32_t n_ctx
     cp.n_ctx                = n_ctx;
     cp.n_batch              = uint32_t(a.n_batch);
     cp.n_ubatch             = uint32_t(a.n_ubatch);
+    cp.n_outputs_max        = uint32_t(a.max_outputs);
     cp.n_seq_max            = 1;
     cp.n_threads            = a.n_threads;
     cp.n_threads_batch      = a.n_threads;
@@ -267,9 +341,9 @@ uint32_t context_size(const Args & a, const llama_model * model, const std::vect
 }
 
 // Decode the window and call on_row(j, logits) for the distribution predicting tokens[n_prefix + j].
-// Only scored positions request outputs; a chunk never carries more than n_ubatch outputs, which
-// bounds the host logits buffer (n_vocab floats per output) without slowing the prefill.
-void run_window(llama_context * ctx, const Tokenized & t, int n_batch, int n_ubatch,
+// Only scored positions request outputs, at most max_outputs per llama_decode call (the context's
+// n_outputs_max), which bounds the host logits buffer and the logits part of the compute buffer.
+void run_window(llama_context * ctx, const Tokenized & t, int n_batch, int max_outputs,
                 const std::function<void(int32_t, const float *)> & on_row) {
     llama_memory_clear(llama_get_memory(ctx), true);
     const int32_t first_out = t.n_prefix - 1;
@@ -277,7 +351,7 @@ void run_window(llama_context * ctx, const Tokenized & t, int n_batch, int n_uba
     llama_batch   batch     = llama_batch_init(n_batch, 0, 1);
     for (int32_t pos = 0; pos < end;) {
         int32_t n = std::min(n_batch, end - pos);
-        if (pos + n > first_out) n = std::min(n, std::max(first_out - pos, 0) + n_ubatch);
+        if (pos + n > first_out) n = std::min(n, std::max(first_out - pos, 0) + max_outputs);
         batch.n_tokens = n;
         for (int32_t i = 0; i < n; ++i) {
             batch.token[i]     = t.tokens[size_t(pos + i)];
@@ -433,9 +507,12 @@ json run_meta(const Args & a, uint32_t n_ctx) {
     char   when[32];
     time_t now = time(nullptr);
     strftime(when, sizeof(when), "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
-    return json{{"model", a.model}, {"windows", a.windows}, {"n_ctx", n_ctx}, {"ngl", a.ngl}, {"ctk", a.ctk},
-                {"ctv", a.ctv},     {"fa", a.fa},           {"n_batch", a.n_batch},        {"n_ubatch", a.n_ubatch},
-                {"topk", a.topk},   {"max_scored", a.max_scored},                          {"created", when}};
+    return json{{"model", a.model},         {"windows", a.windows},   {"buckets", a.buckets},
+                {"n_ctx", n_ctx},           {"ngl", a.ngl},           {"overrides", a.overrides},
+                {"load_mode", a.load_mode},
+                {"ctk", a.ctk},             {"ctv", a.ctv},           {"fa", a.fa},
+                {"n_batch", a.n_batch},     {"n_ubatch", a.n_ubatch}, {"max_outputs", a.max_outputs},
+                {"topk", a.topk},           {"max_scored", a.max_scored}, {"created", when}};
 }
 
 double seconds_since(std::chrono::steady_clock::time_point t0) {
@@ -447,6 +524,11 @@ double seconds_since(std::chrono::steady_clock::time_point t0) {
 
 int cmd_base(const Args & a) {
     auto windows = load_windows(a.windows);
+    check_buckets(a, windows);
+    windows.erase(std::remove_if(windows.begin(), windows.end(),
+                                 [&](const Window & w) { return !bucket_selected(a, w.bucket); }),
+                  windows.end());
+    if (windows.empty()) die("no windows selected");
     llama_backend_init();
     llama_model *       model   = load_model(a, false);
     const llama_vocab * vocab   = llama_model_get_vocab(model);
@@ -479,7 +561,7 @@ int cmd_base(const Args & a) {
         }
         write_window_head(out, windows[wi].id, t);
         const auto t0 = std::chrono::steady_clock::now();
-        run_window(ctx, t, a.n_batch, a.n_ubatch, [&](int32_t j, const float * logits) {
+        run_window(ctx, t, a.n_batch, a.max_outputs, [&](int32_t j, const float * logits) {
             p.next_id = t.tokens[size_t(t.n_prefix + j)];
             p.lse     = kld::logsumexp(logits, n_vocab);
             p.next_lp = float(double(logits[p.next_id]) - p.lse);
@@ -569,6 +651,23 @@ int cmd_compare(const Args & a) {
     auto                          windows = load_windows(a.windows);
     std::map<std::string, size_t> by_id;
     for (size_t i = 0; i < windows.size(); ++i) by_id[windows[i].id] = i;
+    check_buckets(a, windows);
+    for (const auto & bw : base.windows)
+        if (!by_id.count(bw.id)) die("base window " + bw.id + " not in " + a.windows);
+    const size_t n_base_windows = base.windows.size();
+    base.windows.erase(std::remove_if(base.windows.begin(), base.windows.end(),
+                                      [&](const BaseWindow & bw) {
+                                          return !bucket_selected(a, windows[by_id[bw.id]].bucket);
+                                      }),
+                       base.windows.end());
+    if (base.windows.empty()) die("no base windows in the selected buckets");
+    // kernel choice depends on these; a mismatch adds numerical noise to every KL
+    for (const auto & [key, mine] : std::vector<std::pair<const char *, json>>{
+             {"n_ubatch", a.n_ubatch}, {"fa", a.fa}, {"max_outputs", a.max_outputs}}) {
+        if (base.meta.contains(key) && base.meta[key] != mine)
+            fprintf(stderr, "compare: warning: %s %s differs from the base run's %s\n", key, mine.dump().c_str(),
+                    base.meta[key].dump().c_str());
+    }
 
     llama_backend_init();
     llama_model *       model   = load_model(a, false);
@@ -581,9 +680,7 @@ int cmd_compare(const Args & a) {
     std::vector<Tokenized> toks;
     std::vector<int32_t>   need;
     for (const auto & bw : base.windows) {
-        auto it = by_id.find(bw.id);
-        if (it == by_id.end()) die("base window " + bw.id + " not in " + a.windows);
-        toks.push_back(tokenize_window(vocab, windows[it->second], max_scored));
+        toks.push_back(tokenize_window(vocab, windows[by_id[bw.id]], max_scored));
         const Tokenized & t = toks.back();
         if (t.n_prefix != bw.n_prefix || t.n_scored != bw.n_scored || t.hash != bw.hash)
             die(bw.id + ": tokens differ from the base run (different tokenizer or windows file)");
@@ -594,8 +691,8 @@ int cmd_compare(const Args & a) {
         if (uint32_t(need[i]) > n_ctx)
             die(base.windows[i].id + " needs " + std::to_string(need[i]) + " > n_ctx " + std::to_string(n_ctx));
     llama_context * ctx = make_context(model, a, n_ctx);
-    fprintf(stderr, "compare: %zu windows, n_ctx %u, base topk %u (%s)\n", base.windows.size(), n_ctx, base.topk,
-            base.meta.value("model", "?").c_str());
+    fprintf(stderr, "compare: %zu of %zu base windows, n_ctx %u, base topk %u (%s)\n", base.windows.size(),
+            n_base_windows, n_ctx, base.topk, base.meta.value("model", "?").c_str());
 
     std::vector<std::string> bucket_order;
     std::map<std::string, Agg> buckets;
@@ -609,7 +706,7 @@ int cmd_compare(const Args & a) {
         const Tokenized &  t  = toks[wi];
         Agg                agg;
         const auto         t0 = std::chrono::steady_clock::now();
-        run_window(ctx, t, a.n_batch, a.n_ubatch, [&](int32_t j, const float * logits) {
+        run_window(ctx, t, a.n_batch, a.max_outputs, [&](int32_t j, const float * logits) {
             const BasePos & p     = bw.pos[size_t(j)];
             const double    q_lse = kld::logsumexp(logits, n_vocab);
             const auto      kl    = kld::sparse_kl(p.top.data(), int(p.top.size()), logits, q_lse);
