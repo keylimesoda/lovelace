@@ -1002,6 +1002,8 @@ static __global__ void mul_mat_q(
 
         ids_dst_shared[j] = j;
     }
+    // The x tiles of the IQ2/IQ3 types are dequantized through lookup grids, which this block reads for every tile.
+    ggml_cuda_iq_grid_load_smem<type>(threadIdx.y*warp_size + threadIdx.x, nwarps*warp_size);
     __syncthreads();
 
     if constexpr (!ggml_cuda_mmq_get_stream_k(type, J, fallback, prec_src1)) {
@@ -1505,7 +1507,7 @@ void mul_mat_q_switch_J(ggml_backend_cuda_context & ctx, const mmq_args & args, 
             continue;
         }
 
-        if (mmq_get_nbytes_shared(config, cc) > smpbo) {
+        if (mmq_get_nbytes_shared(config, cc) + ggml_cuda_iq_grid_smem_nbytes(type) > smpbo) {
             continue;
         }
 

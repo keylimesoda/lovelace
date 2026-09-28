@@ -103,6 +103,109 @@ static __device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
     return s * 0x01010101;
 }
 
+// Lookup grids of the IQ2/IQ3 types, copied to shared memory by kernels that reuse them across many blocks of weights.
+// A warp gathering 32 random grid entries touches most of the table's cache lines, which costs one L1 wavefront per
+// line when the table is read from global memory, but only as many shared memory wavefronts as the worst bank conflict.
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+#define GGML_CUDA_IQ_GRID_SMEM
+#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+
+#ifdef GGML_CUDA_IQ_GRID_SMEM
+static __shared__ uint64_t iq2xxs_grid_smem[256];
+static __shared__ uint64_t iq2xs_grid_smem[512];
+static __shared__ uint32_t iq3xxs_grid_smem[256];
+static __shared__ uint32_t iq3s_grid_smem[512];
+#endif // GGML_CUDA_IQ_GRID_SMEM
+
+static constexpr __host__ __device__ bool ggml_cuda_iq_grid_in_smem(const ggml_type type) {
+#ifdef GGML_CUDA_IQ_GRID_SMEM
+    return type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS || type == GGML_TYPE_IQ3_XXS || type == GGML_TYPE_IQ3_S;
+#else
+    GGML_UNUSED(type);
+    return false;
+#endif // GGML_CUDA_IQ_GRID_SMEM
+}
+
+// Static shared memory taken by the grid of type when ggml_cuda_iq_grid_in_smem(type).
+static constexpr __host__ __device__ int ggml_cuda_iq_grid_smem_nbytes(const ggml_type type) {
+    if (!ggml_cuda_iq_grid_in_smem(type)) {
+        return 0;
+    }
+    switch (type) {
+        case GGML_TYPE_IQ2_XXS: return 256*sizeof(uint64_t);
+        case GGML_TYPE_IQ2_XS:  return 512*sizeof(uint64_t);
+        case GGML_TYPE_IQ3_XXS: return 256*sizeof(uint32_t);
+        case GGML_TYPE_IQ3_S:   return 512*sizeof(uint32_t);
+        default:                return 0;
+    }
+}
+
+// Copies the lookup grid of type to shared memory, the caller has to __syncthreads() before it is read.
+template <ggml_type type>
+static __device__ __forceinline__ void ggml_cuda_iq_grid_load_smem(const int tid, const int nthreads) {
+#ifdef GGML_CUDA_IQ_GRID_SMEM
+    if constexpr (type == GGML_TYPE_IQ2_XXS) {
+        for (int i = tid; i < 256; i += nthreads) {
+            iq2xxs_grid_smem[i] = iq2xxs_grid[i];
+        }
+    } else if constexpr (type == GGML_TYPE_IQ2_XS) {
+        for (int i = tid; i < 512; i += nthreads) {
+            iq2xs_grid_smem[i] = iq2xs_grid[i];
+        }
+    } else if constexpr (type == GGML_TYPE_IQ3_XXS) {
+        for (int i = tid; i < 256; i += nthreads) {
+            iq3xxs_grid_smem[i] = iq3xxs_grid[i];
+        }
+    } else if constexpr (type == GGML_TYPE_IQ3_S) {
+        for (int i = tid; i < 512; i += nthreads) {
+            iq3s_grid_smem[i] = iq3s_grid[i];
+        }
+    }
+#endif // GGML_CUDA_IQ_GRID_SMEM
+    GGML_UNUSED_VARS(tid, nthreads);
+}
+
+// Grid accessors, smem selects the shared memory copy loaded by ggml_cuda_iq_grid_load_smem.
+template <bool smem>
+static __device__ __forceinline__ uint2 ggml_cuda_iq2xxs_grid(const int i) {
+#ifdef GGML_CUDA_IQ_GRID_SMEM
+    if constexpr (smem) {
+        return ((const uint2 *) iq2xxs_grid_smem)[i];
+    }
+#endif // GGML_CUDA_IQ_GRID_SMEM
+    return ((const uint2 *) iq2xxs_grid)[i];
+}
+
+template <bool smem>
+static __device__ __forceinline__ uint2 ggml_cuda_iq2xs_grid(const int i) {
+#ifdef GGML_CUDA_IQ_GRID_SMEM
+    if constexpr (smem) {
+        return ((const uint2 *) iq2xs_grid_smem)[i];
+    }
+#endif // GGML_CUDA_IQ_GRID_SMEM
+    return ((const uint2 *) iq2xs_grid)[i];
+}
+
+template <bool smem>
+static __device__ __forceinline__ int ggml_cuda_iq3xxs_grid(const int i) {
+#ifdef GGML_CUDA_IQ_GRID_SMEM
+    if constexpr (smem) {
+        return iq3xxs_grid_smem[i];
+    }
+#endif // GGML_CUDA_IQ_GRID_SMEM
+    return iq3xxs_grid[i];
+}
+
+template <bool smem>
+static __device__ __forceinline__ int ggml_cuda_iq3s_grid(const int i) {
+#ifdef GGML_CUDA_IQ_GRID_SMEM
+    if constexpr (smem) {
+        return iq3s_grid_smem[i];
+    }
+#endif // GGML_CUDA_IQ_GRID_SMEM
+    return iq3s_grid[i];
+}
+
 // VDR = vec dot ratio, how many contiguous integers each thread processes when the vec dot kernel is called
 // MMVQ = mul_mat_vec_q, MMQ = mul_mat_q
 
