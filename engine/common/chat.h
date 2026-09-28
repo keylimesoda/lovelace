@@ -179,6 +179,30 @@ struct common_chat_msg_spans {
         return false;
     }
 
+    // start of the n_last-th last message (of the first one if there are fewer), -1 if none
+    // the header of the reply a prompt ends with (a message starting within n_tail tokens of the end) is not counted
+    int32_t recent_start_pos(size_t n_last, size_t n_tokens, size_t n_tail = 16) const {
+        int32_t res = -1;
+        size_t  n   = 0;
+        for (auto it = spans.rbegin(); it != spans.rend() && n < n_last; ++it) {
+            if (!it->valid() || it->role == COMMON_CHAT_ROLE_SYSTEM || it->pos + n_tail >= n_tokens) {
+                continue;
+            }
+            res = (int32_t) it->pos;
+            n++;
+        }
+        return res;
+    }
+
+    bool is_start(int32_t pos) const {
+        for (const auto & span : spans) {
+            if (span.valid() && pos == (int32_t) span.pos) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     int32_t last_user_message_pos() const {
         for (auto it = spans.rbegin(); it != spans.rend(); ++it) {
             if (it->role == COMMON_CHAT_ROLE_USER) {

@@ -2237,6 +2237,215 @@ bool common_prompt_batch_decode(
     return true;
 }
 
+//
+// state arena and buffers
+//
+
+common_state_arena::common_state_arena(size_t size, size_t chunk_size) : n_chunk(chunk_size) {
+    GGML_ASSERT(chunk_size > 0);
+
+    ggml_backend_buffer_type_t buft = nullptr;
+    if (ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU)) {
+        buft = ggml_backend_dev_host_buffer_type(dev);
+    }
+    is_pinned = buft != nullptr;
+    if (!buft) {
+        buft = ggml_backend_cpu_buffer_type();
+    }
+
+    // slabs of whole chunks, so that a failed allocation still leaves what was pinned so far
+    const size_t n_slab_chunks = std::max<size_t>(1, (size_t(1) << 30) / chunk_size);
+
+    size_t n_left = size / chunk_size;
+    while (n_left > 0) {
+        const size_t n = std::min(n_left, n_slab_chunks);
+        ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(buft, n * chunk_size);
+        if (buf == nullptr) {
+            LOG_WRN("%s: could only allocate %.1f of %.1f MiB of '%s' memory\n", __func__,
+                    chunks_total * chunk_size / 1048576.0, size / 1048576.0, ggml_backend_buft_name(buft));
+            break;
+        }
+        bufs.push_back(buf);
+
+        uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(buf);
+        for (size_t i = 0; i < n; ++i) {
+            chunks_free.push_back(base + i * chunk_size);
+        }
+        chunks_total += n;
+        n_left       -= n;
+    }
+
+    // hand out low addresses first
+    std::reverse(chunks_free.begin(), chunks_free.end());
+}
+
+common_state_arena::~common_state_arena() {
+    for (auto * buf : bufs) {
+        ggml_backend_buffer_free(buf);
+    }
+}
+
+bool common_state_arena::take(size_t n, std::vector<uint8_t *> & out) {
+    if (n > chunks_free.size()) {
+        return false;
+    }
+    out.insert(out.end(), chunks_free.end() - n, chunks_free.end());
+    chunks_free.resize(chunks_free.size() - n);
+    return true;
+}
+
+void common_state_arena::give(std::vector<uint8_t *> & chunks) {
+    chunks_free.insert(chunks_free.end(), chunks.begin(), chunks.end());
+    chunks.clear();
+}
+
+common_state_buf::~common_state_buf() {
+    clear();
+}
+
+common_state_buf::common_state_buf(common_state_buf && other) noexcept {
+    *this = std::move(other);
+}
+
+common_state_buf & common_state_buf::operator=(common_state_buf && other) noexcept {
+    if (this != &other) {
+        clear();
+        arena     = other.arena;
+        chunks    = std::move(other.chunks);
+        heap      = std::move(other.heap);
+        n_bytes   = other.n_bytes;
+        xfer      = other.xfer;
+        xfer_t_us = other.xfer_t_us;
+
+        other.arena   = nullptr;
+        other.chunks.clear();
+        other.heap.clear();
+        other.n_bytes = 0;
+        other.xfer    = nullptr;
+    }
+    return *this;
+}
+
+common_state_buf::common_state_buf(const common_state_buf & other) {
+    *this = other;
+}
+
+common_state_buf & common_state_buf::operator=(const common_state_buf & other) {
+    if (this == &other) {
+        return *this;
+    }
+
+    other.wait();
+
+    if (!alloc(other.arena, other.n_bytes)) {
+        throw std::bad_alloc();
+    }
+
+    auto dst = views();
+    auto src = other.views();
+
+    // both lists cover n_bytes, in pieces of possibly different sizes
+    size_t id = 0, is = 0, od = 0, os = 0;
+    for (size_t left = n_bytes; left > 0; ) {
+        const size_t n = std::min({left, dst[id].size - od, src[is].size - os});
+        memcpy(dst[id].data + od, src[is].data + os, n);
+        od += n; os += n; left -= n;
+        if (od == dst[id].size) { id++; od = 0; }
+        if (os == src[is].size) { is++; os = 0; }
+    }
+
+    xfer_t_us = other.xfer_t_us;
+
+    return *this;
+}
+
+bool common_state_buf::alloc(common_state_arena * arena, size_t n) {
+    clear();
+
+    if (n == 0) {
+        return true;
+    }
+
+    if (arena && arena->take(arena->n_chunks(n), chunks)) {
+        this->arena = arena;
+    } else {
+        try {
+            heap.resize(n);
+        } catch (const std::bad_alloc &) {
+            return false;
+        }
+    }
+
+    n_bytes = n;
+
+    return true;
+}
+
+void common_state_buf::clear() {
+    wait();
+
+    if (arena) {
+        arena->give(chunks);
+        arena = nullptr;
+    }
+    heap.clear();
+    heap.shrink_to_fit();
+    n_bytes = 0;
+}
+
+std::vector<llama_state_chunk> common_state_buf::views() const {
+    std::vector<llama_state_chunk> res;
+    if (!heap.empty()) {
+        res.push_back({ const_cast<uint8_t *>(heap.data()), n_bytes });
+        return res;
+    }
+    size_t left = n_bytes;
+    for (auto * c : chunks) {
+        const size_t n = std::min(left, arena->chunk_size());
+        res.push_back({ c, n });
+        left -= n;
+    }
+    return res;
+}
+
+bool common_state_buf::get_async(llama_context * ctx, llama_seq_id seq_id, llama_state_seq_flags flags) {
+    wait();
+
+    const auto v = views();
+    const size_t n = llama_state_seq_get_data_async(ctx, v.data(), v.size(), seq_id, flags, &xfer);
+
+    return n == n_bytes;
+}
+
+bool common_state_buf::set_async(llama_context * ctx, llama_seq_id seq_id, llama_state_seq_flags flags) const {
+    wait();
+
+    const auto v = views();
+    const size_t n = llama_state_seq_set_data_async(ctx, v.data(), v.size(), n_bytes, seq_id, flags, &xfer);
+
+    return n == n_bytes;
+}
+
+void common_state_buf::collect() const {
+    xfer_t_us = llama_state_xfer_t_us(xfer);
+    llama_state_xfer_free(xfer);
+    xfer = nullptr;
+}
+
+bool common_state_buf::done() const {
+    if (xfer && llama_state_xfer_done(xfer)) {
+        collect();
+    }
+    return xfer == nullptr;
+}
+
+void common_state_buf::wait() const {
+    if (xfer) {
+        llama_state_xfer_wait(xfer);
+        collect();
+    }
+}
+
 size_t common_prompt_checkpoint::size() const {
     return data_tgt.size() + data_dft.size() + data_spec.size();
 }
@@ -2268,36 +2477,31 @@ void common_prompt_checkpoint::update_pos(
 void common_prompt_checkpoint::update_tgt(
         llama_context * ctx,
         llama_seq_id seq_id,
-        llama_state_seq_flags flags) {
+        llama_state_seq_flags flags,
+        common_state_arena * arena) {
     if (ctx == nullptr) {
         return;
     }
 
-    const size_t ckpt_size = llama_state_seq_get_size_ext(ctx, seq_id, flags);
-
-    data_tgt.resize(ckpt_size);
-
-    const size_t n = llama_state_seq_get_data_ext(ctx, data_tgt.data(), ckpt_size, seq_id, flags);
-    if (n != ckpt_size) {
-        GGML_ABORT("checkpoint size mismatch: expected %zu, got %zu\n", ckpt_size, n);
+    // the sequence keeps decoding, the copy stays in order with its graphs
+    if (!data_tgt.alloc(arena, llama_state_seq_get_size_ext(ctx, seq_id, flags)) ||
+        !data_tgt.get_async(ctx, seq_id, flags | LLAMA_STATE_SEQ_FLAGS_ORDERED)) {
+        GGML_ABORT("failed to save a checkpoint of %zu bytes\n", data_tgt.size());
     }
 }
 
 void common_prompt_checkpoint::update_dft(
         llama_context * ctx,
         llama_seq_id seq_id,
-        llama_state_seq_flags flags) {
+        llama_state_seq_flags flags,
+        common_state_arena * arena) {
     if (ctx == nullptr) {
         return;
     }
 
-    const size_t ckpt_size = llama_state_seq_get_size_ext(ctx, seq_id, flags);
-
-    data_dft.resize(ckpt_size);
-
-    const size_t n = llama_state_seq_get_data_ext(ctx, data_dft.data(), ckpt_size, seq_id, flags);
-    if (n != ckpt_size) {
-        GGML_ABORT("checkpoint size mismatch: expected %zu, got %zu\n", ckpt_size, n);
+    if (!data_dft.alloc(arena, llama_state_seq_get_size_ext(ctx, seq_id, flags)) ||
+        !data_dft.get_async(ctx, seq_id, flags | LLAMA_STATE_SEQ_FLAGS_ORDERED)) {
+        GGML_ABORT("failed to save a checkpoint of %zu bytes\n", data_dft.size());
     }
 }
 
@@ -2313,9 +2517,8 @@ void common_prompt_checkpoint::load_tgt(
         return;
     }
 
-    const size_t n = llama_state_seq_set_data_ext(ctx, data_tgt.data(), data_tgt.size(), seq_id, flags);
-    if (n != data_tgt.size()) {
-        GGML_ABORT("checkpoint size mismatch: expected %zu, got %zu\n", data_tgt.size(), n);
+    if (!data_tgt.set_async(ctx, seq_id, flags | LLAMA_STATE_SEQ_FLAGS_ORDERED)) {
+        GGML_ABORT("failed to restore a checkpoint of %zu bytes\n", data_tgt.size());
     }
 }
 
@@ -2331,9 +2534,8 @@ void common_prompt_checkpoint::load_dft(
         return;
     }
 
-    const size_t n = llama_state_seq_set_data_ext(ctx, data_dft.data(), data_dft.size(), seq_id, flags);
-    if (n != data_dft.size()) {
-        GGML_ABORT("checkpoint size mismatch: expected %zu, got %zu\n", data_dft.size(), n);
+    if (!data_dft.set_async(ctx, seq_id, flags | LLAMA_STATE_SEQ_FLAGS_ORDERED)) {
+        GGML_ABORT("failed to restore a checkpoint of %zu bytes\n", data_dft.size());
     }
 }
 

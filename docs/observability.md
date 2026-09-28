@@ -118,7 +118,10 @@ action: "park" | "unpark" | "preempt" | "resume"   // park: idle session VRAM ->
                                                    // preempt / resume: a generating slot paused at a token boundary and resumed
 id_slot: number, id_task: number | null, n_tokens: number,
 bytes: number,                     // state bytes copied (target + draft context; 0 = no copy, e.g. resume by re-prefill)
-ms: number, gbps: number           // wall time of the copy (host allocation included) and bytes / time
+ms: number, gbps: number           // device time of the copies (start of the first to end of the last, excluding the wait for
+                                   // work queued before them) and bytes / time
+host_ms: number                    // time the server loop spent issuing and waiting for the copies; parks and unparks overlap
+                                   // with other slots' decoding, so this is far below ms unless nothing else runs
 ```
 
 ### throughput  (every throughput_interval_ms, only when the interval had activity; idle time is folded into the next record's interval_seconds)
@@ -173,8 +176,12 @@ scheduler: {
   kv_budget: {
     enabled: boolean, queue_waiting: number, slots_preempted: number,
     gen_reserve: number, headroom: number, prefill_chunk_gen: number,   // --kv-budget-gen, --kv-budget-headroom, --prefill-chunk-gen
+    timeslice: number,                                                  // --kv-timeslice seconds, 0 = run to completion
     totals: { parks, park_drops, unparks, preempts, resumes, grows, park_bytes, unpark_bytes, park_seconds, unpark_seconds,
+              park_host_seconds, unpark_host_seconds,
               park_gbps, unpark_gbps, waited_slot, waited_kv, rollback_fallbacks, recompute_tokens, kv_overflows }
+      // park_seconds / unpark_seconds: device time of the copies (park_gbps = park_bytes / park_seconds)
+      // park_host_seconds / unpark_host_seconds: server loop time spent issuing and waiting for them
       // park_drops: idle sessions evicted without a new host copy (already cached, or no cache room)
       // rollback_fallbacks: truncations the memory refused, recovered from a checkpoint or by re-prefill
       // kv_overflows: llama_decode() found no free cells despite the budget (should stay 0)

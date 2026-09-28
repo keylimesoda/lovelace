@@ -1710,6 +1710,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT").set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--ctx-checkpoints-recent"}, "N",
+        string_format("context checkpoints at the start of each of the last N messages of a prompt, regardless of --checkpoint-min-step, "
+            "so that a client rewriting recent history (reasoning stripping, tool-result folding) resumes from the message below the edit; "
+            "kept in preference to older checkpoints (default: %d, 0 = off)", params.n_ctx_checkpoints_recent),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("ctx-checkpoints-recent must be non-negative");
+            }
+            params.n_ctx_checkpoints_recent = value;
+        }
+    ).set_env("LLAMA_ARG_CTX_CHECKPOINTS_RECENT").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"-cram", "--cache-ram"}, "N",
         string_format("set the maximum cache size in MiB (default: %d, -1 - no limit, 0 - disable)"
             "[(more info)](https://github.com/ggml-org/llama.cpp/pull/16391)", params.cache_ram_mib),
@@ -1775,6 +1787,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.prefill_chunk_gen = value;
         }
     ).set_env("LLAMA_ARG_PREFILL_CHUNK_GEN").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--kv-timeslice"}, "S",
+        string_format("KV budget: round-robin time slicing. Once the next queued request has waited S seconds for KV cells, the "
+            "generating slot that has run longest (at least S seconds) is paused at a token boundary and parked, and resumes "
+            "after the waiting request has started (default: %.0f, 0 = run each request to completion)", (double) params.kv_timeslice),
+        [](common_params & params, const std::string & value) {
+            params.kv_timeslice = std::stof(value);
+            if (params.kv_timeslice < 0) {
+                throw std::invalid_argument("kv-timeslice must be non-negative");
+            }
+        }
+    ).set_env("LLAMA_ARG_KV_TIMESLICE").set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
         {"--context-shift"},
         {"--no-context-shift"},

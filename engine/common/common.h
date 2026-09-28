@@ -630,6 +630,7 @@ struct common_params {
     int32_t n_ctx_checkpoints   = 32;    // max number of context checkpoints per slot
     int32_t kv_unified_per_slot = 0;     // max context per parallel slot; 0 = unset
     int32_t checkpoint_min_step = 8192;  // minimum spacing between context checkpoints
+    int32_t n_ctx_checkpoints_recent = 3; // checkpoints at the starts of the last N messages, regardless of the spacing
     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
 
     // KV budget scheduling (unified KV only): admission by cell reservation, parking of idle sessions
@@ -637,6 +638,7 @@ struct common_params {
     int32_t kv_budget_gen       = 8192;  // max generated tokens reserved per request up front, grows on demand
     int32_t kv_budget_headroom  = 256;   // cells kept free when admitting new work
     int32_t prefill_chunk_gen   = 1024;  // max prompt tokens per batch while another slot generates; 0 = n_batch
+    float   kv_timeslice        = 0.0f;  // round-robin quantum and wait threshold in seconds; 0 = run to completion
 
     std::string public_path   = "";                                                                         // NOLINT
     std::string api_prefix    = "";                                                                         // NOLINT
@@ -1195,6 +1197,84 @@ enum ggml_opt_optimizer_type common_opt_get_optimizer(const char *);
 // prompt utils
 //
 
+// host memory for sequence states, allocated once from the host buffer type of the first GPU (pinned memory, so
+// that llama_state_seq_get/set_data_async copy asynchronously at full PCIe speed) and carved into fixed-size chunks
+// without a GPU it is plain CPU memory, and the transfers are synchronous
+struct common_state_arena {
+    common_state_arena(size_t size, size_t chunk_size);
+    ~common_state_arena();
+
+    common_state_arena(const common_state_arena &) = delete;
+    common_state_arena & operator=(const common_state_arena &) = delete;
+
+    size_t chunk_size() const { return n_chunk; }
+    size_t n_total()    const { return chunks_total; }
+    size_t n_free()     const { return chunks_free.size(); }
+    bool   pinned()     const { return is_pinned; }
+
+    // chunks needed for n bytes
+    size_t n_chunks(size_t n) const { return (n + n_chunk - 1) / n_chunk; }
+
+    // appends n chunks to out, false (nothing taken) if fewer are free
+    bool take(size_t n, std::vector<uint8_t *> & out);
+    void give(std::vector<uint8_t *> & chunks);
+
+private:
+    size_t n_chunk      = 0;
+    size_t chunks_total = 0;
+    bool   is_pinned    = false;
+
+    std::vector<ggml_backend_buffer_t> bufs;
+    std::vector<uint8_t *>             chunks_free;
+};
+
+// the serialized state of a sequence in host memory: chunks of an arena, or heap memory without one (or when the
+// arena is full), plus the transfer that fills or reads it. Any access to the bytes, a copy and the destructor
+// first wait for that transfer.
+struct common_state_buf {
+    common_state_buf() = default;
+    ~common_state_buf();
+
+    common_state_buf(common_state_buf && other) noexcept;
+    common_state_buf & operator=(common_state_buf && other) noexcept;
+
+    // deep copy, into the same arena if it has room
+    common_state_buf(const common_state_buf & other);
+    common_state_buf & operator=(const common_state_buf & other);
+
+    size_t size()  const { return n_bytes; }
+    bool   empty() const { return n_bytes == 0; }
+    bool   in_arena() const { return !chunks.empty(); }
+
+    // room for n bytes; from the arena if it has enough free chunks, else from the heap
+    // returns false if the heap allocation fails
+    bool alloc(common_state_arena * arena, size_t n);
+    void clear();
+
+    // start saving / restoring a sequence (after alloc() / on a filled buffer), false on failure
+    // flags as in llama_state_seq_get_data_ext, plus LLAMA_STATE_SEQ_FLAGS_ORDERED
+    bool get_async(llama_context * ctx, llama_seq_id seq_id, llama_state_seq_flags flags);
+    bool set_async(llama_context * ctx, llama_seq_id seq_id, llama_state_seq_flags flags) const;
+
+    // the pending transfer is complete (true without one); the device time of the last transfer in microseconds
+    bool    done() const;
+    void    wait() const;
+    int64_t t_us() const { return xfer_t_us; }
+
+private:
+    void collect() const; // frees a completed transfer and keeps its time
+
+    common_state_arena *   arena = nullptr;
+    std::vector<uint8_t *> chunks;  // arena chunks
+    std::vector<uint8_t>   heap;    // or heap memory
+    size_t                 n_bytes = 0;
+
+    mutable llama_state_xfer_t xfer      = nullptr;
+    mutable int64_t            xfer_t_us = -1;
+
+    std::vector<llama_state_chunk> views() const;
+};
+
 struct common_prompt_checkpoint {
     int64_t n_tokens;
 
@@ -1204,8 +1284,9 @@ struct common_prompt_checkpoint {
     llama_pos pos_min;
     llama_pos pos_max;
 
-    std::vector<uint8_t> data_tgt;
-    std::vector<uint8_t> data_dft;
+    // recurrent / SWA state, copied asynchronously in order with the compute stream
+    common_state_buf data_tgt;
+    common_state_buf data_dft;
 
     // (optional) speculative-decoding implementation state stashed with the checkpoint
     // (e.g. eagle3's deferred-boundary g_embd row)
@@ -1221,15 +1302,18 @@ struct common_prompt_checkpoint {
             llama_pos pos_min,
             llama_pos pos_max);
 
+    // arena: host memory for the state, heap memory if nullptr or full
     void update_tgt(
             llama_context * ctx,
             llama_seq_id seq_id,
-            llama_state_seq_flags flags);
+            llama_state_seq_flags flags,
+            common_state_arena * arena = nullptr);
 
     void update_dft(
             llama_context * ctx,
             llama_seq_id seq_id,
-            llama_state_seq_flags flags);
+            llama_state_seq_flags flags,
+            common_state_arena * arena = nullptr);
 
     void load_tgt(
             llama_context * ctx,
