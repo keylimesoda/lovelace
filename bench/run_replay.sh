@@ -17,7 +17,7 @@ exec "$HERE/../deploy/gpu-lock.sh" bash -c '
     -ctkd q5_0 -ctvd q5_0 --cache-ram 32768 -ctxcp 8 --reasoning-preserve --alias qwen3.8-27b --telemetry --metrics \
     --host 127.0.0.1 --port 18000 "$@" >/dev/null
   for i in $(seq 150); do curl -sf 127.0.0.1:18000/health >/dev/null && break; sleep 2; done
-  (cd "$HERE/replay" && /tmp/uvtool/bin/uv run replay.py --base-url http://127.0.0.1:18000/v1 --model qwen3.8-27b \
+  (cd "$HERE/replay" && uv run replay.py --base-url http://127.0.0.1:18000/v1 --model qwen3.8-27b \
      --agents "$AGENTS" --duration "$DUR" --no-drain --start-turn-min-depth "$MIND" --think-scale 0.25 --max-think 20 \
      --output-tokens recorded --temperature 1.0 --extra-body "{\"top_p\":0.95,\"top_k\":20}" \
      --results-dir "$OUT" --label "$LABEL") > "$OUT/$LABEL.replay.out" 2>&1

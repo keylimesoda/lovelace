@@ -19,7 +19,7 @@
 
 ## After the reboot
 1. `docker ps -a`: make sure no lovelace/bench containers auto-started; ninfer-qwen stays stopped.
-2. Recreate the tools used by scripts: `pip install uv` into /tmp/uvtool (it was a tmpfs venv), rebuild
-   bench/replay/.venv on first `uv run`.
+2. `uv` lives in ~/.local/share/lovelace-uv (venv) with ~/.local/bin/uv on PATH; it survives reboots. Scripts call
+   `uv` from PATH (override with UV=...).
 3. `git -C ~/Work/lovelace worktree list`: worktrees survive the reboot (they're on disk).
 4. `rm -f /tmp/lovelace-gpu.lock; mkdir -p /tmp/lovelace-gpu.q` (tmpfs is cleared anyway).

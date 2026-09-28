@@ -97,7 +97,7 @@ the `+ lovelace-kld ...` lines that `DRY_RUN=1` prints.
 ### Windows (already done; rerun only when the corpus changes)
 
 ```sh
-/tmp/uvtool/bin/uv run build_corpus.py                     # estimate pass, writes candidates.jsonl
+uv run build_corpus.py                                    # estimate pass, writes candidates.jsonl
 docker run --rm --user 1000:1000 -e CUDA_VISIBLE_DEVICES= \
   -v /home/ric/Work:/home/ric/Work -v /home/ric/models:/home/ric/models:ro \
   -w /home/ric/Work/lovelace/eval/kld nvidia/cuda:13.1.2-devel-ubuntu24.04 bash -c '
@@ -105,7 +105,7 @@ docker run --rm --user 1000:1000 -e CUDA_VISIBLE_DEVICES= \
     LD_LIBRARY_PATH=/home/ric/Work/src/llama.cpp/build-sm89/bin:/tmp/stubs nice -n 19 \
       ./build/lovelace-kld tokcount --model /home/ric/models/ref/Qwen3.8-27B-Q8_0.gguf \
         --windows candidates.jsonl --out counts.jsonl'      # vocab only: no weights, no GPU, ~1 min
-/tmp/uvtool/bin/uv run build_corpus.py --counts counts.jsonl   # exact depths → windows.jsonl
+uv run build_corpus.py --counts counts.jsonl              # exact depths → windows.jsonl
 ```
 
 The current `windows.jsonl` has 6 windows per bucket, with exact depths:

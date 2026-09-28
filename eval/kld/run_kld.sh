@@ -27,7 +27,7 @@ ALL=32k,64k,128k,170k,250k
 KV_CANDIDATES=(q8_0 q4_0 q5_0 q8_0/q4_0 q8_0/q5_0)
 VRAM_GIB=${VRAM_GIB:-22.5}
 DRY_RUN=${DRY_RUN:-0}
-UV=/tmp/uvtool/bin/uv
+UV=${UV:-uv}
 LLAMA_LIB=/home/ric/Work/src/llama.cpp/build-sm89/bin
 
 # identical for every base and compare run: the kernel choice depends on -ub, -fa and --max-outputs

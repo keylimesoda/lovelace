@@ -11,7 +11,7 @@ mkdir -p "$OUT"
 OUT=$(realpath "$OUT")
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPLAY_DIR=$HERE/../replay
-UV=${UV:-/tmp/uvtool/bin/uv}
+UV=${UV:-uv}
 IMG=lovelace-engine-runtime:cuda13.1
 SRC=$HOME/Work/src
 
