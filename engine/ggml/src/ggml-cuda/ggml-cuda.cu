@@ -713,6 +713,36 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
             }
         }
     }
+    if (src1_quant_cache.buf != nullptr) {
+        CUDA_CHECK(cudaFree(src1_quant_cache.buf));
+    }
+}
+
+char * ggml_cuda_src1_quant_cache::get(const ggml_tensor * src1, int layout, size_t nbytes, cudaStream_t stream, bool * hit) {
+    *hit = false;
+    if (nbytes > slot_bytes) {
+        return nullptr;
+    }
+    for (int i = 0; i < n_slots; ++i) {
+        const slot & s = slots[i];
+        if (s.src1 == src1 && s.data == src1->data && s.layout == layout && s.nbytes >= nbytes) {
+            *hit = true;
+            return buf + i*slot_bytes;
+        }
+    }
+    if (buf == nullptr) {
+        // The buffer is baked into captured CUDA graphs, so it is allocated once and never outside of a capture.
+        cudaStreamCaptureStatus capture_status;
+        CUDA_CHECK(cudaStreamIsCapturing(stream, &capture_status));
+        if (capture_status != cudaStreamCaptureStatusNone) {
+            return nullptr;
+        }
+        CUDA_CHECK(cudaMalloc(&buf, n_slots*slot_bytes));
+    }
+    const int i = next;
+    next = (next + 1) % n_slots;
+    slots[i] = { src1, src1->data, layout, nbytes };
+    return buf + i*slot_bytes;
 }
 
 
@@ -4448,6 +4478,9 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
 
     ggml_cuda_set_device(cuda_ctx->device);
+
+    // Tensors of an earlier graph may have been freed and their memory reused, so no quantized src1 carries over.
+    cuda_ctx->src1_quant_cache.reset();
 
     bool use_cuda_graph             = false;
     bool cuda_graph_update_required = false;
