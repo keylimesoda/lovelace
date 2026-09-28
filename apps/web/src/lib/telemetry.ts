@@ -25,8 +25,6 @@ export interface GpuTelemetry {
   memory_clock_mhz?: number
   memory_used_bytes?: number
   memory_total_bytes?: number
-  pcie_rx_bytes_per_second?: number
-  pcie_tx_bytes_per_second?: number
   pstate?: number
   throttle_reasons?: string[]
 }

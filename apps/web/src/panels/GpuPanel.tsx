@@ -105,13 +105,6 @@ export function GpuPanel({
           fraction={memoryUsed / memoryTotal}
           color={memoryUsed / memoryTotal > 0.95 ? 'var(--warning)' : 'var(--blue)'}
         />
-        {gpu.pcie_rx_bytes_per_second === undefined &&
-        gpu.pcie_tx_bytes_per_second === undefined ? null : (
-          <div className="eyebrow">
-            <Term k="pcie">pcie</Term> rx {bytes(gpu.pcie_rx_bytes_per_second ?? 0)}/s · tx{' '}
-            {bytes(gpu.pcie_tx_bytes_per_second ?? 0)}/s
-          </div>
-        )}
       </div>
 
       {history.length < 2 ? (

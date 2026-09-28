@@ -116,7 +116,7 @@ export interface RequestStartRecord extends RecordEnvelope {
   queue_wait_ms: number
 }
 
-export type FinishReason = 'eos' | 'word' | 'limit' | 'cancelled' | 'error'
+export type FinishReason = 'eos' | 'word' | 'limit' | 'cancelled' | 'error' | 'done'
 
 export interface RequestResult {
   finish_reason: FinishReason

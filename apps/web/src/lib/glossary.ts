@@ -173,13 +173,6 @@ export const GLOSSARY = {
       'Everything resident on the board as NVML reports it, including other processes. The VRAM ' +
       'panel decomposes what llama.cpp itself allocated.',
   },
-  pcie: {
-    title: 'PCIe traffic',
-    body:
-      'Host-to-device (rx) and device-to-host (tx) bytes per second. Sustained traffic during ' +
-      'generation usually means layers or KV are not fully offloaded (-ngl) or a prompt-cache ' +
-      'save/restore is moving state.',
-  },
 
   // --- VRAM panel ----------------------------------------------------------
 
@@ -328,7 +321,7 @@ export const GLOSSARY = {
     body:
       'eos: the model emitted end-of-generation. word: a stop string matched. limit: n_predict ' +
       'or the slot context was exhausted. cancelled: the client went away. error: the slot ' +
-      'failed mid-flight.',
+      'failed mid-flight. done: an embedding or rerank task completed (no sampling).',
   },
   endpoint: {
     title: 'Endpoint',
