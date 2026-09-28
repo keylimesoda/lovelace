@@ -4,6 +4,15 @@ llama.cpp supports speculative decoding, a technique that can significantly acce
 
 [Speculative decoding](https://en.wikipedia.org/wiki/Transformer_(deep_learning)#Speculative_decoding) leverages the fact that computing n tokens in a batch (as in prompt processing) is more efficient than computing n sequentially (as in response generation). By generating draft tokens quickly and then verifying them with the target model in a single batch, this approach can achieve substantial speedups when the draft predictions are frequently correct.
 
+## Draft context physical batch size
+
+MTP and causal draft contexts default to `N=32`. DFlash and DSpark default to
+`max(128, n_parallel * (n_max + 1))` so active non-causal block batches fit in one
+physical ubatch. A supplied `-ubd` takes precedence; for DFlash/DSpark, an explicit
+value below the required non-causal block size is raised with a warning. Physical
+ubatch sizes are capped at the target logical batch size (`-b`); prompt tokens are
+otherwise fed in smaller draft ubatches without changing logical capacity.
+
 ## Implementations
 
 The `llama-server` application supports several implementations of speculative decoding. An implementation with draft model can be mixed with an implementation without draft model.
