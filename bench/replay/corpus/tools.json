@@ -1,0 +1,515 @@
+[
+ {
+  "type": "function",
+  "function": {
+   "name": "read",
+   "description": "Read a file, directory listing, URL, archive member, SQLite table, or internal URI. Path suffixes select line ranges: `:50` starts at line 50, `:50-200` inclusive range, `:50+150` counts lines, `:-60` last 60 lines, `:raw` returns verbatim bytes without line anchors. Directories list entries (children capped at 12). URLs are fetched and converted to readable text/markdown. Returns content prefixed with a snapshot tag `[path#TAG]` required by `edit`.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "i": {
+      "type": "string",
+      "description": "Concise intent: capitalized 2-6 word present-participle phrase describing why the tool is called (e.g. \"Reading model role settings\")."
+     },
+     "path": {
+      "type": "string",
+      "description": "Local path, internal URI (skill://, agent://, artifact://, local://), or URL; selectors appended inline."
+     }
+    },
+    "required": [
+     "i",
+     "path"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "bash",
+   "description": "Run a command in a persistent shell. Use for real binaries and short fact pipelines (counts, checksums, builds, tests). Do not use for file reads, searches, or edits that have specialized tools. Output is truncated; the full result is stored at `artifact://<id>`. Long-lived services need a unique `name` and optionally a `ready` probe (log regex and/or TCP port).",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "i": {
+      "type": "string",
+      "description": "Concise intent: capitalized 2-6 word present-participle phrase describing why the tool is called (e.g. \"Reading model role settings\")."
+     },
+     "command": {
+      "type": "string",
+      "description": "Shell command or pipeline to execute."
+     },
+     "cwd": {
+      "type": "string",
+      "description": "Working directory; use instead of `cd`."
+     },
+     "timeout": {
+      "type": "number",
+      "description": "Timeout in seconds; 0 disables the deadline; clamped to 1-3600."
+     },
+     "async": {
+      "type": "boolean",
+      "description": "Defer the result; it is delivered when the job finishes."
+     },
+     "pty": {
+      "type": "boolean",
+      "description": "Allocate a pseudo-terminal (interactive programs only)."
+     },
+     "name": {
+      "type": "string",
+      "description": "Unique name for a long-lived service."
+     },
+     "env": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      },
+      "description": "Extra environment variables."
+     },
+     "ready": {
+      "type": "object",
+      "properties": {
+       "log": {
+        "type": "string"
+       },
+       "port": {
+        "type": "number"
+       },
+       "host": {
+        "type": "string"
+       },
+       "timeout": {
+        "type": "number"
+       }
+      },
+      "additionalProperties": false,
+      "description": "Readiness probe for named services."
+     }
+    },
+    "required": [
+     "i",
+     "command"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "edit",
+   "description": "Apply hashline patches to existing files. Each file section starts with `[PATH#TAG]` where TAG is the 4-hex snapshot from the latest `read`. Operations: `PUT N.=M:` replace inclusive range with `+` body lines, `PUT <N:`/`PUT >N:` insert before/after line N, `CUT N.=M` delete, `REM` delete file, `MV DEST` rename. Body rows are `+TEXT` verbatim including indentation. Line numbers refer to the original snapshot.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "i": {
+      "type": "string",
+      "description": "Concise intent: capitalized 2-6 word present-participle phrase describing why the tool is called (e.g. \"Reading model role settings\")."
+     },
+     "input": {
+      "type": "string",
+      "description": "Patch text in hashline format, one or more file sections."
+     }
+    },
+    "required": [
+     "i",
+     "input"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "write",
+   "description": "Create a new file or overwrite an existing one with the given content. Prefer `edit` for surgical changes to existing files. Also writes to internal devices (xd://<tool>) and agent message targets (agent://<id>).",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "i": {
+      "type": "string",
+      "description": "Concise intent: capitalized 2-6 word present-participle phrase describing why the tool is called (e.g. \"Reading model role settings\")."
+     },
+     "path": {
+      "type": "string",
+      "description": "Destination path or internal URI."
+     },
+     "content": {
+      "type": "string",
+      "description": "Full file content."
+     }
+    },
+    "required": [
+     "i",
+     "path",
+     "content"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "grep",
+   "description": "Regex search over files (Rust regex, then PCRE2). `path` accepts `;`-separated files, directories, globs, or URLs; default is the workspace root. Respects .gitignore by default. Literal `\\n` enables multi-line matching. Returns matching lines with anchors.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "i": {
+      "type": "string",
+      "description": "Concise intent: capitalized 2-6 word present-participle phrase describing why the tool is called (e.g. \"Reading model role settings\")."
+     },
+     "pattern": {
+      "type": "string",
+      "description": "Regular expression."
+     },
+     "path": {
+      "type": "string",
+      "description": "Files/directories/globs to search, `;`-separated."
+     },
+     "case": {
+      "type": "boolean",
+      "description": "Case-sensitive matching (default true)."
+     },
+     "gitignore": {
+      "type": "boolean",
+      "description": "Respect .gitignore (default true)."
+     },
+     "skip": {
+      "type": "number",
+      "description": "Number of matching files to skip (pagination)."
+     }
+    },
+    "required": [
+     "i",
+     "pattern"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "glob",
+   "description": "Find files and directories by glob pattern. `;`-separated patterns; directories end with `/`. Results newest-first. Hidden files and gitignored paths are excluded by default.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "i": {
+      "type": "string",
+      "description": "Concise intent: capitalized 2-6 word present-participle phrase describing why the tool is called (e.g. \"Reading model role settings\")."
+     },
+     "path": {
+      "type": "string",
+      "description": "Glob pattern(s), `;`-separated."
+     },
+     "limit": {
+      "type": "number",
+      "description": "Maximum results."
+     },
+     "gitignore": {
+      "type": "boolean"
+     },
+     "hidden": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "i"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "eval",
+   "description": "Run a code cell in a persistent kernel. Python (IPython, top-level await) or JavaScript (Bun). Top-level state persists between calls. Prelude helpers: read, write, display, log, tool.<name>(args) to call other session tools.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "i": {
+      "type": "string",
+      "description": "Concise intent: capitalized 2-6 word present-participle phrase describing why the tool is called (e.g. \"Reading model role settings\")."
+     },
+     "language": {
+      "type": "string",
+      "enum": [
+       "py",
+       "js"
+      ],
+      "description": "Kernel language."
+     },
+     "code": {
+      "type": "string",
+      "description": "Code to execute."
+     },
+     "title": {
+      "type": "string",
+      "description": "Short transcript label."
+     },
+     "timeout": {
+      "type": "number",
+      "description": "Cell deadline in seconds; 0 disables it."
+     },
+     "reset": {
+      "type": "boolean",
+      "description": "Wipe this kernel before running."
+     }
+    },
+    "required": [
+     "i",
+     "language",
+     "code"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "todo",
+   "description": "Maintain the visible task list. Ops: init (replace list with items), start (mark task in progress), done (complete task), rm/drop (remove), block/unblock, append (add items), view.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "i": {
+      "type": "string",
+      "description": "Concise intent: capitalized 2-6 word present-participle phrase describing why the tool is called (e.g. \"Reading model role settings\")."
+     },
+     "op": {
+      "type": "string",
+      "enum": [
+       "init",
+       "start",
+       "done",
+       "rm",
+       "drop",
+       "block",
+       "unblock",
+       "append",
+       "view"
+      ]
+     },
+     "items": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "Task descriptions for init/append."
+     },
+     "task": {
+      "type": "string",
+      "description": "Task text or index for start/done/rm/block."
+     },
+     "list": {
+      "type": "string",
+      "description": "Named list (default Tasks)."
+     },
+     "reason": {
+      "type": "string",
+      "description": "Reason for block/drop."
+     }
+    },
+    "required": [
+     "i",
+     "op"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "web_search",
+   "description": "Search the web. Supports site:, -site:, after:/before: YYYY-MM-DD, inurl:, intitle:, filetype:, quoted phrases, -term, OR. Prefer primary sources and cite links.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "i": {
+      "type": "string",
+      "description": "Concise intent: capitalized 2-6 word present-participle phrase describing why the tool is called (e.g. \"Reading model role settings\")."
+     },
+     "query": {
+      "type": "string",
+      "description": "Search query."
+     },
+     "limit": {
+      "type": "number"
+     },
+     "num_search_results": {
+      "type": "number"
+     },
+     "recency": {
+      "type": "string",
+      "enum": [
+       "day",
+       "week",
+       "month",
+       "year"
+      ]
+     }
+    },
+    "required": [
+     "i",
+     "query"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "task",
+   "description": "Spawn subagents concurrently. Each task gets a fresh context; supply full requirements. Returns agent ids immediately; results are delivered when agents yield.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "i": {
+      "type": "string",
+      "description": "Concise intent: capitalized 2-6 word present-participle phrase describing why the tool is called (e.g. \"Reading model role settings\")."
+     },
+     "context": {
+      "type": "string",
+      "description": "Shared context for all tasks (goal, contracts)."
+     },
+     "tasks": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string"
+        },
+        "agent": {
+         "type": "string"
+        },
+        "task": {
+         "type": "string"
+        },
+        "solutionSpace": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "task"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": [
+     "i",
+     "context",
+     "tasks"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "wait",
+   "description": "Block until the first result of an owned background job or subagent, an incoming message, or a steering interrupt. Only use when there is nothing else to do.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "i": {
+      "type": "string",
+      "description": "Concise intent: capitalized 2-6 word present-participle phrase describing why the tool is called (e.g. \"Reading model role settings\")."
+     }
+    },
+    "required": [
+     "i"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "ask",
+   "description": "Ask the user one or more clarifying questions with optional multiple-choice answers. Use only when the answer cannot be derived from tools or repository context.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "i": {
+      "type": "string",
+      "description": "Concise intent: capitalized 2-6 word present-participle phrase describing why the tool is called (e.g. \"Reading model role settings\")."
+     },
+     "questions": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "question": {
+         "type": "string"
+        },
+        "options": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        },
+        "multi": {
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "question"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": [
+     "i",
+     "questions"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "yield",
+   "description": "Submit the subagent's final output: `{data: ...}` for success or `{error: \"message\"}` for failure. Subagent sessions only.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "i": {
+      "type": "string",
+      "description": "Concise intent: capitalized 2-6 word present-participle phrase describing why the tool is called (e.g. \"Reading model role settings\")."
+     },
+     "data": {
+      "type": "object",
+      "description": "Structured result payload."
+     },
+     "error": {
+      "type": "string",
+      "description": "Failure reason; mutually exclusive with data."
+     },
+     "type": {
+      "type": "string",
+      "description": "Optional result type."
+     }
+    },
+    "required": [
+     "i"
+    ],
+    "additionalProperties": false
+   }
+  }
+ }
+]

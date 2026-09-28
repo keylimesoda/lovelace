@@ -1,0 +1,1148 @@
+{
+ "generated_at": "2026-09-27T21:35:08-07:00",
+ "sessions_root": "/home/ric/.omp/agent/sessions",
+ "provider": "ninfer-local",
+ "chars_per_token": 3.2,
+ "note": "est_* token counts are chars/3.2 estimates of the rebuilt prompt (system prompt and tool schemas reconstructed for main sessions); rec_* are the token counts the server reported when the session ran.",
+ "sessions": [
+  {
+   "name": "2026-09-24T08-12-05_01a0d278",
+   "file": "sessions/2026-09-24T08-12-05_01a0d278.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-Work/2026-09-24T08-12-05-510Z_01a0d278-c606-71b2-a895-ba8f024f071d.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/home/ric/Work",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 0,
+   "turns": 16,
+   "est_depth_tokens": {
+    "p50": 20331,
+    "p90": 44933,
+    "max": 45386
+   },
+   "rec_depth_tokens": {
+    "p50": 21624,
+    "p90": 42157,
+    "max": 42593
+   },
+   "agent_gap_s_p50": 0.084,
+   "output_tokens_rec_sum": 10914
+  },
+  {
+   "name": "2026-09-25T05-16-48_01a0d6fe",
+   "file": "sessions/2026-09-25T05-16-48_01a0d6fe.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-Work/2026-09-25T05-16-48-446Z_01a0d6fe-a7be-7570-915f-8f6e7151b284.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/home/ric/Work",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 0,
+   "turns": 28,
+   "est_depth_tokens": {
+    "p50": 26577,
+    "p90": 33585,
+    "max": 35563
+   },
+   "rec_depth_tokens": {
+    "p50": 26072,
+    "p90": 32180,
+    "max": 33846
+   },
+   "agent_gap_s_p50": 0.022,
+   "output_tokens_rec_sum": 10066
+  },
+  {
+   "name": "2026-09-25T05-26-18_01a0d707",
+   "file": "sessions/2026-09-25T05-26-18_01a0d707.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-Work/2026-09-25T05-26-18-200Z_01a0d707-5958-729f-af0f-998aaa03e530.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/home/ric/Work",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 1,
+   "turns": 190,
+   "est_depth_tokens": {
+    "p50": 142729,
+    "p90": 192639,
+    "max": 232814
+   },
+   "rec_depth_tokens": {
+    "p50": 137672,
+    "p90": 184389,
+    "max": 222046
+   },
+   "agent_gap_s_p50": 0.046,
+   "output_tokens_rec_sum": 233957
+  },
+  {
+   "name": "2026-09-25T05-41-06_01a0d714",
+   "file": "sessions/2026-09-25T05-41-06_01a0d714.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-Work/2026-09-25T05-41-06-896Z_01a0d714-e8d0-773b-b4a7-33de84488b9f.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/home/ric/Work",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 0,
+   "turns": 127,
+   "est_depth_tokens": {
+    "p50": 79083,
+    "p90": 151986,
+    "max": 167515
+   },
+   "rec_depth_tokens": {
+    "p50": 72499,
+    "p90": 138472,
+    "max": 153370
+   },
+   "agent_gap_s_p50": 0.118,
+   "output_tokens_rec_sum": 95153
+  },
+  {
+   "name": "2026-09-25T07-09-44_01a0d766",
+   "file": "sessions/2026-09-25T07-09-44_01a0d766.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-Work/2026-09-25T07-09-44-952Z_01a0d766-0e78-74b1-a706-e4469e60106a.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/home/ric/Work",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 0,
+   "turns": 23,
+   "est_depth_tokens": {
+    "p50": 44529,
+    "p90": 67294,
+    "max": 68674
+   },
+   "rec_depth_tokens": {
+    "p50": 49658,
+    "p90": 72849,
+    "max": 74285
+   },
+   "agent_gap_s_p50": 0.082,
+   "output_tokens_rec_sum": 40068
+  },
+  {
+   "name": "2026-09-25T07-15-46_01a0d76b",
+   "file": "sessions/2026-09-25T07-15-46_01a0d76b.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-Work/2026-09-25T07-15-46-682Z_01a0d76b-937a-77fa-829c-1a4bc90036b7.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/home/ric/Work",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 0,
+   "turns": 125,
+   "est_depth_tokens": {
+    "p50": 104636,
+    "p90": 163838,
+    "max": 174215
+   },
+   "rec_depth_tokens": {
+    "p50": 100135,
+    "p90": 162696,
+    "max": 173471
+   },
+   "agent_gap_s_p50": 0.038,
+   "output_tokens_rec_sum": 75038
+  },
+  {
+   "name": "2026-09-26T02-34-37_01a0db90",
+   "file": "sessions/2026-09-26T02-34-37_01a0db90.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-Work/2026-09-26T02-34-37-818Z_01a0db90-897a-71da-aedd-4aa74552ba93.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/home/ric/Work",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 0,
+   "turns": 96,
+   "est_depth_tokens": {
+    "p50": 99791,
+    "p90": 162926,
+    "max": 168370
+   },
+   "rec_depth_tokens": {
+    "p50": 100895,
+    "p90": 161330,
+    "max": 166383
+   },
+   "agent_gap_s_p50": 0.081,
+   "output_tokens_rec_sum": 90724
+  },
+  {
+   "name": "2026-09-26T09-53-08_01a0dd22__priorart-displayshaders",
+   "file": "sessions/2026-09-26T09-53-08_01a0dd22__priorart-displayshaders.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-Work/2026-09-26T09-53-08-513Z_01a0dd22-01a1-7027-b50c-d6c08953b797/priorart-displayshaders.jsonl",
+   "kind": "subagent",
+   "agent": "task",
+   "cwd": "/home/ric/Work",
+   "real_system_prompt": true,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "eval",
+    "glob",
+    "grep",
+    "task",
+    "web_search",
+    "write",
+    "yield"
+   ],
+   "compactions": 0,
+   "turns": 68,
+   "est_depth_tokens": {
+    "p50": 92995,
+    "p90": 127841,
+    "max": 138172
+   },
+   "rec_depth_tokens": {
+    "p50": 89685,
+    "p90": 129167,
+    "max": 139334
+   },
+   "agent_gap_s_p50": 0.048,
+   "output_tokens_rec_sum": 73019
+  },
+  {
+   "name": "2026-09-26T09-53-08_01a0dd22__priorart-panel-layout",
+   "file": "sessions/2026-09-26T09-53-08_01a0dd22__priorart-panel-layout.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-Work/2026-09-26T09-53-08-513Z_01a0dd22-01a1-7027-b50c-d6c08953b797/priorart-panel-layout.jsonl",
+   "kind": "subagent",
+   "agent": "task",
+   "cwd": "/home/ric/Work",
+   "real_system_prompt": true,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "eval",
+    "glob",
+    "grep",
+    "task",
+    "web_search",
+    "write",
+    "yield"
+   ],
+   "compactions": 0,
+   "turns": 90,
+   "est_depth_tokens": {
+    "p50": 68712,
+    "p90": 151674,
+    "max": 162767
+   },
+   "rec_depth_tokens": {
+    "p50": 71505,
+    "p90": 166167,
+    "max": 176810
+   },
+   "agent_gap_s_p50": 0.409,
+   "output_tokens_rec_sum": 100468
+  },
+  {
+   "name": "2026-09-26T09-53-08_01a0dd22__priorart-puretype",
+   "file": "sessions/2026-09-26T09-53-08_01a0dd22__priorart-puretype.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-Work/2026-09-26T09-53-08-513Z_01a0dd22-01a1-7027-b50c-d6c08953b797/priorart-puretype.jsonl",
+   "kind": "subagent",
+   "agent": "task",
+   "cwd": "/home/ric/Work",
+   "real_system_prompt": true,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "eval",
+    "glob",
+    "grep",
+    "task",
+    "web_search",
+    "write",
+    "yield"
+   ],
+   "compactions": 0,
+   "turns": 40,
+   "est_depth_tokens": {
+    "p50": 54100,
+    "p90": 70732,
+    "max": 78563
+   },
+   "rec_depth_tokens": {
+    "p50": 56450,
+    "p90": 73395,
+    "max": 81603
+   },
+   "agent_gap_s_p50": 0.392,
+   "output_tokens_rec_sum": 25444
+  },
+  {
+   "name": "2026-09-26T09-53-08_01a0dd22__priorart-rejhon",
+   "file": "sessions/2026-09-26T09-53-08_01a0dd22__priorart-rejhon.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-Work/2026-09-26T09-53-08-513Z_01a0dd22-01a1-7027-b50c-d6c08953b797/priorart-rejhon.jsonl",
+   "kind": "subagent",
+   "agent": "task",
+   "cwd": "/home/ric/Work",
+   "real_system_prompt": true,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "eval",
+    "glob",
+    "grep",
+    "task",
+    "web_search",
+    "write",
+    "yield"
+   ],
+   "compactions": 0,
+   "turns": 32,
+   "est_depth_tokens": {
+    "p50": 66620,
+    "p90": 84753,
+    "max": 95487
+   },
+   "rec_depth_tokens": {
+    "p50": 64705,
+    "p90": 81662,
+    "max": 91333
+   },
+   "agent_gap_s_p50": 0.35,
+   "output_tokens_rec_sum": 28697
+  },
+  {
+   "name": "2026-09-26T09-53-08_01a0dd22",
+   "file": "sessions/2026-09-26T09-53-08_01a0dd22.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-Work/2026-09-26T09-53-08-513Z_01a0dd22-01a1-7027-b50c-d6c08953b797.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/home/ric/Work",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 2,
+   "turns": 470,
+   "est_depth_tokens": {
+    "p50": 112246,
+    "p90": 194692,
+    "max": 218247
+   },
+   "rec_depth_tokens": {
+    "p50": 114207,
+    "p90": 199995,
+    "max": 225451
+   },
+   "agent_gap_s_p50": 0.021,
+   "output_tokens_rec_sum": 318481
+  },
+  {
+   "name": "2026-09-26T07-38-39_01a0dca6",
+   "file": "sessions/2026-09-26T07-38-39_01a0dca6.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-Work-daikin-omarchy-daikin/2026-09-26T07-38-39-964Z_01a0dca6-e3dc-70cf-9b33-6854f867d4b5.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/home/ric/Work/daikin/omarchy-daikin",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 0,
+   "turns": 95,
+   "est_depth_tokens": {
+    "p50": 94711,
+    "p90": 141558,
+    "max": 149108
+   },
+   "rec_depth_tokens": {
+    "p50": 88068,
+    "p90": 130487,
+    "max": 137249
+   },
+   "agent_gap_s_p50": 0.108,
+   "output_tokens_rec_sum": 65488
+  },
+  {
+   "name": "2026-09-26T09-54-32_01a0dd23",
+   "file": "sessions/2026-09-26T09-54-32_01a0dd23.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-Work-daikin-omarchy-daikin/2026-09-26T09-54-32-441Z_01a0dd23-4979-70c0-846b-8634166f784c.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/home/ric/Work/daikin/omarchy-daikin",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 0,
+   "turns": 83,
+   "est_depth_tokens": {
+    "p50": 47953,
+    "p90": 79903,
+    "max": 85539
+   },
+   "rec_depth_tokens": {
+    "p50": 51462,
+    "p90": 80786,
+    "max": 85852
+   },
+   "agent_gap_s_p50": 0.05,
+   "output_tokens_rec_sum": 40130
+  },
+  {
+   "name": "2026-09-25T06-50-05_01a0d754",
+   "file": "sessions/2026-09-25T06-50-05_01a0d754.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-25T06-50-05-465Z_01a0d754-0f19-7168-8b03-b01378904708.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/tmp",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 0,
+   "turns": 70,
+   "est_depth_tokens": {
+    "p50": 61490,
+    "p90": 93286,
+    "max": 108983
+   },
+   "rec_depth_tokens": {
+    "p50": 64509,
+    "p90": 98754,
+    "max": 115609
+   },
+   "agent_gap_s_p50": 0.016,
+   "output_tokens_rec_sum": 42835
+  },
+  {
+   "name": "2026-09-26T02-32-58_01a0db8f",
+   "file": "sessions/2026-09-26T02-32-58_01a0db8f.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-26T02-32-58-094Z_01a0db8f-03ee-76ba-afec-c3571a2b14fc.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/tmp",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 0,
+   "turns": 60,
+   "est_depth_tokens": {
+    "p50": 34750,
+    "p90": 58348,
+    "max": 61207
+   },
+   "rec_depth_tokens": {
+    "p50": 33254,
+    "p90": 54318,
+    "max": 57057
+   },
+   "agent_gap_s_p50": 0.088,
+   "output_tokens_rec_sum": 26792
+  },
+  {
+   "name": "2026-09-26T02-50-53_01a0db9f",
+   "file": "sessions/2026-09-26T02-50-53_01a0db9f.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-26T02-50-53-858Z_01a0db9f-6e22-7563-b7a4-7e7b8158e9ec.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/tmp",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 0,
+   "turns": 75,
+   "est_depth_tokens": {
+    "p50": 108946,
+    "p90": 160984,
+    "max": 172462
+   },
+   "rec_depth_tokens": {
+    "p50": 107931,
+    "p90": 163600,
+    "max": 176020
+   },
+   "agent_gap_s_p50": 0.204,
+   "output_tokens_rec_sum": 96804
+  },
+  {
+   "name": "2026-09-26T04-24-42_01a0dbf5",
+   "file": "sessions/2026-09-26T04-24-42_01a0dbf5.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-26T04-24-42-806Z_01a0dbf5-5236-700e-a561-c1d74a59c9c1.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/tmp",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 1,
+   "turns": 172,
+   "est_depth_tokens": {
+    "p50": 149368,
+    "p90": 221393,
+    "max": 237847
+   },
+   "rec_depth_tokens": {
+    "p50": 144885,
+    "p90": 204992,
+    "max": 221420
+   },
+   "agent_gap_s_p50": 0.051,
+   "output_tokens_rec_sum": 198807
+  },
+  {
+   "name": "2026-09-26T08-03-26_01a0dcbd",
+   "file": "sessions/2026-09-26T08-03-26_01a0dcbd.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-26T08-03-26-846Z_01a0dcbd-93fe-72ef-917d-ed992dfcdec2.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/tmp",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 0,
+   "turns": 5,
+   "est_depth_tokens": {
+    "p50": 6666,
+    "p90": 8614,
+    "max": 8614
+   },
+   "rec_depth_tokens": {
+    "p50": 8115,
+    "p90": 10940,
+    "max": 10940
+   },
+   "agent_gap_s_p50": 0.256,
+   "output_tokens_rec_sum": 598
+  },
+  {
+   "name": "2026-09-27T05-25-31_01a0e153",
+   "file": "sessions/2026-09-27T05-25-31_01a0e153.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-27T05-25-31-360Z_01a0e153-5a60-76f2-ac0f-f1cdcf2c227b.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/tmp",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 0,
+   "turns": 20,
+   "est_depth_tokens": {
+    "p50": 30562,
+    "p90": 39283,
+    "max": 40962
+   },
+   "rec_depth_tokens": {
+    "p50": 44739,
+    "p90": 53993,
+    "max": 55471
+   },
+   "agent_gap_s_p50": 0.022,
+   "output_tokens_rec_sum": 12628
+  },
+  {
+   "name": "2026-09-27T08-15-02_01a0e1ee",
+   "file": "sessions/2026-09-27T08-15-02_01a0e1ee.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-27T08-15-02-462Z_01a0e1ee-8d3e-7702-89be-b07cdc45b189.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/tmp",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 0,
+   "turns": 29,
+   "est_depth_tokens": {
+    "p50": 26226,
+    "p90": 38850,
+    "max": 39325
+   },
+   "rec_depth_tokens": {
+    "p50": 27308,
+    "p90": 39110,
+    "max": 39615
+   },
+   "agent_gap_s_p50": 0.012,
+   "output_tokens_rec_sum": 9162
+  },
+  {
+   "name": "2026-09-27T08-18-54_01a0e1f2",
+   "file": "sessions/2026-09-27T08-18-54_01a0e1f2.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-27T08-18-54-144Z_01a0e1f2-1640-72d9-89a0-324aedcbce0c.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/tmp",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 0,
+   "turns": 50,
+   "est_depth_tokens": {
+    "p50": 49260,
+    "p90": 90412,
+    "max": 97033
+   },
+   "rec_depth_tokens": {
+    "p50": 50653,
+    "p90": 89036,
+    "max": 94868
+   },
+   "agent_gap_s_p50": 0.094,
+   "output_tokens_rec_sum": 47236
+  },
+  {
+   "name": "2026-09-27T08-28-29_01a0e1fa",
+   "file": "sessions/2026-09-27T08-28-29_01a0e1fa.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-27T08-28-29-280Z_01a0e1fa-dce0-71ec-bd63-4f9a22eb50e1.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/tmp",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 0,
+   "turns": 11,
+   "est_depth_tokens": {
+    "p50": 8918,
+    "p90": 16510,
+    "max": 16867
+   },
+   "rec_depth_tokens": {
+    "p50": 11209,
+    "p90": 16776,
+    "max": 17212
+   },
+   "agent_gap_s_p50": 0.092,
+   "output_tokens_rec_sum": 5144
+  },
+  {
+   "name": "2026-09-27T08-42-53_01a0e208",
+   "file": "sessions/2026-09-27T08-42-53_01a0e208.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-27T08-42-53-758Z_01a0e208-0dbe-77f3-a80b-99b1ceeeb01d.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/tmp",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 4,
+   "turns": 764,
+   "est_depth_tokens": {
+    "p50": 129026,
+    "p90": 213974,
+    "max": 248225
+   },
+   "rec_depth_tokens": {
+    "p50": 125199,
+    "p90": 202787,
+    "max": 222740
+   },
+   "agent_gap_s_p50": 0.01,
+   "output_tokens_rec_sum": 402573
+  },
+  {
+   "name": "2026-09-27T09-09-59_01a0e220",
+   "file": "sessions/2026-09-27T09-09-59_01a0e220.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-27T09-09-59-388Z_01a0e220-dbdc-73fc-8faf-bfb2cda79bcc.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/tmp",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 0,
+   "turns": 61,
+   "est_depth_tokens": {
+    "p50": 30172,
+    "p90": 43438,
+    "max": 47403
+   },
+   "rec_depth_tokens": {
+    "p50": 32835,
+    "p90": 45923,
+    "max": 49498
+   },
+   "agent_gap_s_p50": 0.103,
+   "output_tokens_rec_sum": 25013
+  },
+  {
+   "name": "2026-09-27T09-11-19_01a0e222",
+   "file": "sessions/2026-09-27T09-11-19_01a0e222.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-27T09-11-19-463Z_01a0e222-14a7-7717-aaa3-575c4f382317.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/tmp",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 0,
+   "turns": 18,
+   "est_depth_tokens": {
+    "p50": 26558,
+    "p90": 39001,
+    "max": 40874
+   },
+   "rec_depth_tokens": {
+    "p50": 34788,
+    "p90": 50198,
+    "max": 52844
+   },
+   "agent_gap_s_p50": 0.033,
+   "output_tokens_rec_sum": 16602
+  },
+  {
+   "name": "2026-09-28T00-45-07_01a0e578",
+   "file": "sessions/2026-09-28T00-45-07_01a0e578.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-28T00-45-07-339Z_01a0e578-ff8b-7770-8e6d-8e4fe55b1405.jsonl",
+   "kind": "main",
+   "agent": null,
+   "cwd": "/tmp",
+   "real_system_prompt": false,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "eval",
+    "todo",
+    "web_search",
+    "task",
+    "wait",
+    "ask"
+   ],
+   "compactions": 0,
+   "turns": 10,
+   "est_depth_tokens": {
+    "p50": 12467,
+    "p90": 13708,
+    "max": 13708
+   },
+   "rec_depth_tokens": {
+    "p50": 13413,
+    "p90": 14795,
+    "max": 14795
+   },
+   "agent_gap_s_p50": 0.007,
+   "output_tokens_rec_sum": 2213
+  },
+  {
+   "name": "2026-09-28T03-14-40_01a0e601__EngineBuilds",
+   "file": "sessions/2026-09-28T03-14-40_01a0e601__EngineBuilds.jsonl",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-28T03-14-40-052Z_01a0e601-e934-7689-8162-a0d22e083dee/EngineBuilds.jsonl",
+   "kind": "subagent",
+   "agent": "sonic",
+   "cwd": "/tmp",
+   "real_system_prompt": true,
+   "tools": [
+    "read",
+    "bash",
+    "edit",
+    "eval",
+    "glob",
+    "grep",
+    "task",
+    "wait",
+    "web_search",
+    "write",
+    "yield"
+   ],
+   "compactions": 0,
+   "turns": 10,
+   "est_depth_tokens": {
+    "p50": 15020,
+    "p90": 63412,
+    "max": 63412
+   },
+   "rec_depth_tokens": {
+    "p50": 15561,
+    "p90": 65180,
+    "max": 65180
+   },
+   "agent_gap_s_p50": 0.088,
+   "output_tokens_rec_sum": 11049
+  }
+ ],
+ "skipped": [
+  {
+   "name": "2026-09-24T08-23-19_01a0d283",
+   "source": "/home/ric/.omp/agent/sessions/-Work/2026-09-24T08-23-19-875Z_01a0d283-1043-77ce-b713-4a3a007e1bdf.jsonl",
+   "turns": 0
+  },
+  {
+   "name": "2026-09-24T15-41-07_01a0d413",
+   "source": "/home/ric/.omp/agent/sessions/-Work/2026-09-24T15-41-07-552Z_01a0d413-e060-7795-b4a3-4697219598e6.jsonl",
+   "turns": 1
+  },
+  {
+   "name": "2026-09-26T04-37-10_01a0dc00",
+   "source": "/home/ric/.omp/agent/sessions/-Work/2026-09-26T04-37-10-846Z_01a0dc00-bc3e-71f8-80e6-efb823469bfd.jsonl",
+   "turns": 0
+  },
+  {
+   "name": "2026-09-24T08-04-54_01a0d272",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-24T08-04-54-523Z_01a0d272-327a-7603-bd7a-ff5712193750.jsonl",
+   "turns": 1
+  },
+  {
+   "name": "2026-09-24T08-05-03_01a0d272",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-24T08-05-03-419Z_01a0d272-553b-7155-bd19-c4e67ea1a6b2.jsonl",
+   "turns": 1
+  },
+  {
+   "name": "2026-09-24T08-05-09_01a0d272",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-24T08-05-09-424Z_01a0d272-6cb0-74dc-9951-e2f561a12c34.jsonl",
+   "turns": 1
+  },
+  {
+   "name": "2026-09-24T08-10-53_01a0d277",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-24T08-10-53-304Z_01a0d277-abf8-77d7-96eb-9ead15e6b32f.jsonl",
+   "turns": 1
+  },
+  {
+   "name": "2026-09-27T08-42-53_01a0e208__tn-feature-map",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-27T08-42-53-758Z_01a0e208-0dbe-77f3-a80b-99b1ceeeb01d/tn-feature-map.jsonl",
+   "turns": 3
+  },
+  {
+   "name": "2026-09-27T08-42-53_01a0e208__upstream-dest-map",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-27T08-42-53-758Z_01a0e208-0dbe-77f3-a80b-99b1ceeeb01d/upstream-dest-map.jsonl",
+   "turns": 3
+  },
+  {
+   "name": "2026-09-27T10-03-03_01a0e251",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-27T10-03-03-233Z_01a0e251-70c1-735f-929e-910fdaf68c82.jsonl",
+   "turns": 0
+  },
+  {
+   "name": "2026-09-27T10-05-44_01a0e253",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-27T10-05-44-386Z_01a0e253-e642-7416-982d-7f652a973bee.jsonl",
+   "turns": 2
+  },
+  {
+   "name": "2026-09-28T03-14-40_01a0e601__ReplayHarness",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-28T03-14-40-052Z_01a0e601-e934-7689-8162-a0d22e083dee/ReplayHarness.jsonl",
+   "turns": 0
+  },
+  {
+   "name": "2026-09-28T03-14-40_01a0e601",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-28T03-14-40-052Z_01a0e601-e934-7689-8162-a0d22e083dee.jsonl",
+   "turns": 0
+  },
+  {
+   "name": "2026-09-28T04-21-32_01a0e63f",
+   "source": "/home/ric/.omp/agent/sessions/-tmp/2026-09-28T04-21-32-278Z_01a0e63f-21f6-7187-8bbd-4221f5cc0b2b.jsonl",
+   "turns": 0
+  }
+ ],
+ "totals": {
+  "sessions": 28,
+  "turns": 2838,
+  "est_depth_tokens": {
+   "n": 2838,
+   "p10": 25104,
+   "p50": 92429,
+   "p90": 186986,
+   "p99": 235492,
+   "max": 248225,
+   "mean": 101576
+  },
+  "rec_depth_tokens": {
+   "n": 2838,
+   "p10": 26637,
+   "p50": 91532,
+   "p90": 182687,
+   "p99": 219883,
+   "max": 225451,
+   "mean": 99724
+  },
+  "est_over_rec_ratio": {
+   "n": 2838,
+   "p10": 0.921,
+   "p50": 1.001,
+   "p90": 1.1,
+   "p99": 1.122,
+   "max": 1.134,
+   "mean": 1
+  },
+  "reqlog_prompt_tokens": {
+   "n": 231,
+   "p10": 38255,
+   "p50": 129665,
+   "p90": 185127,
+   "p99": 204022,
+   "max": 205436,
+   "mean": 121392
+  }
+ }
+}

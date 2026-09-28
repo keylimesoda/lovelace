@@ -1,0 +1,12 @@
+[project]
+name = "lovelace-replay"
+version = "0.1.0"
+description = "Multi-agent trace replay benchmark and capture proxy for OpenAI-compatible chat servers"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27",
+    "orjson>=3.10",
+]
+
+[tool.uv]
+package = false

@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+results/
+captures/
+# regenerate with `uv run extract.py`; contains raw private session content
+corpus/sessions/

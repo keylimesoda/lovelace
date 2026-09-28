@@ -1,0 +1,25 @@
+# systemd --user unit template for the capture proxy.
+# Install:
+#   cd ~/Work/lovelace/bench/replay && uv sync        # creates .venv with httpx/orjson
+#   cp capture-proxy.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now capture-proxy
+# Then point the agent's provider base URL at http://127.0.0.1:8081/v1 instead of :8080.
+# Adjust --listen/--upstream/--out below as needed.
+
+[Unit]
+Description=lovelace LLM capture proxy (127.0.0.1:8081 -> 127.0.0.1:8080)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Work/lovelace/bench/replay
+ExecStart=%h/Work/lovelace/bench/replay/.venv/bin/python %h/Work/lovelace/bench/replay/capture_proxy.py \
+    --listen 127.0.0.1:8081 \
+    --upstream http://127.0.0.1:8080 \
+    --out %h/Work/lovelace/bench/replay/captures
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
