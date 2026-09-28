@@ -167,6 +167,9 @@ struct llama_context {
     // asynchronous transfers, see llama_state_seq_get_data_async
     size_t state_seq_get_data_async(llama_seq_id seq_id, const llama_state_chunk * chunks, size_t n_chunks,              llama_state_seq_flags flags, llama_state_xfer ** xfer);
     size_t state_seq_set_data_async(llama_seq_id seq_id, const llama_state_chunk * chunks, size_t n_chunks, size_t size, llama_state_seq_flags flags, llama_state_xfer ** xfer);
+    size_t state_seq_get_delta_size(llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags);
+    size_t state_seq_get_delta_data_async(llama_seq_id seq_id, llama_pos pos_min, const llama_state_chunk * chunks, size_t n_chunks, llama_state_seq_flags flags, llama_state_xfer ** xfer);
+    size_t state_seq_set_delta_data_async(llama_seq_id seq_id, llama_pos pos_min, const llama_state_chunk * chunks, size_t n_chunks, size_t size, llama_state_seq_flags flags, llama_state_xfer ** xfer);
 
     bool state_load_file(
             const char * filepath,

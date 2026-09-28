@@ -932,6 +932,9 @@ extern "C" {
 // decoded right after the call (e.g. a checkpoint of a sequence that keeps processing its prompt)
 #define LLAMA_STATE_SEQ_FLAGS_ORDERED 4
 
+// Append-only attention-KV delta payloads, used with llama_state_seq_get/set_delta_data_async.
+#define LLAMA_STATE_SEQ_FLAGS_KV_ONLY 8
+
     typedef uint32_t llama_state_seq_flags;
 
     LLAMA_API size_t llama_state_seq_get_size_ext(
@@ -994,6 +997,34 @@ extern "C" {
                           size_t   n_chunks,
                           size_t   size,
                     llama_seq_id   dest_seq_id,
+           llama_state_seq_flags   flags,
+              llama_state_xfer_t * xfer);
+
+    // Delta transfer APIs require KV_ONLY and follow the chunk and transfer-handle rules above.
+    // They serialize only attention KV cells at positions >= pos_min; recurrent state is maintained separately.
+    LLAMA_API size_t llama_state_seq_get_delta_size_ext(
+            struct llama_context * ctx,
+                    llama_seq_id   seq_id,
+                      llama_pos   pos_min,
+           llama_state_seq_flags   flags);
+
+    LLAMA_API size_t llama_state_seq_get_delta_data_async(
+            struct llama_context * ctx,
+     const llama_state_chunk     * chunks,
+                          size_t   n_chunks,
+                    llama_seq_id   seq_id,
+                      llama_pos   pos_min,
+           llama_state_seq_flags   flags,
+              llama_state_xfer_t * xfer);
+
+    // Apply a KV delta to an existing sequence without clearing its earlier cells; pos_min must match the serialized header.
+    LLAMA_API size_t llama_state_seq_set_delta_data_async(
+            struct llama_context * ctx,
+     const llama_state_chunk     * chunks,
+                          size_t   n_chunks,
+                          size_t   size,
+                    llama_seq_id   dest_seq_id,
+                      llama_pos   pos_min,
            llama_state_seq_flags   flags,
               llama_state_xfer_t * xfer);
 

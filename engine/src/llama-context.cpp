@@ -13,6 +13,7 @@
 #include "llama-sampler.h"
 #include "llama.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cinttypes>
 #include <cmath>
@@ -24,6 +25,22 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+
+void llama_memory_i::state_write_delta(llama_io_write_i & io, llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags) const {
+    GGML_UNUSED(io);
+    GGML_UNUSED(seq_id);
+    GGML_UNUSED(pos_min);
+    GGML_UNUSED(flags);
+    throw std::runtime_error("append-only state deltas are unsupported by this memory backend");
+}
+
+void llama_memory_i::state_read_delta(llama_io_read_i & io, llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags) {
+    GGML_UNUSED(io);
+    GGML_UNUSED(seq_id);
+    GGML_UNUSED(pos_min);
+    GGML_UNUSED(flags);
+    throw std::runtime_error("append-only state deltas are unsupported by this memory backend");
+}
 
 //
 // llama_context
@@ -3656,6 +3673,70 @@ size_t llama_context::state_seq_set_data_async(llama_seq_id seq_id, const llama_
 
     return io.n_bytes();
 }
+size_t llama_context::state_seq_get_delta_data_async(llama_seq_id seq_id, llama_pos pos_min,
+        const llama_state_chunk * chunks, size_t n_chunks, llama_state_seq_flags flags, llama_state_xfer ** xfer) {
+    *xfer = nullptr;
+    if (seq_id < 0 || seq_id >= LLAMA_MAX_SEQ || (flags & LLAMA_STATE_SEQ_FLAGS_ON_DEVICE) || !(flags & LLAMA_STATE_SEQ_FLAGS_KV_ONLY)) {
+        LLAMA_LOG_ERROR("%s: KV deltas need a valid sequence id, host memory, and KV_ONLY flag\n", __func__);
+        return 0;
+    }
+
+    std::vector<llama_state_xfer_seg> segs;
+    llama_io_write_chunks io(chunks, n_chunks, segs);
+    try {
+        io.write(&io_magic, sizeof(io_magic));
+        io.write(&seq_id, sizeof(seq_id));
+        io.write(&pos_min, sizeof(pos_min));
+        memory->state_write_delta(io, seq_id, pos_min, flags);
+    } catch (const std::exception & err) {
+        LLAMA_LOG_ERROR("%s: error saving KV delta: %s\n", __func__, err.what());
+        return 0;
+    }
+
+    if (flags & LLAMA_STATE_SEQ_FLAGS_ORDERED) {
+        for (auto & seg : segs) {
+            seg.concurrent = false;
+        }
+    }
+    *xfer = state_xfer_engine().issue(segs, /* to_host */ true);
+    return io.n_bytes();
+}
+
+size_t llama_context::state_seq_set_delta_data_async(llama_seq_id seq_id, llama_pos pos_min,
+        const llama_state_chunk * chunks, size_t n_chunks, size_t size, llama_state_seq_flags flags, llama_state_xfer ** xfer) {
+    *xfer = nullptr;
+    if (seq_id < 0 || seq_id >= LLAMA_MAX_SEQ || (flags & LLAMA_STATE_SEQ_FLAGS_ON_DEVICE) || !(flags & LLAMA_STATE_SEQ_FLAGS_KV_ONLY)) {
+        LLAMA_LOG_ERROR("%s: KV delta restore needs a valid sequence id, host memory, and KV_ONLY flag\n", __func__);
+        return 0;
+    }
+
+    std::vector<llama_state_xfer_seg> segs;
+    llama_io_read_chunks io(chunks, n_chunks, size, segs);
+    try {
+        uint32_t magic_read;
+        llama_seq_id seq_id_read;
+        llama_pos pos_min_read;
+        io.read(&magic_read, sizeof(magic_read));
+        io.read(&seq_id_read, sizeof(seq_id_read));
+        io.read(&pos_min_read, sizeof(pos_min_read));
+        if (io_magic != magic_read || seq_id_read < 0 || seq_id_read >= LLAMA_MAX_SEQ || pos_min_read != pos_min) {
+            throw std::runtime_error("KV delta header mismatch");
+        }
+        memory->state_read_delta(io, seq_id, pos_min, flags);
+    } catch (const std::exception & err) {
+        LLAMA_LOG_ERROR("%s: error restoring KV delta: %s\n", __func__, err.what());
+        io.discard();
+        return 0;
+    }
+
+    if (flags & LLAMA_STATE_SEQ_FLAGS_ORDERED) {
+        for (auto & seg : segs) {
+            seg.concurrent = false;
+        }
+    }
+    *xfer = state_xfer_engine().issue(segs, /* to_host */ false);
+    return io.n_bytes();
+}
 
 size_t llama_context::state_get_size() {
     llama_io_write_dummy io(false);
@@ -3697,6 +3778,22 @@ size_t llama_context::state_seq_get_size(llama_seq_id seq_id, llama_state_seq_fl
         return state_seq_write_data(io, seq_id, flags);
     } catch (const std::exception & err) {
         LLAMA_LOG_ERROR("%s: error getting state size: %s\n", __func__, err.what());
+        return 0;
+    }
+}
+size_t llama_context::state_seq_get_delta_size(llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags) {
+    if (seq_id < 0 || seq_id >= LLAMA_MAX_SEQ || (flags & LLAMA_STATE_SEQ_FLAGS_ON_DEVICE) || !(flags & LLAMA_STATE_SEQ_FLAGS_KV_ONLY)) {
+        return 0;
+    }
+    llama_io_write_dummy io(false);
+    try {
+        io.write(&io_magic, sizeof(io_magic));
+        io.write(&seq_id, sizeof(seq_id));
+        io.write(&pos_min, sizeof(pos_min));
+        memory->state_write_delta(io, seq_id, pos_min, flags);
+        return io.n_bytes();
+    } catch (const std::exception & err) {
+        LLAMA_LOG_ERROR("%s: error getting KV delta size: %s\n", __func__, err.what());
         return 0;
     }
 }
@@ -4850,6 +4947,19 @@ size_t llama_state_seq_get_data_async(llama_context * ctx, const llama_state_chu
 
 size_t llama_state_seq_set_data_async(llama_context * ctx, const llama_state_chunk * chunks, size_t n_chunks, size_t size, llama_seq_id dest_seq_id, llama_state_seq_flags flags, llama_state_xfer_t * xfer) {
     return ctx->state_seq_set_data_async(dest_seq_id, chunks, n_chunks, size, flags, xfer);
+}
+size_t llama_state_seq_get_delta_size_ext(llama_context * ctx, llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags) {
+    return ctx->state_seq_get_delta_size(seq_id, pos_min, flags);
+}
+
+size_t llama_state_seq_get_delta_data_async(llama_context * ctx, const llama_state_chunk * chunks, size_t n_chunks,
+        llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags, llama_state_xfer_t * xfer) {
+    return ctx->state_seq_get_delta_data_async(seq_id, pos_min, chunks, n_chunks, flags, xfer);
+}
+
+size_t llama_state_seq_set_delta_data_async(llama_context * ctx, const llama_state_chunk * chunks, size_t n_chunks,
+        size_t size, llama_seq_id dest_seq_id, llama_pos pos_min, llama_state_seq_flags flags, llama_state_xfer_t * xfer) {
+    return ctx->state_seq_set_delta_data_async(dest_seq_id, pos_min, chunks, n_chunks, size, flags, xfer);
 }
 
 bool llama_state_xfer_done(llama_state_xfer_t xfer) {

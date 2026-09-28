@@ -1264,6 +1264,8 @@ struct common_state_buf {
     // flags as in llama_state_seq_get_data_ext, plus LLAMA_STATE_SEQ_FLAGS_ORDERED
     bool get_async(llama_context * ctx, llama_seq_id seq_id, llama_state_seq_flags flags);
     bool set_async(llama_context * ctx, llama_seq_id seq_id, llama_state_seq_flags flags) const;
+    bool get_delta_async(llama_context * ctx, llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags);
+    bool set_delta_async(llama_context * ctx, llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags) const;
 
     // the pending transfer is complete (true without one); the device time of the last transfer in microseconds
     bool    done() const;

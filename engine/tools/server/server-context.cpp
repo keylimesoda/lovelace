@@ -332,8 +332,9 @@ struct server_slot {
     enum xfer_kind {
         XFER_NONE,
         XFER_PARK,   // the session is saved to the prompt cache, its cells are freed when the copy completes
-        XFER_SAVE,   // the session is saved to the prompt cache for its owner, the slot keeps the cells
+        XFER_SAVE,   // legacy cache snapshot while the slot keeps its cells
         XFER_UNPARK, // the session is restored from the prompt cache into xfer_in
+        XFER_SYNC,   // append the completed request's KV delta and recurrent mirror
     };
 
     server_prompt_cache * prompt_cache = nullptr;
@@ -638,6 +639,17 @@ struct server_slot {
             state = SLOT_STATE_IDLE;
 
             if (session_index && session_id != 0 && task && !task->is_child() && !prompt.tokens.has_mtmd && prompt.n_tokens() > 0) {
+                if (prompt_cache != nullptr) {
+                    const int64_t t_start = ggml_time_us();
+                    const size_t n_bytes = prompt_cache->sync_session(prompt, ctx_tgt, ctx_dft, id, /* take_checkpoints */ false);
+                    if (n_bytes > 0) {
+                        xfer         = XFER_SYNC;
+                        xfer_t0      = t_start;
+                        xfer_us_host = ggml_time_us() - t_start;
+                        xfer_bytes   = n_bytes;
+                        xfer_tokens  = prompt.n_tokens();
+                    }
+                }
                 session_index->update(session_id, prompt.tokens.get_text_tokens(), server_context_now_seconds());
             }
 
@@ -2052,6 +2064,16 @@ private:
 
             // an earlier transfer of the sequence (e.g. the unpark of a cancelled task) completes first
             sched_finish_xfer(slot, true);
+            if (params_base.session_ram_mib > 0 && slot.session_id != 0 && prompt_cache && prompt_cache->has_session(slot.session_id)) {
+                const int64_t t_start = ggml_time_us();
+                slot.prompt_clear();
+                prompt_cache->update();
+                sched_stats.n_park++;
+                sched_dirty = true;
+                SLT_INF(slot, "parked session from host mirror: %d tokens, 0 bytes copied\n", n_tokens);
+                obs_sched_event("park", slot, n_tokens, 0, 0, ggml_time_us() - t_start);
+                return;
+            }
 
             const int64_t t_start = ggml_time_us();
             const size_t  n_bytes = prompt_cache ? slot.prompt_save(*prompt_cache, /* take_checkpoints */ true) : 0;
@@ -2095,19 +2117,24 @@ private:
         if (slot.xfer == server_slot::XFER_UNPARK) {
             slot.xfer_in.wait();
             t_us = slot.xfer_in.t_us();
-            slot.xfer_in = {};
+            if (prompt_cache && prompt_cache->restoring(slot.id)) {
+                prompt_cache->finish_restoring(slot.id, std::move(slot.xfer_in));
+            } else {
+                slot.xfer_in = {};
+            }
         } else {
             t_us = prompt_cache->finish_saving(slot.id);
         }
         const int64_t t_now = ggml_time_us();
         slot.xfer_us_host += t_now - t_wait;
         if (t_us < 0) {
-            // the entry was evicted before its copy was accounted
             t_us = t_now - slot.xfer_t0;
         }
 
-        const bool park = slot.xfer != server_slot::XFER_UNPARK;
-        const char * action = park ? "park" : "unpark";
+        const bool sync = slot.xfer == server_slot::XFER_SYNC;
+        const bool park = slot.xfer != server_slot::XFER_UNPARK && !sync;
+        const bool unpark = slot.xfer == server_slot::XFER_UNPARK;
+        const char * action = sync ? "sync" : (park ? "park" : "unpark");
 
         if (slot.xfer == server_slot::XFER_PARK) {
             slot.prompt_clear();
@@ -2115,17 +2142,18 @@ private:
             sched_dirty = true;
         }
 
-        (park ? sched_stats.n_park : sched_stats.n_unpark)++;
-        sched_account_transfer(park, slot.xfer_bytes, t_us, slot.xfer_us_host);
+        if (park || unpark) {
+            (park ? sched_stats.n_park : sched_stats.n_unpark)++;
+            sched_account_transfer(park, slot.xfer_bytes, t_us, slot.xfer_us_host);
+        }
 
         SLT_INF(slot, "%s session: %d tokens, %.1f MiB in %.1f ms (%.2f GB/s), done %.1f ms after issue, host %.1f ms\n",
-                park ? "parked" : "unparked", slot.xfer_tokens, slot.xfer_bytes / 1048576.0, t_us / 1e3,
+                action, slot.xfer_tokens, slot.xfer_bytes / 1048576.0, t_us / 1e3,
                 slot.xfer_bytes / 1e3 / std::max<int64_t>(1, t_us), (t_now - slot.xfer_t0) / 1e3, slot.xfer_us_host / 1e3);
 
         obs_sched_event(action, slot, slot.xfer_tokens, slot.xfer_bytes, t_us, slot.xfer_us_host);
 
         slot.xfer = server_slot::XFER_NONE;
-
         return true;
     }
 
@@ -2491,9 +2519,11 @@ private:
         const bool session_switch = use_sessions && slot.session_id != task_session_id;
         const bool swap = use_cache && (n_resident == 0 || session_switch || n_lcp * 2 < n_resident);
 
-        const server_prompt_cache_state * cached = nullptr;
+        server_prompt_cache_state * cached = nullptr;
         if (swap) {
-            cached = use_sessions ? prompt_cache->find_session(task_session_id, task.tokens) : prompt_cache->find(slot.prompt, task.tokens);
+            cached = use_sessions
+                    ? prompt_cache->find_session(task_session_id, task.tokens)
+                    : const_cast<server_prompt_cache_state *>(prompt_cache->find(slot.prompt, task.tokens));
         }
         const int32_t n_hold = cached ? cached->prompt.n_tokens() : n_resident;
 
@@ -2532,9 +2562,12 @@ private:
             // admitted by a later attempt, once the cells are free
             return SCHED_WAIT_XFER;
         }
+        if (use_sessions && cached) {
+            prompt_cache->protected_session_id = task_session_id;
+        }
 
         server_prompt_cache_state state_new;
-        if (cached) {
+        if (cached && !use_sessions) {
             state_new = prompt_cache->take(cached);
         }
 
@@ -2553,12 +2586,15 @@ private:
         }
 
         if (cached) {
-            // the prompt is processed once the copy completes
+            // The session cache retains its mirror; legacy prompt-cache entries are consumed on restore.
             const int64_t t_start = ggml_time_us();
             size_t n_bytes = 0;
-            if (!server_prompt_cache::restore(state_new, slot.prompt, slot.xfer_in, ctx_tgt, ctx_dft, slot.id, n_bytes)) {
+            const bool restore_ok = use_sessions
+                    ? prompt_cache->restore_session(*cached, slot.prompt, slot.xfer_in, ctx_tgt, ctx_dft, slot.id, n_bytes)
+                    : server_prompt_cache::restore(state_new, slot.prompt, slot.xfer_in, ctx_tgt, ctx_dft, slot.id, n_bytes);
+            if (!restore_ok) {
                 SLT_WRN(slot, "%s", "failed to restore a parked session, the prompt is processed from scratch\n");
-                state_new.data.wait();
+                if (!use_sessions) state_new.data.wait();
                 slot.prompt_clear();
                 n_bytes = 0;
             }
@@ -2568,10 +2604,10 @@ private:
                 slot.xfer_us_host = ggml_time_us() - t_start;
                 slot.xfer_bytes   = n_bytes;
                 slot.xfer_tokens  = slot.prompt.n_tokens();
-
                 slot.obs_n_unparked = slot.prompt.n_tokens();
             }
         }
+        prompt_cache->protected_session_id = 0;
         slot.session_id = task_session_id;
         slot.prompt.session_id = task_session_id;
 

@@ -2460,6 +2460,19 @@ bool common_state_buf::set_async(llama_context * ctx, llama_seq_id seq_id, llama
 
     return n == n_bytes;
 }
+bool common_state_buf::get_delta_async(llama_context * ctx, llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags) {
+    wait();
+    const auto v = views();
+    const size_t n = llama_state_seq_get_delta_data_async(ctx, v.data(), v.size(), seq_id, pos_min, flags, &xfer);
+    return n == n_bytes;
+}
+
+bool common_state_buf::set_delta_async(llama_context * ctx, llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags) const {
+    wait();
+    const auto v = views();
+    const size_t n = llama_state_seq_set_delta_data_async(ctx, v.data(), v.size(), n_bytes, seq_id, pos_min, flags, &xfer);
+    return n == n_bytes;
+}
 
 void common_state_buf::collect() const {
     xfer_t_us = llama_state_xfer_t_us(xfer);

@@ -219,6 +219,22 @@ void llama_memory_hybrid_idx::state_write(llama_io_write_i & io, llama_seq_id se
 
 }
 
+void llama_memory_hybrid_idx::state_write_delta(llama_io_write_i & io, llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags) const {
+    GGML_UNUSED(io);
+    GGML_UNUSED(seq_id);
+    GGML_UNUSED(pos_min);
+    GGML_UNUSED(flags);
+    throw std::runtime_error("append-only state deltas are unsupported by the hybrid-index memory backend");
+}
+
+void llama_memory_hybrid_idx::state_read_delta(llama_io_read_i & io, llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags) {
+    GGML_UNUSED(io);
+    GGML_UNUSED(seq_id);
+    GGML_UNUSED(pos_min);
+    GGML_UNUSED(flags);
+    throw std::runtime_error("append-only state deltas are unsupported by the hybrid-index memory backend");
+}
+
 void llama_memory_hybrid_idx::state_read(llama_io_read_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) {
     // note: repeats llama_memory_hybrid::state_read
     // the indexer needs the attention cache's cells, and a half-failed restore must leave all three caches alike
