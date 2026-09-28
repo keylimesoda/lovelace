@@ -18,7 +18,6 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
-#include <deque>
 #include <limits>
 #include <mutex>
 #include <stdexcept>
@@ -3384,24 +3383,17 @@ struct llama_state_xfer_engine {
     std::vector<ggml_backend_t> backends; // compute backends of the context
     std::vector<device>         devices;
 
-    std::thread                    thread;
-    std::mutex                     mutex;
-    std::condition_variable        cv_work;
-    std::condition_variable        cv_done;
-    std::deque<llama_state_xfer *> queue;
-    bool                           stop = false;
+    // one waiter thread per transfer: a single thread waiting on the transfers in issue order would observe the
+    // start of a copy only after the earlier transfers (e.g. checkpoints behind a long prefill) have completed
+    std::mutex              mutex;
+    std::condition_variable cv_done;
+    int32_t                 n_waiting = 0;
 
     llama_state_xfer_engine(llama_context & lctx, std::vector<ggml_backend_t> backends) : lctx(lctx), backends(std::move(backends)) {}
 
     ~llama_state_xfer_engine() {
-        if (thread.joinable()) {
-            {
-                std::lock_guard<std::mutex> lock(mutex);
-                stop = true;
-            }
-            cv_work.notify_one();
-            thread.join();
-        }
+        std::unique_lock<std::mutex> lock(mutex);
+        cv_done.wait(lock, [this]() { return n_waiting == 0; });
     }
 
     // nullptr: the buffer is not on a device that supports asynchronous copies and events
@@ -3545,43 +3537,29 @@ struct llama_state_xfer_engine {
 
         {
             std::lock_guard<std::mutex> lock(mutex);
-            if (!thread.joinable()) {
-                thread = std::thread([this]() { run(); });
-            }
-            queue.push_back(xfer);
+            n_waiting++;
         }
-        cv_work.notify_one();
+        std::thread([this, xfer]() { run(xfer); }).detach();
 
         return xfer;
     }
 
-    void run() {
-        while (true) {
-            llama_state_xfer * xfer = nullptr;
-            {
-                std::unique_lock<std::mutex> lock(mutex);
-                cv_work.wait(lock, [this]() { return stop || !queue.empty(); });
-                if (queue.empty()) {
-                    return;
-                }
-                xfer = queue.front();
-                queue.pop_front();
-            }
+    void run(llama_state_xfer * xfer) {
+        for (auto * ev : xfer->ev_start) {
+            ggml_backend_event_synchronize(ev);
+        }
+        const int64_t t_start = ggml_time_us();
+        for (auto * ev : xfer->ev_end) {
+            ggml_backend_event_synchronize(ev);
+        }
+        const int64_t t_end = ggml_time_us();
 
-            for (auto * ev : xfer->ev_start) {
-                ggml_backend_event_synchronize(ev);
-            }
-            const int64_t t_start = ggml_time_us();
-            for (auto * ev : xfer->ev_end) {
-                ggml_backend_event_synchronize(ev);
-            }
-            const int64_t t_end = ggml_time_us();
-
-            {
-                std::lock_guard<std::mutex> lock(mutex);
-                xfer->t_us = t_end - t_start;
-                xfer->done.store(true);
-            }
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            xfer->t_us = t_end - t_start;
+            xfer->done.store(true);
+            n_waiting--;
+            // notify under the lock: once n_waiting is 0 the destructor may free the engine
             cv_done.notify_all();
         }
     }
