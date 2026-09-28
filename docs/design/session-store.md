@@ -52,3 +52,11 @@ lost to eviction. Agents swap between GPU and host fast enough that the switch c
 - Park cost ~0 (only async delta sync). Restore of a 200k+ session <= ~0.4 s wall on the critical path, or
   hidden by prefetch.
 - Aggregate tok/s and TTFT p50/p90 reported against the current build (bench/results/main-gate/replay-6a).
+
+## Parked capacity option: large-batch quantized-KV FA without the f16 copy (branch `feat/fattn-prefill`)
+
+Measured (q5_0, -ub 1024): target compute buffer 1698 -> 782 MiB, and the production config starts at >= 360k
+cells (vs 327k with `-ubd 32` alone). Cost: pp2048 -11% at d65536 and -15% at d196608, because K/V tiles are
+dequantized once per Q tile. Not merged. Revisit if production telemetry shows residency (not swap) as the
+bottleneck: either convert per KV head (speed-neutral, recovers ~3/4 of the buffer) or pipeline the quantized
+tile loads with cp.async.

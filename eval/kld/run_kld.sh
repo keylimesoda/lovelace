@@ -27,7 +27,7 @@ ALL=32k,64k,128k,170k,250k
 KV_CANDIDATES=(q8_0 q4_0 q5_0 q8_0/q4_0 q8_0/q5_0)
 VRAM_GIB=${VRAM_GIB:-22.5}
 DRY_RUN=${DRY_RUN:-0}
-UV=/tmp/uvtool/bin/uv
+UV=${UV:-uv}
 LLAMA_LIB=/home/ric/Work/src/llama.cpp/build-sm89/bin
 
 # identical for every base and compare run: the kernel choice depends on -ub, -fa and --max-outputs
@@ -86,8 +86,20 @@ done
 echo "== (1) weight quantization, buckets $SHORT"
 step base results/wq-base-q8_0-f16.bin "$REF" "$SHORT" f16 wq-base-q8_0-f16
 step compare results/wq-iq4xs-f16.json "$IQ4" "$SHORT" f16 wq-iq4xs-f16 results/wq-base-q8_0-f16.bin
+# other weight quants against the same Q8_0 reference: label=path (files that don't exist are skipped)
+WQ_CANDIDATES=(
+    "gpu4-iq3s-3.23=/home/ric/models/byteshape/Qwen3.8-27B-IQ3_S-3.23bpw.gguf"
+    "ista-gsq-iq3s=/home/ric/models/ista/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf"
+)
+wq_results=()
+for c in "${WQ_CANDIDATES[@]}"; do
+    label=${c%%=*} model=${c#*=}
+    [[ -f $model ]] || { echo "  skip $label: $model missing"; continue; }
+    step compare "results/wq-$label-f16.json" "$model" "$SHORT" f16 "wq-$label-f16" results/wq-base-q8_0-f16.bin
+    wq_results+=("results/wq-$label-f16.json")
+done
 
 [[ $DRY_RUN == 1 ]] && exit 0
-results=(results/wq-iq4xs-f16.json)
+results=(results/wq-iq4xs-f16.json "${wq_results[@]}")
 for t in "${KV_CANDIDATES[@]}"; do results+=("results/kv-iq4xs-${t//\//-}.json"); done
 python3 summarize.py "${results[@]}" | tee results/summary.txt

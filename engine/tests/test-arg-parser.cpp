@@ -255,6 +255,40 @@ static void test(void) {
     assert(params.speculative.draft.n_max == 123);
 
     {
+        common_params ubatch_params;
+        assert(ubatch_params.speculative.draft.n_ubatch == 32);
+        assert(!ubatch_params.speculative.draft.n_ubatch_explicit);
+        assert(common_base_params_to_speculative(ubatch_params).n_ubatch == 32);
+
+        argv = {"binary_name", "--spec-draft-ubatch-size", "384"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), ubatch_params, LLAMA_EXAMPLE_SERVER));
+        assert(ubatch_params.speculative.draft.n_ubatch == 384);
+        assert(ubatch_params.speculative.draft.n_ubatch_explicit);
+
+        ubatch_params.n_batch = 256;
+        assert(common_base_params_to_speculative(ubatch_params).n_ubatch == 256);
+        ubatch_params.n_batch = 512;
+        assert(common_base_params_to_speculative(ubatch_params).n_ubatch == 384);
+
+        common_params block_params;
+        block_params.n_parallel = 6;
+        block_params.speculative.draft.n_max = 7;
+        block_params.speculative.types = {COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH};
+        assert(common_base_params_to_speculative(block_params).n_ubatch == 128);
+
+        block_params.n_parallel = 20;
+        assert(common_base_params_to_speculative(block_params).n_ubatch == 160);
+        block_params.speculative.draft.n_ubatch = 32;
+        block_params.speculative.draft.n_ubatch_explicit = true;
+        assert(common_base_params_to_speculative(block_params).n_ubatch == 160);
+
+        common_params alias_params;
+        argv = {"binary_name", "-ubd", "64"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), alias_params, LLAMA_EXAMPLE_SERVER));
+        assert(alias_params.speculative.draft.n_ubatch == 64);
+    }
+
+    {
         common_params synth_params;
         argv = {"binary_name", "--spec-synth-len", "3.4"};
         assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), synth_params, LLAMA_EXAMPLE_SERVER));

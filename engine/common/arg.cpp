@@ -4272,6 +4272,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_N_MAX"));
     add_opt(common_arg(
+        {"--spec-draft-ubatch-size", "-ubd"}, "N",
+        "physical maximum batch size for the draft context (default: 32; DFlash/DSpark: max(128, parallel * (n_max + 1)); non-causal batches clamp undersized values)",
+        [](common_params & params, int value) {
+            if (value <= 0) {
+                throw std::invalid_argument("spec-draft-ubatch-size must be positive");
+            }
+            params.speculative.draft.n_ubatch = value;
+            params.speculative.draft.n_ubatch_explicit = true;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI})
+      .set_env("LLAMA_ARG_SPEC_DRAFT_UBATCH_SIZE"));
+    add_opt(common_arg(
         {"--spec-draft-n-min"}, "N",
         string_format("minimum number of draft tokens to use for speculative decoding (default: %d)", params.speculative.draft.n_min),
         [](common_params & params, int value) {
