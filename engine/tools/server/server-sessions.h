@@ -36,7 +36,7 @@
 struct server_xfer {
     server_xfer() = default;
     explicit server_xfer(llama_state_xfer_t h) : h(h) {}
-    server_xfer(server_xfer && other) noexcept : t_us(other.t_us), h(other.h) { other.h = nullptr; }
+    server_xfer(server_xfer && other) noexcept : t_us(other.t_us), t_end_us(other.t_end_us), h(other.h) { other.h = nullptr; }
     server_xfer & operator=(server_xfer && other) noexcept;
     server_xfer(const server_xfer &) = delete;
     server_xfer & operator=(const server_xfer &) = delete;
@@ -44,8 +44,10 @@ struct server_xfer {
 
     bool done(); // non-blocking
     void wait();
+    void order(); // later graphs of the issuing context run after the copies (see llama_state_xfer_order)
 
-    int64_t t_us = -1; // device time of the copies, once done
+    int64_t t_us     = -1; // device time of the copies, once done
+    int64_t t_end_us = -1; // when they were seen complete (ggml_time_us), once done
 
 private:
     llama_state_xfer_t h = nullptr;
@@ -128,6 +130,7 @@ struct server_session {
     int64_t                  t_restore_us     = 0;
     size_t                   restore_bytes    = 0;
     bool                     restore_prefetch = false;
+    bool                     restore_ordered  = false; // the compute streams wait for the copies, not the host
 
     // stats
     uint64_t n_sync           = 0;
@@ -140,6 +143,7 @@ struct server_session {
     size_t   last_restore_bytes = 0;
     double   last_restore_ms    = 0.0; // device time of the copies
     double   last_restore_wall_ms = 0.0; // issue to completion
+    int64_t  last_restore_end_us  = 0;   // when the copies of the last restore completed
 
     // bytes of the mirror in the arena (or that it takes when promoted)
     size_t bytes() const;

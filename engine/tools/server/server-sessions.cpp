@@ -40,16 +40,18 @@ const char * server_session_tier_name(server_session_tier tier) {
 server_xfer & server_xfer::operator=(server_xfer && other) noexcept {
     if (this != &other) {
         wait();
-        h       = other.h;
-        t_us    = other.t_us;
-        other.h = nullptr;
+        h        = other.h;
+        t_us     = other.t_us;
+        t_end_us = other.t_end_us;
+        other.h  = nullptr;
     }
     return *this;
 }
 
 bool server_xfer::done() {
     if (h && llama_state_xfer_done(h)) {
-        t_us = llama_state_xfer_t_us(h);
+        t_us     = llama_state_xfer_t_us(h);
+        t_end_us = llama_state_xfer_t_end_us(h);
         llama_state_xfer_free(h);
         h = nullptr;
     }
@@ -59,9 +61,16 @@ bool server_xfer::done() {
 void server_xfer::wait() {
     if (h) {
         llama_state_xfer_wait(h);
-        t_us = llama_state_xfer_t_us(h);
+        t_us     = llama_state_xfer_t_us(h);
+        t_end_us = llama_state_xfer_t_end_us(h);
         llama_state_xfer_free(h);
         h = nullptr;
+    }
+}
+
+void server_xfer::order() {
+    if (h) {
+        llama_state_xfer_order(h);
     }
 }
 
@@ -621,6 +630,8 @@ int32_t server_session_store::restore(server_session & s, llama_seq_id seq, std:
             const size_t k = llama_state_seq_set_delta_data_async(seg.dft ? ctx_dft : ctx_tgt, views.data(), views.size(),
                     seg.size, seq, seg.pos0, end, SESSION_KV_FLAGS, &h);
             s.restore_xfers.emplace_back(h);
+            // the graphs that read these cells wait for the copies on the device, the host does not
+            s.restore_xfers.back().order();
             if (k != seg.size) {
                 ok = false;
                 break;
@@ -648,6 +659,7 @@ int32_t server_session_store::restore(server_session & s, llama_seq_id seq, std:
             ok = set_rec(ctx_tgt, s.rec) && (!ctx_dft || set_rec(ctx_dft, s.rec_dft));
         }
     }
+    s.restore_ordered = ok;
 
     if (!ok) {
         SRV_ERR("session %llu: failed to restore the mirror, its prompt is processed from scratch\n", (unsigned long long) s.id);
@@ -685,14 +697,18 @@ bool server_session_store::restore_done(server_session & s) {
             return false;
         }
     }
-    int64_t t_us = 0;
+    int64_t t_us   = 0;
+    int64_t t_end  = s.t_restore_us;
     for (auto & x : s.restore_xfers) {
         t_us += std::max<int64_t>(0, x.t_us);
+        t_end = std::max(t_end, x.t_end_us);
     }
     s.restore_xfers.clear();
+    s.restore_ordered      = false;
     s.last_restore_bytes   = s.restore_bytes;
     s.last_restore_ms      = t_us / 1e3;
-    s.last_restore_wall_ms = (ggml_time_us() - s.t_restore_us) / 1e3;
+    s.last_restore_end_us  = t_end;
+    s.last_restore_wall_ms = (t_end - s.t_restore_us) / 1e3;
     return true;
 }
 

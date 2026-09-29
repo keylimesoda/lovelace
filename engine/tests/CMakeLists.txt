@@ -316,6 +316,12 @@ llama_build(test-backend-ops.cpp)
 # ReplaySSM: record + fold must reproduce the gated delta net recurrence bit for bit on each backend
 llama_build_and_test(test-gdn-replay.cpp)
 
+# session store: parked and restored (delta, disk-promoted) sequences are byte-identical; needs a model and a GPU,
+# run it with bench/session_restore_check.sh
+llama_build(test-session-restore.cpp)
+target_link_libraries(test-session-restore PRIVATE server-context)
+target_include_directories(test-session-restore PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
+
 llama_build_and_test(test-tiled-mulmat.cpp)
 llama_build_and_test(test-model-load-cancel.cpp LABEL "model")
 llama_build_and_test(test-autorelease.cpp       LABEL "model")

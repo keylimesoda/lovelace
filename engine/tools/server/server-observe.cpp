@@ -640,7 +640,10 @@ std::string server_observer::format(const server_obs_record & rec, uint64_t seq)
                     {"tier",            rec.session_tier},
                     {"restore_bytes",   rec.restore_bytes},
                     {"restore_ms",      r3(rec.restore_ms)},
-                    {"restore_wait_ms", r3(rec.restore_wait_ms)},
+                    {"park_ms",          r3(rec.park_ms)},
+                    {"restore_issue_ms", r3(rec.restore_issue_ms)},
+                    {"restore_ready_ms", opt_num(rec.restore_ready_ms >= 0.0, r3(rec.restore_ready_ms))},
+                    {"prompt_start_ms",  opt_num(rec.prompt_start_ms >= 0.0, r3(rec.prompt_start_ms))},
                     {"prefetch_hit",    rec.prefetch_hit},
                 };
                 res["timings_ms"] = {

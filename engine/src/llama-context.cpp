@@ -3371,8 +3371,12 @@ struct llama_state_xfer {
     std::vector<ggml_backend_event_t> ev_start; // the copies of a device begin after these
     std::vector<ggml_backend_event_t> ev_end;   // and are complete after these
 
+    // the end of the copy-stream copies, with the compute backend of their device (see llama_state_xfer_order)
+    std::vector<std::pair<ggml_backend_t, ggml_backend_event_t>> ev_end_copy;
+
     std::atomic<bool> done { false };
-    int64_t           t_us = -1;
+    int64_t           t_us     = -1;
+    int64_t           t_end_us = -1; // ggml_time_us() when the copies were seen complete
 };
 
 // issues the copies of asynchronous transfers and tracks their completion on a waiter thread
@@ -3532,6 +3536,7 @@ struct llama_state_xfer_engine {
                 ggml_backend_event_t ev = new_event(u.dev->dev);
                 ggml_backend_event_record(ev, u.dev->copy.get());
                 xfer->ev_end.push_back(ev);
+                xfer->ev_end_copy.emplace_back(u.dev->main, ev);
             }
             if (u.ordered) {
                 ggml_backend_event_t ev = new_event(u.dev->dev);
@@ -3561,7 +3566,8 @@ struct llama_state_xfer_engine {
 
         {
             std::lock_guard<std::mutex> lock(mutex);
-            xfer->t_us = t_end - t_start;
+            xfer->t_us     = t_end - t_start;
+            xfer->t_end_us = t_end;
             xfer->done.store(true);
             n_waiting--;
             // notify under the lock: once n_waiting is 0 the destructor may free the engine
@@ -4963,6 +4969,19 @@ void llama_state_xfer_wait(llama_state_xfer_t xfer) {
 
 int64_t llama_state_xfer_t_us(llama_state_xfer_t xfer) {
     return xfer->done.load() ? xfer->t_us : -1;
+}
+
+void llama_state_xfer_order(llama_state_xfer_t xfer) {
+    if (xfer == nullptr || xfer->done.load()) {
+        return;
+    }
+    for (const auto & [backend, ev] : xfer->ev_end_copy) {
+        ggml_backend_event_wait(backend, ev);
+    }
+}
+
+int64_t llama_state_xfer_t_end_us(llama_state_xfer_t xfer) {
+    return xfer->done.load() ? xfer->t_end_us : -1;
 }
 
 void llama_state_xfer_free(llama_state_xfer_t xfer) {
