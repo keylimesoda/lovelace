@@ -89,7 +89,7 @@ Gates on the pre-rebase build (896206c36 vs main 76f8ee574):
   margin 0.016-0.15 where reported) and concurrent batching is not deterministic between runs on main either (the
   earlier main gates in bench/results/greedy report 0-1/6, the same ' a'/' the' tie at token 3).
 
-## 3. After
+## 3. After (pre-rebase: main 76f8ee574 vs 896206c36; rebased numbers below)
 
 Same script and prompts (`after/*.drive.out`, `after/*.table.txt`):
 
