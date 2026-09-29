@@ -36,7 +36,7 @@ Findings:
 |---|---|---|
 | 5217085a3 | bench tooling (above) | |
 | 0020326d9 | single-pass KQ mask, `seq_rm` over the sequence's cells (`seq_pos`) | |
-| 9af6a7638 | MMQ stream-k grid capped at 2 K iterations/block; perf cases for the model's verify shapes | 48x5120 @ 24 cols 19.7 -> 9.6 us, @16 18.5 -> 8.1 us; large shapes unchanged (`op-perf/streamk.txt`) |
+| 9af6a7638 | MMQ stream-k grid capped at 2 K iterations/block; perf cases for the model's verify shapes | 48x5120 @ 24 cols 19.7 -> 9.6 us, @16 18.5 -> 8.1 us (`op-perf/streamk.txt`); **cap dropped in 347d30644** (greedy identity, below), perf cases kept |
 | f1c2a6d34 | server: verify sampling of all slots in parallel (persistent pool) | gap after catch-up 5.6 -> 3.5 ms |
 | 4e31dc347 | CUDA top-k for k <= 32 (register lists + warp tournament) | 151936 x 1, k=20: 85 -> 36 us; 6 rows now 2 launches instead of ~24 |
 | 2483f2646 | mask precompute from a compact 64-bit copy of each cell's sequence set + PEXT, vectorized rows | CPU microbench, 286k cells, 6 seqs: 6 rows 1.1-1.4 -> 0.22 ms; 24 rows 1.8-3.6 -> 1.3-1.9 ms (store-bound) |
@@ -72,6 +72,25 @@ in the replay the aggregate is bounded by admission/queueing and prefill (TTFT p
   reported: with MTP the server returns top_logprobs only for the first token of each verify step
   (drafted tokens come back with logprob 0 and no alternatives). The stream-k cap changes the summation order of small
   matmuls, so small-margin flips are expected from it.
+
+## Greedy gate without speculation (`bench/greedy_gate.sh` NO_SPEC=1, `greedy/nospec-v7*`)
+
+With MTP off, top_logprobs cover every token, so every divergence has a margin (the baseline run's top-1/top-2
+log-prob gap, in nats).
+
+| comparison | sequential | concurrent (6 at once) |
+|---|---|---|
+| base vs base (seq vs par) | 1/6 identical (e208); flips at margins 0.005-0.09 | |
+| final with stream-k cap vs base | 0/6 identical; all margins < 0.09 (e208 'MB'/' MB': 0.016) | 0/6; margins 0.013-0.167 |
+| **final without the cap vs base** | **6/6 identical** | 0/6; margins 0.0007-0.124 |
+
+The stream-k cap caused every sequential divergence, including 'MB'/' MB' on e208, the one request where base agrees
+with itself, so it is dropped (347d30644). Concurrent runs aren't reproducible even for the base build: batch
+composition depends on request timing, and base disagrees with itself between sequential and concurrent in 5/6.
+The concurrent column therefore can't separate a code change from timing, and it includes one flip at 0.167 nats.
+Without the cap the step loses ~0.9 ms (the small alpha/beta fixups return).
+
+Also found: the parallel verify sampling asserted when the server ran without a speculative context (fixed in f4da1fa42).
 
 ## What's left (by size)
 
