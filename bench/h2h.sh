@@ -6,6 +6,7 @@
 #   env BIN: lovelace build dir (default <repo>/engine/build-sm89/bin)
 #             replay:AGENTS:MINDEPTH:DURATION   multi-agent replay (bench/replay)
 #   env SERVER_ARGS: extra lovelace server args (deploy/draft-vocab is mounted at /draft-vocab)
+#   env: WARMUP=1 runs every agent's first contact before the timed replay window (replay.py --warmup)
 set -euo pipefail
 ENGINE=$1 LANES=$2 MODE=$3 OUT=$(realpath -m "$4") LABEL=$5
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -49,7 +50,8 @@ cd "$HERE/replay"
 case "$MODE" in
   sweep) uv run python ../depth_sweep.py --base-url http://127.0.0.1:$PORT/v1 --label "$LABEL" --out "$OUT" > "$OUT/$LABEL.sweep.out" 2>&1 ;;
   replay:*) IFS=: read -r _ A MD DUR <<< "$MODE"
-    uv run replay.py --base-url http://127.0.0.1:$PORT/v1 --model qwen3.8-27b --agents "$A" --duration "$DUR" --no-drain \
+    WFLAG=(); [ "${WARMUP:-0}" = 1 ] && WFLAG=(--warmup)
+    uv run replay.py --base-url http://127.0.0.1:$PORT/v1 --model qwen3.8-27b "${WFLAG[@]}" --agents "$A" --duration "$DUR" --no-drain \
       --start-turn-min-depth "$MD" --think-scale 0.25 --max-think 20 --output-tokens recorded --temperature 1.0 \
       --extra-body "{\"top_p\":0.95,\"top_k\":20}" --results-dir "$OUT" --label "$LABEL" > "$OUT/$LABEL.replay.out" 2>&1
     echo 180 > "$OUT/$LABEL/warmup_s" ;;

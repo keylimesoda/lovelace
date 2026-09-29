@@ -20,6 +20,7 @@ import random
 import statistics
 import sys
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -56,6 +57,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--reasoning-effort", default=None, help="passed through as reasoning_effort")
     ap.add_argument("--extra-body", default=None, help="JSON object merged into every request body")
     ap.add_argument("--request-timeout", type=float, default=1800.0, help="per-request deadline incl. queueing")
+    ap.add_argument("--warmup", action="store_true",
+                    help="run each agent's first contact (its first turn) before the timed window: the window and "
+                         "--duration start once every agent has finished it; those turns go to warmup.jsonl, not "
+                         "requests.jsonl or the summary's aggregates")
+    ap.add_argument("--warmup-timeout", type=float, default=3600.0, help="per-request deadline of the warm-up turns")
     ap.add_argument("--seed", type=int, default=0, help="session order shuffle seed")
     ap.add_argument("--sessions", default=None, help="comma-separated session names to restrict to")
     ap.add_argument("--corpus", type=Path, default=CORPUS_DIR)
@@ -124,10 +130,21 @@ class Run:
     stop: asyncio.Event = field(default_factory=asyncio.Event)
     records: list[dict] = field(default_factory=list)
     started_at: str = ""
+    # --warmup: the agents still running their first contact; the timed window (t0) starts when the last one is done
+    warm_out: object = None
+    warm_pending: set[int] = field(default_factory=set)
+    warm_done: asyncio.Event = field(default_factory=asyncio.Event)
+    warm_records: list[dict] = field(default_factory=list)
+    warm_wall_s: float | None = None
+
+    def warming(self) -> bool:
+        return self.warm_out is not None and not self.warm_done.is_set()
 
     def may_issue(self) -> bool:
         if self.stop.is_set():
             return False
+        if self.warming():
+            return True
         a = self.args
         if a.duration is not None and time.monotonic() - self.t0 >= a.duration:
             self.stop.set()
@@ -141,6 +158,18 @@ class Run:
         self.records.append(rec)
         self.out.write(dumps(rec) + b"\n")
         self.out.flush()
+
+    def write_warm(self, rec: dict) -> None:
+        self.warm_records.append(rec)
+        self.warm_out.write(dumps(rec) + b"\n")
+        self.warm_out.flush()
+
+    def warm_finished(self, idx: int) -> None:
+        """Agent idx is done with its first contact; the last one starts the timed window."""
+        self.warm_pending.discard(idx)
+        if not self.warm_pending and not self.warm_done.is_set():
+            self.t0 = time.monotonic()
+            self.warm_done.set()
 
 
 def max_tokens_for(turn: dict, spec: str) -> int:
@@ -172,8 +201,9 @@ async def no_lines():
     yield
 
 
-async def send(run: Run, body: bytes) -> dict:
+async def send(run: Run, body: bytes, timeout: float | None = None) -> dict:
     """POST one streaming chat completion and measure it. Never raises for server errors."""
+    timeout = timeout or run.args.request_timeout
     r: dict = {"status": "ok"}
     t_send = time.monotonic()
     r["t_send"] = round(t_send - run.t0, 4)
@@ -184,8 +214,9 @@ async def send(run: Run, body: bytes) -> dict:
     usage = timings = None
     finish = None
     try:
-        async with asyncio.timeout(run.args.request_timeout):
-            async with run.client.stream("POST", "/chat/completions", content=body) as resp:
+        async with asyncio.timeout(timeout):
+            http_timeout = httpx.Timeout(connect=10.0, read=timeout, write=120.0, pool=None)
+            async with run.client.stream("POST", "/chat/completions", content=body, timeout=http_timeout) as resp:
                 r["http_status"] = resp.status_code
                 if resp.status_code != 200:
                     text = (await resp.aread()).decode("utf-8", "replace")
@@ -231,7 +262,7 @@ async def send(run: Run, body: bytes) -> dict:
                         if ch.get("finish_reason"):
                             finish = ch["finish_reason"]
     except TimeoutError:
-        r.update(status="timeout", error=f"no completion within {run.args.request_timeout}s")
+        r.update(status="timeout", error=f"no completion within {timeout}s")
     except asyncio.CancelledError:
         r.update(status="cancelled")
     except httpx.HTTPError as e:
@@ -282,8 +313,18 @@ async def sleep_or_stop(run: Run, seconds: float) -> None:
 
 
 async def agent(run: Run, idx: int) -> None:
+    # --warmup: this agent's first contact runs before the timed window, the agents start together
+    try:
+        await agent_turns(run, idx, run.warming())
+    finally:
+        if run.warm_out is not None:
+            run.warm_finished(idx)  # also when the agent ends early
+
+
+async def agent_turns(run: Run, idx: int, warm: bool) -> None:
     a = run.args
-    await sleep_or_stop(run, idx * a.stagger)
+    if not warm:
+        await sleep_or_stop(run, idx * a.stagger)
     while run.may_issue():
         sess = run.pool.acquire()
         try:
@@ -301,7 +342,6 @@ async def agent(run: Run, idx: int) -> None:
                     await sleep_or_stop(run, think)
                 if not run.may_issue():
                     return
-                run.issued += 1
                 body = dumps(build_body(run, turn))
                 meta = {
                     "agent": idx,
@@ -315,6 +355,18 @@ async def agent(run: Run, idx: int) -> None:
                     "think_s": round(think, 3),
                     "body_bytes": len(body),
                 }
+                if warm:
+                    res = await send(run, body, a.warmup_timeout)
+                    rec = {**meta, **res, "warmup": True}
+                    run.write_warm(rec)
+                    print("warm-up " + fmt_line(rec), flush=True)
+                    if res["status"] == "cancelled":
+                        return
+                    warm = False
+                    run.warm_finished(idx)
+                    await run.warm_done.wait()
+                    continue
+                run.issued += 1
                 res = await send(run, body)
                 rec = {**meta, **res}
                 run.write(rec)
@@ -386,6 +438,13 @@ def summarize(run: Run, wall_s: float) -> dict:
         "total_turns": len(recs),
         "by_status": by_status,
         "errors": sum(v for k, v in by_status.items() if k in ("error", "timeout")),
+        "warmup": {
+            "turns": len(run.warm_records),
+            "errors": sum(1 for r in run.warm_records if r["status"] in ("error", "timeout")),
+            "wall_s": round(run.warm_wall_s, 3) if run.warm_wall_s is not None else None,
+        }
+        if run.warm_out is not None
+        else None,
         "completion_tokens": ctoks,
         "agg_output_tps": round(ctoks / span, 3),
         "mean_decode_tps_per_agent": round(statistics.fmean(agent_means), 3) if agent_means else None,
@@ -416,6 +475,11 @@ def print_summary(s: dict) -> None:
         ("label", s["label"]),
         ("turns (ok/total)", f"{s['by_status'].get('ok', 0)}/{s['total_turns']}  status={s['by_status']}"),
         ("errors+timeouts", s["errors"]),
+        *(
+            [("warm-up (turns/errors/wall)", f"{s['warmup']['turns']} / {s['warmup']['errors']} / {f(s['warmup']['wall_s'], '.1f')} s")]
+            if s["warmup"]
+            else []
+        ),
         ("active span", f"{f(s['active_span_s'], '.1f')} s (wall {f(s['wall_s'], '.1f')} s)"),
         ("aggregate output tok/s", f(s["agg_output_tps"])),
         ("mean decode tok/s per agent", f(s["mean_decode_tps_per_agent"])),
@@ -459,17 +523,25 @@ async def amain(args: argparse.Namespace) -> int:
     timeout = httpx.Timeout(connect=10.0, read=args.request_timeout, write=120.0, pool=None)
     limits = httpx.Limits(max_connections=args.agents + 4, max_keepalive_connections=args.agents + 4)
     async with httpx.AsyncClient(base_url=args.base_url.rstrip("/"), headers=headers, timeout=timeout, limits=limits) as client:
-        with open(out_dir / "requests.jsonl", "wb") as out:
+        with open(out_dir / "requests.jsonl", "wb") as out, open(out_dir / "warmup.jsonl", "wb") if args.warmup else nullcontext() as warm_out:
             run = Run(args=args, client=client, tools=load_tools(args.corpus), pool=SessionPool(deep, args.seed), out=out)
             run.started_at = datetime.now().astimezone().isoformat(timespec="seconds")
-            if args.duration is not None:
-                asyncio.get_running_loop().call_later(args.duration, run.stop.set)
             print(
                 f"replay {args.label}: {args.agents} agents over {len(deep)} sessions -> {out_dir}"
-                f" (duration={args.duration} max_turns={args.max_turns})",
+                f" (duration={args.duration} max_turns={args.max_turns} warmup={args.warmup})",
                 flush=True,
             )
+            if warm_out is not None:
+                run.warm_out = warm_out
+                run.warm_pending = set(range(args.agents))
             tasks = [asyncio.create_task(agent(run, i)) for i in range(args.agents)]
+            if warm_out is not None:
+                t_warm = time.monotonic()
+                await run.warm_done.wait()
+                run.warm_wall_s = time.monotonic() - t_warm
+                print(f"warm-up done in {run.warm_wall_s:.1f} s, timed window starts", flush=True)
+            if args.duration is not None:
+                asyncio.get_running_loop().call_later(args.duration, run.stop.set)
             if args.duration is not None and args.no_drain:
                 _, pending = await asyncio.wait(tasks, timeout=args.duration)
                 for t in pending:
