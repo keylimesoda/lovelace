@@ -15,7 +15,8 @@
 -b 2048
 --jinja
 --reasoning-preserve
---cache-ram 32768
+--session-ram 30720
+--session-dir /var/lib/lovelace/sessions
 -ctxcp 8
 --kv-budget
 --prefill-chunk-gen 1024

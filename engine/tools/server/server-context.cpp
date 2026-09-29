@@ -7,6 +7,7 @@
 #include "server-schema.h"
 #include "server-observe.h"
 #include "server-sched.h"
+#include "server-sessions.h"
 #include "server-stream.h"
 
 #include "build-info.h"
@@ -301,6 +302,15 @@ struct server_slot {
 
     server_prompt prompt;
 
+    // per-agent session store (see server-sessions.h): the session bound to the slot, 0 = none
+    // while bound, the cells of the slot (if any) and its checkpoints belong to that session
+    server_session_store * sessions   = nullptr;
+    uint64_t               session_id = 0;
+
+    server_session * session() const {
+        return sessions && session_id ? sessions->get(session_id) : nullptr;
+    }
+
     // observability (see server-observe.h), mutable so that send_error(const server_slot &) can tag the slot
     int64_t                        obs_t_launch_us = 0;
     server_obs_energy_mark         obs_energy0;
@@ -308,6 +318,12 @@ struct server_slot {
     mutable std::string            obs_error_msg;
     const char *                   obs_wait_reason = "none"; // why the task waited for admission
     int32_t                        obs_n_unparked  = 0;      // tokens restored from the prompt cache at launch
+    const char *                   obs_session_tier = nullptr; // where the session was at admission (gpu/ram/disk/new)
+    size_t                         obs_restore_bytes   = 0;
+    double                         obs_restore_ms      = 0.0; // device time of the restore copies
+    double                         obs_restore_wait_ms = 0.0; // time the request waited for them after admission
+    bool                           obs_prefetch_hit    = false;
+    int64_t                        obs_t_admit_us      = 0;
 
     // KV budget scheduling (see server-sched.h)
     int32_t            n_reserved = 0; // cells reserved for the running task
@@ -323,7 +339,8 @@ struct server_slot {
         XFER_NONE,
         XFER_PARK,   // the session is saved to the prompt cache, its cells are freed when the copy completes
         XFER_SAVE,   // the session is saved to the prompt cache for its owner, the slot keeps the cells
-        XFER_UNPARK, // the session is restored from the prompt cache into xfer_in
+        XFER_UNPARK, // the session is restored from the prompt cache into xfer_in, or from its session mirror
+        XFER_SYNC,   // the session mirror copies the cells of the finished request
     };
 
     server_prompt_cache * prompt_cache = nullptr;
@@ -335,13 +352,21 @@ struct server_slot {
     int32_t               xfer_tokens  = 0;
 
     bool xfer_pending() const {
-        return !xfer_in.done() || (prompt_cache && prompt_cache->saving(id));
+        if (!xfer_in.done() || (prompt_cache && prompt_cache->saving(id))) {
+            return true;
+        }
+        server_session * s = session();
+        return s && !sessions->idle(*s);
     }
 
     void xfer_wait() const {
         xfer_in.wait();
         if (prompt_cache) {
             prompt_cache->wait_saving(id);
+        }
+        if (server_session * s = session()) {
+            sessions->sync_wait(*s);
+            sessions->restore_wait(*s);
         }
     }
 
@@ -446,6 +471,12 @@ struct server_slot {
         obs_error_msg.clear();
         obs_wait_reason = "none";
         obs_n_unparked  = 0;
+        obs_session_tier    = nullptr;
+        obs_restore_bytes   = 0;
+        obs_restore_ms      = 0.0;
+        obs_restore_wait_ms = 0.0;
+        obs_prefetch_hit    = false;
+        obs_t_admit_us      = 0;
         n_accepted_per_pos.clear();
 
         n_reserved = 0;
@@ -626,6 +657,19 @@ struct server_slot {
             }
 
             state = SLOT_STATE_IDLE;
+
+            // mirror the new cells of the session, asynchronously: the slot may be parked for free afterwards
+            if (server_session * s = session(); s && prompt.n_tokens() > 0) {
+                const int64_t t_start = ggml_time_us();
+                const size_t  n_bytes = sessions->sync(*s, id, prompt.tokens.get_tokens());
+                if (n_bytes > 0) {
+                    xfer         = XFER_SYNC;
+                    xfer_t0      = t_start;
+                    xfer_us_host = ggml_time_us() - t_start;
+                    xfer_bytes   = n_bytes;
+                    xfer_tokens  = prompt.n_tokens();
+                }
+            }
 
             // do not keep context of the child slots - the parent's context is enough
             if (task->is_child()) {
@@ -1006,10 +1050,17 @@ private:
 
     int n_empty_consecutive = 0;
 
-    // pinned host memory for the prompt cache and the context checkpoints, sized to --cache-ram
+    // pinned host memory for the prompt cache (or the session store) and the context checkpoints, sized to
+    // --cache-ram (--session-ram)
     std::unique_ptr<common_state_arena> state_arena;
 
     std::unique_ptr<server_prompt_cache> prompt_cache;
+
+    // per-agent session store (--session-ram), replaces the prompt cache
+    std::unique_ptr<server_session_store> sessions;
+    int64_t t_sessions_expire_us = 0;
+    int64_t t_sessions_retry_us  = 0;
+    std::vector<uint64_t> sched_wanted; // sessions of the queued tasks, in order
 
     // KV budget scheduling (--kv-budget, unified KV only), see server-sched.h
     enum sched_result {
@@ -1024,6 +1075,8 @@ private:
         server_task  task;
         const char * wait_reason = "none"; // first reason the task had to wait
         int64_t      t_enqueue   = 0;
+        uint64_t     session_id  = 0;      // the session of the task, once identified
+        const char * session_tier = nullptr; // where its session was when the task was first tried
     };
 
     bool                    kv_budget_on = false;
@@ -1040,6 +1093,8 @@ private:
     struct sched_totals {
         uint64_t n_park         = 0; // idle sessions saved to the prompt cache and evicted from VRAM
         uint64_t n_park_drop    = 0; // idle sessions evicted without a copy (no cache room)
+        uint64_t n_sync         = 0; // session mirrors synced after a request
+        uint64_t bytes_sync     = 0;
         uint64_t n_unpark       = 0; // sessions restored from the prompt cache
         uint64_t n_preempt      = 0; // generating slots paused to host memory
         uint64_t n_resume       = 0;
@@ -1080,6 +1135,7 @@ private:
 
     void destroy() {
         // host state buffers wait for their transfers, which need the contexts
+        sessions.reset();
         prompt_cache.reset();
         slots.clear();
         state_arena.reset();
@@ -1498,26 +1554,72 @@ private:
             batch.init(std::max(n_batch, params_base.n_parallel), n_embd);
         }
 
-        if (params_base.cache_ram_mib != 0) {
+        // KV budget scheduling: only a unified cache is shared, a per-slot cache cannot be exhausted by other slots
+        kv_budget_on = params_base.kv_budget && params_base.kv_unified && llama_get_memory(ctx_tgt) != nullptr;
+
+        // the session store parks and restores sessions through the KV budget scheduler
+        const bool use_sessions = params_base.session_ram_mib > 0 && kv_budget_on;
+        if (params_base.session_ram_mib > 0 && !use_sessions) {
+            SRV_WRN("%s", "session store: needs --kv-unified and --kv-budget, disabled\n");
+        }
+
+        const int32_t arena_mib = use_sessions ? params_base.session_ram_mib : params_base.cache_ram_mib;
+
+        // the mirrors, entries and context checkpoints live in fixed chunks of one pinned arena, so that the state
+        // transfers run asynchronously at PCIe speed
+        if (arena_mib > 0) {
+            const int64_t t_start = ggml_time_us();
+            // about 2k chunks, of at most 16 MiB: small enough that an entry wastes little, large enough for few copies
+            const size_t size  = (size_t) arena_mib << 20;
+            const size_t chunk = std::clamp<size_t>(size / 2048, (size_t) 64 << 10, (size_t) 16 << 20);
+            state_arena = std::make_unique<common_state_arena>(size, chunk);
+            SRV_INF("%s: %.0f MiB of %s host memory in %zu chunks of %zu KiB (%.1f s)\n", use_sessions ? "session store" : "prompt cache",
+                    state_arena->n_total() * state_arena->chunk_size() / 1048576.0, state_arena->pinned() ? "pinned" : "pageable",
+                    state_arena->n_total(), state_arena->chunk_size() >> 10, (ggml_time_us() - t_start) / 1e6);
+        }
+
+        if (use_sessions) {
+            if (params_base.cache_ram_mib != 0) {
+                SRV_INF("%s", "session store: --cache-ram is superseded by --session-ram\n");
+            }
+
+            server_session_store::params_t sp;
+            sp.dir = params_base.session_dir;
+            if (sp.dir.rfind("~/", 0) == 0) {
+                const char * home = getenv("HOME");
+                if (home == nullptr || *home == '\0') {
+                    SRV_ERR("%s", "session store: cannot expand --session-dir without HOME\n");
+                    return false;
+                }
+                sp.dir = std::string(home) + sp.dir.substr(1);
+            }
+            sp.disk_limit = (size_t) params_base.session_disk_max_gib << 30;
+            sp.ttl_s      = (uint64_t) params_base.session_ttl_sec;
+            sp.reserve    = std::min<size_t>(state_arena->n_total() * state_arena->chunk_size() / 8, (size_t) 2 << 30);
+
+            try {
+                sessions = std::make_unique<server_session_store>(*state_arena, ctx_tgt, ctx_dft, sp, [this]() {
+                    // a file job completed: run the server loop, a queued request may be admitted now
+                    server_task task(SERVER_TASK_TYPE_NEXT_RESPONSE);
+                    task.id = queue_tasks.get_new_id();
+                    queue_tasks.post(std::move(task));
+                });
+                sessions->load_dir();
+            } catch (const std::exception & e) {
+                SRV_ERR("session store: %s\n", e.what());
+                return false;
+            }
+
+            SRV_INF("session store: directory '%s', disk max %s, TTL %d s, %zu sessions on disk\n", sp.dir.c_str(),
+                    sp.disk_limit ? string_format("%d GiB", params_base.session_disk_max_gib).c_str() : "unlimited",
+                    params_base.session_ttl_sec, sessions->sessions.size());
+        } else if (params_base.cache_ram_mib != 0) {
             if (params_base.cache_ram_mib < 0) {
                 SRV_TRC("prompt cache is enabled, size limit: %s\n", "no limit");
             } else {
                 SRV_TRC("prompt cache is enabled, size limit: %d MiB\n", params_base.cache_ram_mib);
             }
             SRV_TRC("%s", "use `--cache-ram 0` to disable the prompt cache\n");
-
-            // the entries and the context checkpoints live in fixed chunks of one pinned arena, so that the state
-            // transfers run asynchronously at PCIe speed
-            if (params_base.cache_ram_mib > 0) {
-                const int64_t t_start = ggml_time_us();
-                // about 2k chunks, of at most 16 MiB: small enough that an entry wastes little, large enough for few copies
-                const size_t size  = (size_t) params_base.cache_ram_mib << 20;
-                const size_t chunk = std::clamp<size_t>(size / 2048, (size_t) 64 << 10, (size_t) 16 << 20);
-                state_arena = std::make_unique<common_state_arena>(size, chunk);
-                SRV_INF("prompt cache: %.0f MiB of %s host memory in %zu chunks of %zu KiB (%.1f s)\n",
-                        state_arena->n_total() * state_arena->chunk_size() / 1048576.0, state_arena->pinned() ? "pinned" : "pageable",
-                        state_arena->n_total(), state_arena->chunk_size() >> 10, (ggml_time_us() - t_start) / 1e6);
-            }
 
             prompt_cache = std::make_unique<server_prompt_cache>(params_base.cache_ram_mib, n_ctx, state_arena.get());
         } else {
@@ -1526,10 +1628,10 @@ private:
 
         for (auto & slot : slots) {
             slot.prompt_cache = prompt_cache.get();
+            slot.sessions     = sessions.get();
+            slot.session_id   = 0;
         }
 
-        // KV budget scheduling: only a unified cache is shared, a per-slot cache cannot be exhausted by other slots
-        kv_budget_on = params_base.kv_budget && params_base.kv_unified && llama_get_memory(ctx_tgt) != nullptr;
         sched_queue.clear();
         sched_preempted.clear();
         sched_n_waiting.store(0, std::memory_order_relaxed);
@@ -1540,7 +1642,7 @@ private:
 
             SRV_INF("KV budget: %d cells shared by %d slots, reserving up to %d generated tokens per request, headroom %d cells\n",
                     kv_budget.n_cells, (int) slots.size(), params_base.kv_budget_gen, kv_budget.headroom);
-            if (!prompt_cache) {
+            if (!prompt_cache && !sessions) {
                 SRV_WRN("%s", "KV budget: no prompt cache (--cache-ram 0), parked sessions are dropped and re-prefilled\n");
             }
             if (params_base.cache_idle_slots) {
@@ -1938,6 +2040,16 @@ private:
         }
     }
 
+    // free arena chunks for a new host buffer (the prompt cache evicts entries, the session store demotes mirrors)
+    // without room, the buffer falls back to heap memory
+    void arena_make_room(size_t n_chunks) {
+        if (sessions) {
+            sessions->make_room(n_chunks, /* wait */ false);
+        } else if (prompt_cache) {
+            prompt_cache->make_room(n_chunks);
+        }
+    }
+
     bool sched_parks_pending() const {
         for (const auto & slot : slots) {
             if (slot.xfer == server_slot::XFER_PARK) {
@@ -1947,10 +2059,92 @@ private:
         return false;
     }
 
+    // drop the cells of a slot bound to a session and unbind it: free when the mirror is current (only the checkpoints
+    // move to it), else the mirror is synced first, waiting for arena room if it has to
+    void session_park(server_slot & slot) {
+        server_session * s = slot.session();
+        GGML_ASSERT(s && !slot.is_processing());
+
+        const int64_t t_start  = ggml_time_us();
+        const int32_t n_tokens = slot.prompt.n_tokens();
+        size_t n_bytes = 0;
+
+        // the copies of the cells (a sync, a prefetch) complete first
+        sessions->sync_wait(*s);
+        sessions->restore_wait(*s);
+
+        if (n_tokens > 0 && !sessions->current(*s, n_tokens)) {
+            SLT_WRN(slot, "session %llu: the mirror holds %d of %d tokens, syncing it before the park\n",
+                    (unsigned long long) s->id, s->n_kv, n_tokens);
+            n_bytes = sessions->sync(*s, slot.id, slot.prompt.tokens.get_tokens(), /* wait_room */ true);
+            sessions->sync_wait(*s);
+            if (n_bytes == 0) {
+                SLT_ERR(slot, "session %llu: no arena room, the %d tokens past its mirror are re-prefilled on its next request\n",
+                        (unsigned long long) s->id, n_tokens - s->n_kv);
+            }
+        }
+
+        sessions->park(*s, std::move(slot.prompt.checkpoints));
+        slot.mem.seq_rm(slot.id, -1, -1);
+        slot.prompt.clear();
+        slot.session_id = 0;
+        slot.xfer       = server_slot::XFER_NONE;
+
+        if (n_tokens > 0) {
+            sched_stats.n_park++;
+            sched_account_transfer(true, n_bytes, 0, ggml_time_us() - t_start);
+            SLT_INF(slot, "parked session %llu: %d tokens, %.1f MiB copied, %.2f ms\n", (unsigned long long) s->id, n_tokens,
+                    n_bytes / 1048576.0, (ggml_time_us() - t_start) / 1e3);
+            obs_sched_event("park", slot, n_tokens, n_bytes, 0, ggml_time_us() - t_start);
+        }
+        sched_dirty = true;
+    }
+
+    // start restoring a parked session into an empty slot and bind it; the slot runs once the copies are done
+    void session_restore(server_slot & slot, server_session & s, bool prefetch) {
+        GGML_ASSERT(slot.prompt.n_tokens() == 0 && !slot.is_processing() && (s.id_slot < 0 || s.id_slot == slot.id));
+
+        const int64_t t_start = ggml_time_us();
+
+        std::list<common_prompt_checkpoint> ckpts;
+        const int32_t n = sessions->restore(s, slot.id, ckpts, prefetch);
+
+        slot.prompt.tokens      = server_tokens(llama_tokens(s.tokens.begin(), s.tokens.begin() + n), false);
+        slot.prompt.checkpoints = std::move(ckpts);
+        slot.session_id         = s.id;
+        slot.t_last_used        = t_start; // a prefetched session is the last victim
+        slot.xfer_t0            = t_start;
+        slot.xfer_us_host       = ggml_time_us() - t_start;
+        slot.xfer_bytes         = s.restore_bytes;
+        slot.xfer_tokens        = n;
+        slot.xfer               = n > 0 ? server_slot::XFER_UNPARK : server_slot::XFER_NONE;
+
+        SLT_INF(slot, "%s session %llu: %d tokens, %.1f MiB, issued in %.2f ms\n", prefetch ? "prefetching" : "restoring",
+                (unsigned long long) s.id, n, s.restore_bytes / 1048576.0, slot.xfer_us_host / 1e3);
+    }
+
     // start saving an idle slot's session to the prompt cache and free its cells once the copy completes (see
     // sched_poll_xfers), while the other slots keep decoding; wait: complete the park before returning
+    // with the session store, the cells are dropped right away (the mirror is current)
     void sched_park(server_slot & slot, bool wait = false) {
         GGML_ASSERT(!slot.is_processing());
+
+        if (sessions) {
+            // an earlier transfer of the sequence completes first
+            sched_finish_xfer(slot, true);
+            if (slot.session()) {
+                session_park(slot);
+            } else if (slot.prompt.n_tokens() > 0) {
+                // cells of a request outside the sessions (e.g. a multimodal prompt) have no mirror
+                const int32_t n_tokens = slot.prompt.n_tokens();
+                slot.prompt_clear();
+                sched_stats.n_park_drop++;
+                sched_dirty = true;
+                SLT_INF(slot, "evicted cells without a session: %d tokens\n", n_tokens);
+                obs_sched_event("park", slot, n_tokens, 0, 0, 0);
+            }
+            return;
+        }
 
         if (slot.xfer != server_slot::XFER_PARK) {
             const int32_t n_tokens = slot.prompt.n_tokens();
@@ -1960,7 +2154,6 @@ private:
 
             // an earlier transfer of the sequence (e.g. the unpark of a cancelled task) completes first
             sched_finish_xfer(slot, true);
-
             const int64_t t_start = ggml_time_us();
             const size_t  n_bytes = prompt_cache ? slot.prompt_save(*prompt_cache, /* take_checkpoints */ true) : 0;
 
@@ -2000,7 +2193,21 @@ private:
 
         const int64_t t_wait = ggml_time_us();
         int64_t t_us = -1;
-        if (slot.xfer == server_slot::XFER_UNPARK) {
+        server_session * sess = slot.session();
+        if (slot.xfer == server_slot::XFER_UNPARK && sess) {
+            sessions->restore_wait(*sess);
+            t_us = (int64_t) (sess->last_restore_ms * 1e3);
+            if (slot.is_processing()) {
+                // the request was admitted before the restore completed
+                slot.obs_restore_bytes   = sess->last_restore_bytes;
+                slot.obs_restore_ms      = sess->last_restore_ms;
+                slot.obs_restore_wait_ms = std::max<int64_t>(0, ggml_time_us() - slot.obs_t_admit_us) / 1e3;
+            }
+        } else if (slot.xfer == server_slot::XFER_SYNC) {
+            if (sess) {
+                sessions->sync_wait(*sess);
+            }
+        } else if (slot.xfer == server_slot::XFER_UNPARK) {
             slot.xfer_in.wait();
             t_us = slot.xfer_in.t_us();
             slot.xfer_in = {};
@@ -2010,12 +2217,27 @@ private:
         const int64_t t_now = ggml_time_us();
         slot.xfer_us_host += t_now - t_wait;
         if (t_us < 0) {
-            // the entry was evicted before its copy was accounted
+            // the entry was evicted before its copy was accounted, or a sync (no device time)
             t_us = t_now - slot.xfer_t0;
         }
 
-        const bool park = slot.xfer != server_slot::XFER_UNPARK;
-        const char * action = park ? "park" : "unpark";
+        const char * action = "unpark";
+        switch (slot.xfer) {
+            case server_slot::XFER_SYNC:
+                action = "sync";
+                sched_stats.n_sync++;
+                sched_stats.bytes_sync += slot.xfer_bytes;
+                break;
+            case server_slot::XFER_UNPARK:
+                sched_stats.n_unpark++;
+                sched_account_transfer(false, slot.xfer_bytes, t_us, slot.xfer_us_host);
+                break;
+            default:
+                action = "park";
+                sched_stats.n_park++;
+                sched_account_transfer(true, slot.xfer_bytes, t_us, slot.xfer_us_host);
+                break;
+        }
 
         if (slot.xfer == server_slot::XFER_PARK) {
             slot.prompt_clear();
@@ -2023,11 +2245,8 @@ private:
             sched_dirty = true;
         }
 
-        (park ? sched_stats.n_park : sched_stats.n_unpark)++;
-        sched_account_transfer(park, slot.xfer_bytes, t_us, slot.xfer_us_host);
-
         SLT_INF(slot, "%s session: %d tokens, %.1f MiB in %.1f ms (%.2f GB/s), done %.1f ms after issue, host %.1f ms\n",
-                park ? "parked" : "unparked", slot.xfer_tokens, slot.xfer_bytes / 1048576.0, t_us / 1e3,
+                action, slot.xfer_tokens, slot.xfer_bytes / 1048576.0, t_us / 1e3,
                 slot.xfer_bytes / 1e3 / std::max<int64_t>(1, t_us), (t_now - slot.xfer_t0) / 1e3, slot.xfer_us_host / 1e3);
 
         obs_sched_event(action, slot, slot.xfer_tokens, slot.xfer_bytes, t_us, slot.xfer_us_host);
@@ -2052,26 +2271,40 @@ private:
 
     // pause a generating slot at a token boundary: its whole state goes to host memory, its cells are freed
     // rr: paused by time slicing, it resumes after the requests waiting now (else before any queued request)
+    // a session slot syncs its mirror instead, which then holds the whole state
     void sched_preempt(server_slot & slot, bool rr = false) {
         GGML_ASSERT(slot.state == SLOT_STATE_GENERATING && slot.spec_draft.empty() && slot.spec_i_batch.empty());
 
         const int64_t t_start = ggml_time_us();
 
-        const size_t size_tgt =           llama_state_seq_get_size_ext(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
-        const size_t size_dft = ctx_dft ? llama_state_seq_get_size_ext(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE) : 0;
-
         auto & data = slot.park_data;
-        if (prompt_cache && state_arena) {
-            prompt_cache->make_room(state_arena->n_chunks(size_tgt) + state_arena->n_chunks(size_dft));
+
+        bool mirrored = false;
+        if (server_session * s = slot.session()) {
+            const size_t n_bytes = sessions->sync(*s, slot.id, slot.prompt.tokens.get_tokens(), /* wait_room */ true);
+            sessions->sync_wait(*s);
+            mirrored = n_bytes > 0 && sessions->current(*s, slot.prompt.n_tokens());
+            if (mirrored) {
+                sched_account_transfer(true, n_bytes, 0, ggml_time_us() - t_start);
+            }
         }
-        bool ok = data.main.alloc(state_arena.get(), size_tgt) && data.drft.alloc(state_arena.get(), size_dft);
-        ok = ok && data.main.get_async(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
-        ok = ok && (!ctx_dft || data.drft.get_async(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE));
-        data.wait();
-        if (!ok) {
-            // resumed by re-prefilling the history instead
-            SLT_WRN(slot, "%s", "no host memory to park the state, it will be recomputed on resume\n");
-            data = {};
+
+        if (!mirrored) {
+            const size_t size_tgt =           llama_state_seq_get_size_ext(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+            const size_t size_dft = ctx_dft ? llama_state_seq_get_size_ext(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE) : 0;
+
+            if (state_arena) {
+                arena_make_room(state_arena->n_chunks(size_tgt) + state_arena->n_chunks(size_dft));
+            }
+            bool ok = data.main.alloc(state_arena.get(), size_tgt) && data.drft.alloc(state_arena.get(), size_dft);
+            ok = ok && data.main.get_async(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+            ok = ok && (!ctx_dft || data.drft.get_async(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE));
+            data.wait();
+            if (!ok) {
+                // resumed by re-prefilling the history instead
+                SLT_WRN(slot, "%s", "no host memory to park the state, it will be recomputed on resume\n");
+                data = {};
+            }
         }
 
         const int64_t t_copy = ggml_time_us() - t_start;
@@ -2087,7 +2320,9 @@ private:
         sched_dirty = true;
 
         sched_stats.n_preempt++;
-        sched_account_transfer(true, data.size(), data.t_us() > 0 ? data.t_us() : t_copy, t_copy);
+        if (!mirrored) {
+            sched_account_transfer(true, data.size(), data.t_us() > 0 ? data.t_us() : t_copy, t_copy);
+        }
 
         SLT_WRN(slot, "preempted at %d tokens, %s: parked %.1f MiB in %.1f ms\n", slot.prompt.n_tokens(),
                 rr ? "its time slice is over" : "the KV budget cannot grow its reservation", data.size() / 1048576.0, t_copy / 1e3);
@@ -2119,6 +2354,40 @@ private:
         const int64_t t_start = ggml_time_us();
 
         auto & data = slot.park_data;
+
+        // a session slot preempted into its mirror restores from there
+        if (server_session * s = slot.session(); s && data.main.empty()) {
+            const int32_t n_tokens = slot.prompt.n_tokens();
+
+            std::list<common_prompt_checkpoint> ckpts;
+            const int32_t n = sessions->restore(*s, slot.id, ckpts, false);
+            sessions->restore_wait(*s);
+            slot.prompt.checkpoints.splice(slot.prompt.checkpoints.end(), ckpts);
+
+            const int64_t t_copy = ggml_time_us() - t_start;
+
+            slot.t_preempt  = 0;
+            slot.rr_preempt = false;
+            slot.t_slice    = ggml_time_us();
+            slot.n_reserved = need;
+            slot.state      = SLOT_STATE_GENERATING;
+
+            sched_account_transfer(false, s->last_restore_bytes, (int64_t) (s->last_restore_ms * 1e3), t_copy);
+            if (n == n_tokens) {
+                SLT_INF(slot, "resumed at %d tokens from the session mirror: %.1f MiB in %.1f ms\n", n,
+                        s->last_restore_bytes / 1048576.0, t_copy / 1e3);
+            } else {
+                SLT_WRN(slot, "the session mirror restored %d of %d tokens, re-prefilling the rest\n", n, n_tokens);
+                llama_tokens tokens = slot.prompt.tokens.get_text_tokens();
+                slot.prompt.tokens.keep_first(n);
+                slot.prompt.checkpoints.remove_if([n](const common_prompt_checkpoint & c) { return c.n_tokens > n; });
+                slot_start_recompute(slot, std::move(tokens));
+            }
+
+            sched_stats.n_resume++;
+            obs_sched_event("resume", slot, n, s->last_restore_bytes, (int64_t) (s->last_restore_ms * 1e3), t_copy);
+            return true;
+        }
 
         bool ok = !data.main.empty();
         ok = ok && data.main.set_async(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
@@ -2316,10 +2585,177 @@ private:
         slot.state            = SLOT_STATE_RECOMPUTE;
     }
 
+    // the task continues or starts a session of the store (not a multimodal prompt, a parent task or a pinned slot)
+    bool sched_session_task(const server_task & task) const {
+        return sessions && task.type == SERVER_TASK_TYPE_COMPLETION && !task.tokens.has_mtmd && !task.is_parent() &&
+            task.id_slot == -1;
+    }
+
+    // the end of the first user message of a prompt, 0 if the message spans are unknown (see identify())
+    static size_t session_anchor(const server_task & task) {
+        for (const auto & span : task.params.message_spans.spans) {
+            if (span.role == COMMON_CHAT_ROLE_USER) {
+                return span.pos + span.len;
+            }
+        }
+        return 0;
+    }
+
+    // admission of a session task: its session goes to the slot that holds it, or is restored into an idle one
+    sched_result sched_try_admit_session(sched_entry & e) {
+        server_task & task = e.task;
+
+        if (e.session_id == 0) {
+            e.session_id = sessions->identify(task.tokens.get_tokens(), session_anchor(task));
+        }
+        server_session * sess = sessions->get(e.session_id);
+        if (e.session_tier == nullptr) {
+            e.session_tier = !sess ? "new" : sess->id_slot >= 0 ? "gpu" : sess->tier == SERVER_SESSION_RAM ? "ram" : "disk";
+        }
+
+        // a demoted mirror is read back first (poll() starts the reads for the queued sessions)
+        if (sess && sess->id_slot < 0 && !sessions->promote(*sess)) {
+            return SCHED_WAIT_XFER;
+        }
+
+        int id_slot = -1;
+        if (sess && sess->id_slot >= 0) {
+            server_slot & slot = slots[sess->id_slot];
+            if (slot.is_processing()) {
+                // a second request of the session waits for the first
+                return SCHED_WAIT_SLOT;
+            }
+            if (slot.xfer == server_slot::XFER_SYNC) {
+                sched_finish_xfer(slot, true);
+            }
+            id_slot = slot.id;
+        } else {
+            // an empty idle slot first, else the least recently used one; cells are never shared between sessions
+            auto & cands = sched_cands;
+            cands.resize(slots.size());
+            for (size_t i = 0; i < slots.size(); i++) {
+                const auto & slot = slots[i];
+                auto & c = cands[i];
+                c.idle        = !slot.is_processing() && slot.xfer == server_slot::XFER_NONE;
+                c.n_used      = slot.prompt.n_tokens();
+                c.n_lcp       = 0;
+                c.t_last_used = slot.t_last_used;
+            }
+            id_slot = server_kv_budget::pick_slot(cands, task.n_tokens(), slot_prompt_similarity);
+            if (id_slot < 0) {
+                return SCHED_WAIT_SLOT;
+            }
+        }
+
+        server_slot & slot = slots[id_slot];
+
+        const bool    resident = sess && sess->id_slot == slot.id && slot.prompt.n_tokens() > 0;
+        const int32_t n_hold   = resident ? slot.prompt.n_tokens() : (sess ? sess->n_kv : 0);
+
+        const int32_t n_predict = task.params.n_predict != -1 ? task.params.n_predict : params_base.n_predict;
+        const int32_t need = std::min<int64_t>(sched_reservation(task.n_tokens(), n_predict), kv_budget.n_cells);
+
+        sched_sync();
+        const auto plan = kv_budget.plan_commit(slot.id, std::max(need, n_hold), sched_others_running(slot.id));
+        if (!plan.fits) {
+            return SCHED_WAIT_KV;
+        }
+
+        // parking a session is free: its mirror is current
+        for (int id : plan.victims) {
+            sched_park(slots[id]);
+        }
+
+        // the previous occupant of the slot leaves
+        if (slot.session_id != 0 && slot.session_id != e.session_id) {
+            session_park(slot);
+        } else if (slot.session_id == 0 && slot.prompt.n_tokens() > 0) {
+            sched_park(slot);
+        }
+
+        if (sess == nullptr) {
+            sess = &sessions->create(e.session_id);
+        }
+
+        slot.obs_t_admit_us   = ggml_time_us();
+        slot.obs_session_tier = e.session_tier;
+
+        if (resident) {
+            if (sess->restore_prefetch) {
+                // restored while the request waited
+                sess->restore_prefetch = false;
+                sess->n_prefetch_hit++;
+                sessions->n_prefetch_hit_total++;
+                slot.obs_prefetch_hit = true;
+                slot.obs_n_unparked   = slot.prompt.n_tokens();
+                if (slot.xfer != server_slot::XFER_UNPARK) {
+                    slot.obs_restore_bytes = sess->last_restore_bytes;
+                    slot.obs_restore_ms    = sess->last_restore_ms;
+                }
+            }
+        } else if (sess->n_kv > 0) {
+            session_restore(slot, *sess, /* prefetch */ false);
+            slot.obs_n_unparked = slot.prompt.n_tokens();
+        }
+        sess->id_slot   = slot.id;
+        slot.session_id = sess->id;
+
+        slot.n_reserved      = need;
+        slot.obs_wait_reason = e.wait_reason;
+
+        if (!launch_slot_with_task(slot, std::move(task))) {
+            slot.n_reserved = 0;
+            return SCHED_DROPPED;
+        }
+
+        return SCHED_ADMITTED;
+    }
+
+    // restore the session of the queue head into an empty idle slot while the head waits, if the pool has room for its
+    // cells without parking anybody: the request then starts without waiting for the copies
+    void sched_prefetch() {
+        if (!sessions || sched_queue.empty()) {
+            return;
+        }
+        const auto & e = sched_queue.front();
+        server_session * s = e.session_id ? sessions->get(e.session_id) : nullptr;
+        if (s == nullptr || s->id_slot >= 0 || s->tier != SERVER_SESSION_RAM || s->n_kv == 0) {
+            return;
+        }
+
+        server_slot * target = nullptr;
+        for (auto & slot : slots) {
+            if (slot.is_processing() || slot.xfer != server_slot::XFER_NONE || slot.prompt.n_tokens() > 0) {
+                continue;
+            }
+            if (target == nullptr || slot.t_last_used < target->t_last_used) {
+                target = &slot;
+            }
+        }
+        if (target == nullptr) {
+            return;
+        }
+
+        sched_sync();
+        const auto plan = kv_budget.plan_commit(target->id, s->n_kv, /* use_headroom */ true);
+        if (!plan.fits || !plan.victims.empty()) {
+            return;
+        }
+
+        if (target->session_id != 0) {
+            session_park(*target);
+        }
+        session_restore(*target, *s, /* prefetch */ true);
+    }
+
     // try to launch the task at the head of the queue
     // on SCHED_ADMITTED and SCHED_DROPPED the task has been moved out of the entry
     sched_result sched_try_admit(sched_entry & e) {
         server_task & task = e.task;
+
+        if (sched_session_task(task)) {
+            return sched_try_admit_session(e);
+        }
 
         // session-affine slot choice
         int id_slot = -1;
@@ -2338,7 +2774,8 @@ private:
                 auto & c = cands[i];
                 c.idle        = !slot.is_processing() && slot.xfer == server_slot::XFER_NONE;
                 c.n_used      = slot.prompt.n_tokens();
-                c.n_lcp       = c.idle && c.n_used > 0 ? (int32_t) slot.prompt.tokens.get_common_prefix(task.tokens) : 0;
+                // the cells of a session are its own
+                c.n_lcp       = c.idle && c.n_used > 0 && slot.session_id == 0 ? (int32_t) slot.prompt.tokens.get_common_prefix(task.tokens) : 0;
                 c.t_last_used = slot.t_last_used;
             }
             id_slot = server_kv_budget::pick_slot(cands, task.n_tokens(), slot_prompt_similarity);
@@ -2348,6 +2785,11 @@ private:
         }
 
         server_slot & slot = slots[id_slot];
+
+        // a task outside the sessions does not use the cells of one
+        if (slot.session_id != 0) {
+            session_park(slot);
+        }
 
         std::vector<server_slot *> child_slots;
         if (task.is_parent()) {
@@ -2477,12 +2919,73 @@ private:
         return SCHED_ADMITTED;
     }
 
+    // the session store between iterations: file jobs, promotions of the queued sessions, retried syncs, the TTL
+    void sched_sessions_poll() {
+        if (!sessions) {
+            return;
+        }
+
+        sched_wanted.clear();
+        for (const auto & e : sched_queue) {
+            if (e.session_id != 0) {
+                sched_wanted.push_back(e.session_id);
+            }
+        }
+        if (sessions->poll(sched_wanted)) {
+            sched_dirty = true;
+        }
+
+        const int64_t t_now = ggml_time_us();
+
+        // syncs that found no arena room are retried (demotions free it over time)
+        if (t_now - t_sessions_retry_us > 250000) {
+            t_sessions_retry_us = t_now;
+            for (auto & slot : slots) {
+                server_session * s = slot.session();
+                if (!s || !s->stale || slot.is_processing() || slot.xfer != server_slot::XFER_NONE || slot.prompt.n_tokens() == 0) {
+                    continue;
+                }
+                const size_t n_bytes = sessions->sync(*s, slot.id, slot.prompt.tokens.get_tokens());
+                if (n_bytes > 0) {
+                    slot.xfer         = server_slot::XFER_SYNC;
+                    slot.xfer_t0      = t_now;
+                    slot.xfer_us_host = ggml_time_us() - t_now;
+                    slot.xfer_bytes   = n_bytes;
+                    slot.xfer_tokens  = slot.prompt.n_tokens();
+                }
+            }
+        }
+
+        // inactive sessions expire (--session-ttl)
+        if (t_now - t_sessions_expire_us > 60 * 1000000) {
+            t_sessions_expire_us = t_now;
+            const std::time_t now_s = std::time(nullptr);
+            for (uint64_t id : sessions->expired(now_s > 0 ? (uint64_t) now_s : 0)) {
+                if (std::find(sched_wanted.begin(), sched_wanted.end(), id) != sched_wanted.end()) {
+                    continue;
+                }
+                server_session * s = sessions->get(id);
+                if (s->id_slot >= 0) {
+                    server_slot & slot = slots[s->id_slot];
+                    if (slot.is_processing()) {
+                        continue;
+                    }
+                    sched_finish_xfer(slot, true);
+                    session_park(slot);
+                }
+                sessions->erase(id);
+            }
+        }
+    }
+
     // admit waiting work in order: preempted slots first, then the queue; stops at the first that has to wait
     void sched_admit() {
         if (!sched_dirty) {
             return;
         }
         sched_dirty = false;
+
+        bool head_waits = false;
 
         while (true) {
             // a slot paused by time slicing lets the requests that were already waiting go first
@@ -2508,13 +3011,19 @@ private:
             const auto res = sched_try_admit(entry);
             if (res == SCHED_WAIT_SLOT || res == SCHED_WAIT_KV || res == SCHED_WAIT_XFER) {
                 if (strcmp(entry.wait_reason, "none") == 0) {
-                    entry.wait_reason = res == SCHED_WAIT_SLOT ? "slot" : "kv";
+                    // a session task waits for a transfer only while its mirror is read back from disk
+                    entry.wait_reason = res == SCHED_WAIT_SLOT ? "slot" : (res == SCHED_WAIT_XFER && sessions ? "disk" : "kv");
                     (res == SCHED_WAIT_SLOT ? sched_stats.n_wait_slot : sched_stats.n_wait_kv)++;
                 }
+                head_waits = true;
                 break;
             }
 
             sched_queue.pop_front();
+        }
+
+        if (head_waits) {
+            sched_prefetch();
         }
 
         sched_n_waiting.store((int32_t) sched_queue.size(), std::memory_order_relaxed);
@@ -2532,10 +3041,20 @@ private:
             return;
         }
 
-        sched_queue.push_back({ std::move(task), "none", ggml_time_us() });
+        sched_entry e { std::move(task), "none", ggml_time_us() };
+
+        // the session is known from the start, so that its mirror can come back from disk while the task waits
+        if (sched_session_task(e.task)) {
+            e.session_id = sessions->identify(e.task.tokens.get_tokens(), session_anchor(e.task));
+            server_session * s = sessions->get(e.session_id);
+            e.session_tier = !s ? "new" : s->id_slot >= 0 ? "gpu" : s->tier == SERVER_SESSION_RAM ? "ram" : "disk";
+        }
+
+        sched_queue.push_back(std::move(e));
         sched_n_waiting.store((int32_t) sched_queue.size(), std::memory_order_relaxed);
         sched_dirty = true;
 
+        sched_sessions_poll();
         sched_admit();
     }
 
@@ -3226,11 +3745,11 @@ private:
         //       this is not true for SWA models: https://github.com/ggml-org/llama.cpp/pull/24411#issuecomment-4677983225
         cur.update_pos(slot.prompt.n_tokens() - n_tokens_cur, pos_min, pos_max);
 
-        // checkpoints live in the pinned arena next to the prompt cache, which makes room for them
+        // checkpoints live in the pinned arena next to the prompt cache (session mirrors), which makes room for them
         if (state_arena) {
             const size_t n_tgt =           llama_state_seq_get_size_ext(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
             const size_t n_dft = ctx_dft ? llama_state_seq_get_size_ext(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) : 0;
-            prompt_cache->make_room(state_arena->n_chunks(n_tgt) + state_arena->n_chunks(n_dft));
+            arena_make_room(state_arena->n_chunks(n_tgt) + state_arena->n_chunks(n_dft));
         }
         cur.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY, state_arena.get());
         cur.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY, state_arena.get());
@@ -3702,6 +4221,7 @@ private:
         // admit waiting work into the slots and cells freed by the last iteration
         if (kv_budget_on) {
             sched_poll_xfers(/* wait */ false);
+            sched_sessions_poll();
             sched_admit();
         }
 
@@ -5346,6 +5866,65 @@ public:
             {"entries",      prompt_cache ? prompt_cache->states.size()  : 0},
         };
 
+        json sessions_json = nullptr;
+        if (sessions) {
+            const auto st = sessions->stats();
+            const int64_t t_now = ggml_time_us();
+            json list = json::array();
+            for (const auto & it : sessions->sessions) {
+                const auto & s = *it.second;
+                const bool gpu = s.id_slot >= 0;
+                list.push_back({
+                    {"id",                 s.id},
+                    {"tier",               gpu ? "gpu" : server_session_tier_name(s.tier)},
+                    {"slot",               s.id_slot},
+                    {"resident_cells",     gpu ? slots[s.id_slot].prompt.n_tokens() : 0},
+                    {"mirror_tokens",      s.n_kv},
+                    {"mirror_bytes",       s.bytes()},
+                    {"mirror_segments",    s.segs.size()},
+                    {"checkpoints",        s.checkpoints.size()},
+                    {"file_bytes",         s.file_bytes},
+                    {"stale",              s.stale},
+                    {"sync_ms",            s.t_synced_us > s.t_sync_us ? json((s.t_synced_us - s.t_sync_us) / 1e3) : json(nullptr)},
+                    {"since_sync_s",       s.t_sync_us > 0 ? json((t_now - s.t_sync_us) / 1e6) : json(nullptr)},
+                    {"syncs",              s.n_sync},
+                    {"truncations",        s.n_truncate},
+                    {"restores",           s.n_restore},
+                    {"last_restore_bytes", s.last_restore_bytes},
+                    {"last_restore_ms",    s.last_restore_ms},
+                    {"last_restore_wall_ms", s.last_restore_wall_ms},
+                    {"prefetches",         s.n_prefetch},
+                    {"prefetch_hits",      s.n_prefetch_hit},
+                    {"demotions",          s.n_demote},
+                    {"promotions",         s.n_promote},
+                });
+            }
+            sessions_json = {
+                {"arena_bytes",      st.arena_bytes},
+                {"arena_free_bytes", st.arena_free},
+                {"ram_bytes",        st.ram_bytes},
+                {"disk_bytes",       st.disk_bytes},
+                {"disk_limit_bytes", sessions->params.disk_limit},
+                {"n_sessions",       st.n_sessions},
+                {"n_gpu",            st.n_gpu},
+                {"n_ram",            st.n_ram},
+                {"n_disk",           st.n_disk},
+                {"n_io",             st.n_io},
+                {"demotions",        st.n_demote},
+                {"promotions",       st.n_promote},
+                {"deleted",          st.n_deleted},
+                {"stale_syncs",      st.n_sync_stale},
+                {"prefetches",       st.n_prefetch},
+                {"prefetch_hits",    st.n_prefetch_hit},
+                {"syncs",            sched_stats.n_sync},
+                {"sync_bytes",       sched_stats.bytes_sync},
+                {"io_bytes_written", st.io_bytes_written},
+                {"io_bytes_read",    st.io_bytes_read},
+                {"io_write_s",       st.io_write_s},
+                {"io_read_s",        st.io_read_s},
+                {"sessions",         list},
+            };
+        }
         res["memory"] = {
             {"kv", {
                 {"cells_total",  n_ctx},
@@ -5357,6 +5936,7 @@ public:
                 {"cache_type_v", ggml_type_name(params_base.cache_type_v)},
             }},
             {"prompt_cache", prompt_cache_json},
+            {"sessions",     sessions_json},
             {"vram", obs_vram},
         };
         return res;
@@ -5595,6 +6175,12 @@ private:
         rec.n_ctx_used          = slot.prompt.n_tokens();
         rec.wait_reason         = slot.obs_wait_reason;
         rec.n_unparked_tokens   = slot.obs_n_unparked;
+        rec.session_id          = slot.session_id;
+        rec.session_tier        = slot.obs_session_tier;
+        rec.restore_bytes       = slot.obs_restore_bytes;
+        rec.restore_ms          = slot.obs_restore_ms;
+        rec.restore_wait_ms     = slot.obs_restore_wait_ms;
+        rec.prefetch_hit        = slot.obs_prefetch_hit;
         rec.t_prefill_ms        = st.t_prompt_ms();
         rec.t_decode_ms         = st.t_gen_ms();
         rec.t_ttft_ms           = st.n_gen > 0 && st.t_prompt_last > 0 ? (st.t_prompt_last - t_arrival) / 1e3 : -1.0;

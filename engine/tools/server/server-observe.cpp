@@ -576,6 +576,7 @@ static json obs_request_info(const server_obs_record & rec, bool with_detail) {
     json res = {
         {"id_task",   rec.id_task >= 0 ? json(rec.id_task) : json(nullptr)},
         {"id_slot",   rec.id_slot >= 0 ? json(rec.id_slot) : json(nullptr)},
+        {"session_id", rec.session_id != 0 ? json(rec.session_id) : json(nullptr)},
     };
     if (with_detail) {
         res["id_parent"] = rec.id_parent >= 0 ? json(rec.id_parent) : json(nullptr);
@@ -633,6 +634,14 @@ std::string server_observer::format(const server_obs_record & rec, uint64_t seq)
                     {"n_unparked_tokens",   rec.n_unparked_tokens},
                     {"wait_reason",         rec.wait_reason},
                     {"error",               rec.error_msg.empty() ? json(nullptr) : json(rec.error_msg)},
+                };
+                res["session"] = rec.session_tier == nullptr ? json(nullptr) : json {
+                    {"id",              rec.session_id},
+                    {"tier",            rec.session_tier},
+                    {"restore_bytes",   rec.restore_bytes},
+                    {"restore_ms",      r3(rec.restore_ms)},
+                    {"restore_wait_ms", r3(rec.restore_wait_ms)},
+                    {"prefetch_hit",    rec.prefetch_hit},
                 };
                 res["timings_ms"] = {
                     {"queue_wait", r3(std::max(0.0, rec.queue_wait_ms))},

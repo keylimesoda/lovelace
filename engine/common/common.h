@@ -634,6 +634,10 @@ struct common_params {
     int32_t checkpoint_min_step = 8192;  // minimum spacing between context checkpoints
     int32_t n_ctx_checkpoints_recent = 3; // checkpoints at the starts of the last N messages, regardless of the spacing
     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
+    int32_t     session_ram_mib       = 0;                                              // pinned RAM tier; 0 = disabled
+    std::string session_dir           = "~/.local/state/lovelace/sessions";             // NVMe tier
+    int32_t     session_disk_max_gib   = 0;                                              // 0 = unlimited
+    int32_t     session_ttl_sec        = 86400;                                          // 0 = disable expiration
 
     // KV budget scheduling (unified KV only): admission by cell reservation, parking of idle sessions
     bool    kv_budget           = true;  // admit tasks by KV reservation, park idle slots instead of failing
@@ -1253,6 +1257,9 @@ struct common_state_buf {
     bool alloc(common_state_arena * arena, size_t n);
     void clear();
 
+    // the memory of the bytes, in order (valid after wait())
+    std::vector<llama_state_chunk> views() const;
+
     // start saving / restoring a sequence (after alloc() / on a filled buffer), false on failure
     // flags as in llama_state_seq_get_data_ext, plus LLAMA_STATE_SEQ_FLAGS_ORDERED
     bool get_async(llama_context * ctx, llama_seq_id seq_id, llama_state_seq_flags flags);
@@ -1273,8 +1280,6 @@ private:
 
     mutable llama_state_xfer_t xfer      = nullptr;
     mutable int64_t            xfer_t_us = -1;
-
-    std::vector<llama_state_chunk> views() const;
 };
 
 struct common_prompt_checkpoint {

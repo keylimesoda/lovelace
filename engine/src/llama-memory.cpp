@@ -1,5 +1,7 @@
 #include "llama-memory.h"
 
+#include <stdexcept>
+
 llama_memory_status llama_memory_status_combine(llama_memory_status s0, llama_memory_status s1) {
     bool has_update = false;
 
@@ -56,4 +58,12 @@ bool llama_memory_status_is_fail(llama_memory_status status) {
     }
 
     return false;
+}
+
+void llama_memory_i::state_write_delta(llama_io_write_i & /*io*/, llama_seq_id /*seq_id*/, llama_pos /*pos_min*/) const {
+    throw std::runtime_error("append-only state deltas are unsupported by this memory");
+}
+
+void llama_memory_i::state_read_delta(llama_io_read_i & /*io*/, llama_seq_id /*seq_id*/, llama_pos /*pos_min*/, llama_pos /*pos_end*/) {
+    throw std::runtime_error("append-only state deltas are unsupported by this memory");
 }

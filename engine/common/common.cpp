@@ -2366,7 +2366,8 @@ bool common_state_buf::alloc(common_state_arena * arena, size_t n) {
         return true;
     }
 
-    if (arena && arena->take(arena->n_chunks(n), chunks)) {
+    // a state of a few bytes (e.g. the empty partial state of a full-attention cache) would waste a whole chunk
+    if (arena && n >= 4096 && arena->take(arena->n_chunks(n), chunks)) {
         this->arena = arena;
     } else {
         try {

@@ -166,6 +166,10 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `-cms, --checkpoint-min-step N` | minimum spacing between context checkpoints in tokens (default: 8192, 0 = no minimum)<br/>(env: LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT) |
 | `--ctx-checkpoints-recent N` | context checkpoints at the start of each of the last N messages of a prompt, regardless of --checkpoint-min-step, so that a client rewriting recent history (reasoning stripping, tool-result folding) resumes from the message below the edit; kept in preference to older checkpoints (default: 3, 0 = off)<br/>(env: LLAMA_ARG_CTX_CHECKPOINTS_RECENT) |
 | `-cram, --cache-ram N` | set the maximum cache size in MiB (default: 8192, -1 - no limit, 0 - disable)[(more info)](https://github.com/ggml-org/llama.cpp/pull/16391)<br/>(env: LLAMA_ARG_CACHE_RAM) |
+| `--session-ram MiB` | pinned host RAM for the per-agent session store; replaces the prompt cache and `--cache-ram` (default: 0, disabled; needs `--kv-unified` and `--kv-budget`)<br/>(env: LLAMA_ARG_SESSION_RAM) |
+| `--session-dir PATH` | durable NVMe directory for session mirrors (default: `~/.local/state/lovelace/sessions`; `~` expands to `$HOME`)<br/>(env: LLAMA_ARG_SESSION_DIR) |
+| `--session-disk-max GiB` | maximum bytes used by the NVMe tier (default: 0, unlimited; when exceeded, least-recently-used disk sessions are deleted and logged)<br/>(env: LLAMA_ARG_SESSION_DISK_MAX) |
+| `--session-ttl SEC` | delete sessions inactive for this many seconds (default: 86400; 0 disables TTL expiry)<br/>(env: LLAMA_ARG_SESSION_TTL) |
 | `-kvu, --kv-unified, -no-kvu, --no-kv-unified` | use single unified KV buffer shared across all sequences (default: enabled if number of slots is auto)<br/>(env: LLAMA_ARG_KV_UNIFIED) |
 | `--cache-idle-slots, --no-cache-idle-slots` | save idle slots to the prompt cache on new task, and clear them when using unified KV (default: enabled, requires cache-ram; superseded by `--kv-budget`, which parks idle slots on demand)<br/>(env: LLAMA_ARG_CACHE_IDLE_SLOTS) |
 | `--kv-budget, --no-kv-budget` | with --kv-unified: admit a task only when its KV reservation fits, park idle slots to the prompt cache to make room and queue tasks FIFO instead of failing on a full cache (default: enabled)<br/>(env: LLAMA_ARG_KV_BUDGET) |
@@ -369,6 +373,16 @@ llama-server -m Qwen3.8-27B-IQ4_XS-3.84bpw.gguf -ngl 99 -fa on -np 6 --kv-unifie
 ```
 
 Size `--cache-ram` for every session that is not resident. That is about 1.8 GB of KV per 100k tokens at q4_0, plus 151 MB of recurrent state and its context checkpoints.
+
+### Per-agent session store (`--session-ram`)
+
+Every agent keeps its own full context; none is lost to eviction (design: `docs/design/session-store.md`).
+
+- **Identity.** A prompt continues the session whose tokens share its longest prefix, if that prefix covers the prompt's first user message (siblings share only the system prompt and tools). Otherwise it starts a new session. No client change is needed.
+- **Write-back mirror.** After each request, the new attention KV cells of the target and draft contexts are appended to the session's mirror in the pinned arena, and the recurrent state is snapshotted, asynchronously (`llama_state_seq_get_delta_data_async`). A rollback (the client rewrote recent history) truncates the mirror. Parking a session then only drops its cells; its context checkpoints move to the mirror.
+- **Restore.** A parked session is copied back cell by cell (coalesced per layer and run, on the copy stream) with its recurrent snapshot, and only the new part of the prompt is prefilled. While the head of the queue waits for KV cells, its session is restored ahead into an empty slot when the pool has room (prefetch).
+- **Tiers.** When the arena runs short, the least recently used parked mirrors are written to `--session-dir` on a worker thread (atomic, fsynced files) and read back before use; the sessions of queued requests are read first. A session is deleted only after `--session-ttl` of inactivity or when `--session-disk-max` is exceeded, and that is logged. The files survive a restart.
+- **Observability.** `GET /telemetry` has `memory.sessions`: arena, RAM and disk usage, demotions, promotions, prefetch hits, and per session its tier, resident cells, mirror bytes, sync time and age, restores (bytes, device and wall ms). The `request_done` records carry `session`: id, tier at admission (`gpu`, `ram`, `disk`, `new`), restore bytes and ms, the time the request waited for the restore, and whether it was prefetched.
 
 ### Multimodal support
 

@@ -4,6 +4,8 @@
 #include "llama-model.h"
 #include "llama-context.h"
 
+#include <stdexcept>
+
 //
 // llama_memory_hybrid
 //
@@ -213,6 +215,14 @@ void llama_memory_hybrid::state_read(llama_io_read_i & io, llama_seq_id seq_id, 
 
         throw;
     }
+}
+
+void llama_memory_hybrid::state_write_delta(llama_io_write_i & io, llama_seq_id seq_id, llama_pos pos_min) const {
+    mem_attn->state_write_delta(io, seq_id, pos_min);
+}
+
+void llama_memory_hybrid::state_read_delta(llama_io_read_i & io, llama_seq_id seq_id, llama_pos pos_min, llama_pos pos_end) {
+    mem_attn->state_read_delta(io, seq_id, pos_min, pos_end);
 }
 
 llama_kv_cache * llama_memory_hybrid::get_mem_attn() const {

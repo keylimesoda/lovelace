@@ -124,6 +124,12 @@ struct llama_memory_i {
 
     virtual void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const = 0;
     virtual void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) = 0;
+
+    // append-only attention KV deltas of one sequence (see llama_state_seq_get/set_delta_data_async)
+    // the attention cells at positions >= pos_min; unsupported memories throw
+    virtual void state_write_delta(llama_io_write_i & io, llama_seq_id seq_id, llama_pos pos_min) const;
+    // appends the cells of a delta at positions < pos_end, the sequence must hold none at positions >= pos_min
+    virtual void state_read_delta(llama_io_read_i & io, llama_seq_id seq_id, llama_pos pos_min, llama_pos pos_end);
 };
 
 using llama_memory_ptr = std::unique_ptr<llama_memory_i>;

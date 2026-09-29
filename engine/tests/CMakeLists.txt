@@ -266,6 +266,8 @@ llama_build(test-chat-analysis.cpp)
 llama_build_and_test(test-log.cpp)
 llama_build_and_test(test-server-sched.cpp)
 target_include_directories(test-server-sched PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
+llama_build_and_test(test-server-session-store.cpp ${PROJECT_SOURCE_DIR}/tools/server/server-session-store.cpp)
+target_include_directories(test-server-session-store PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
 llama_build_and_test(
     test-peg-parser.cpp
     peg-parser/simple-tokenize.cpp

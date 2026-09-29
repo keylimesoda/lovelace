@@ -161,6 +161,7 @@ struct server_obs_record {
     // request info
     int32_t      id_task    = -1;
     int32_t      id_slot    = -1;
+    uint64_t     session_id = 0;
     int32_t      id_parent  = -1;
     const char * task_type  = "completion";
     const char * endpoint   = "native";
@@ -171,6 +172,13 @@ struct server_obs_record {
     double       queue_wait_ms = -1.0; // < 0 = unknown
     const char * wait_reason   = "none"; // KV budget: "none", "slot" or "kv"
     int32_t      n_unparked_tokens = 0; // tokens restored from host memory at launch
+
+    // session store (--session-ram): where the session (session_id) was at admission (gpu/ram/disk/new, nullptr = none)
+    const char * session_tier    = nullptr;
+    size_t       restore_bytes   = 0;     // bytes restored from its mirror for the request
+    double       restore_ms      = 0.0;   // device time of those copies
+    double       restore_wait_ms = 0.0;   // time the request waited for them after admission (0 = prefetched)
+    bool         prefetch_hit    = false; // restored while the request was queued
 
     // done
     const char * finish_reason = "eos";
