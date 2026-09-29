@@ -151,3 +151,43 @@ struct server_kv_budget {
         return empty >= 0 ? empty : lru;
     }
 };
+
+// when the server loop retries the admission of waiting work
+//
+// An attempt that had to wait is retried after an event that may have made the head admissible (mark()): a new or
+// cancelled task, a slot release, a park, the completion of any slot transfer (a park frees cells, a mirror sync or
+// a session restore makes an idle slot parkable) and a completed session store job (a demotion frees arena room, a
+// promotion brings a mirror back). With no slot running, the server loop waits for the next task, so an event without
+// a mark() would stall the waiting work until an unrelated request arrives; as a backstop, while work waits, the loop
+// runs again at the latest backstop_us after the last attempt, which then retries regardless.
+struct server_sched_gate {
+    int64_t backstop_us = 1000000;
+
+    bool    dirty    = false;
+    int64_t t_try_us = 0; // time of the last attempt
+
+    void mark() {
+        dirty = true;
+    }
+
+    // whether to attempt admission now; waiting: work is queued or preempted
+    bool take(int64_t t_now_us, bool waiting) {
+        if (!dirty && !(waiting && t_now_us - t_try_us >= backstop_us)) {
+            return false;
+        }
+        dirty    = false;
+        t_try_us = t_now_us;
+        return true;
+    }
+
+    // how long the loop may wait for a new task before the next attempt is due, in ms; -1: none is due
+    int64_t wait_ms(int64_t t_now_us, bool waiting) const {
+        if (!waiting) {
+            return -1;
+        }
+        if (dirty) {
+            return 0;
+        }
+        return std::max<int64_t>(0, (t_try_us + backstop_us - t_now_us + 999) / 1000);
+    }
+};

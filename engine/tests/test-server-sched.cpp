@@ -182,6 +182,30 @@ static void test_pick_slot() {
     }
 }
 
+static void test_gate() {
+    server_sched_gate g;
+    g.backstop_us = 1000000;
+
+    // an event retries once
+    g.mark();
+    CHECK(g.take(5000000, true));
+    CHECK(!g.take(5000001, true));
+
+    // while work waits, the loop sleeps until the backstop is due, which then retries without an event
+    CHECK(g.wait_ms(5500000, true) == 500);
+    CHECK(!g.take(5999999, true));
+    CHECK(g.wait_ms(6000000, true) == 0);
+    CHECK(g.take(6000000, true));
+
+    // nothing waits: no retry is due, the loop may wait for the next task
+    CHECK(g.wait_ms(9000000, false) == -1);
+    CHECK(!g.take(9000000, false));
+
+    // an event while work waits is due right away
+    g.mark();
+    CHECK(g.wait_ms(6000001, true) == 0);
+}
+
 int main() {
     test_reservation();
     test_committed();
@@ -191,6 +215,7 @@ int main() {
     test_plan_target_cells_are_replaced();
     test_plan_lone_request_uses_everything();
     test_pick_slot();
+    test_gate();
 
     if (n_fail > 0) {
         fprintf(stderr, "%d check(s) failed\n", n_fail);

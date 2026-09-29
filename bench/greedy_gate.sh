@@ -25,7 +25,8 @@ for side in A B; do
     BIN=$1 OUT=$2 SIDE=$3 DEPTHS=$4 HERE=$5; shift 5
     PORT=18500 C=greedy-gate
     docker rm -f $C >/dev/null 2>&1
-    docker run -d --name $C --gpus all --network host --ulimit memlock=-1:-1 -v "$BIN:/e" -v "$HOME/models:/models:ro" -v "$HERE/../deploy/draft-vocab:/draft-vocab:ro" \
+    docker run -d --name $C --gpus all --network host --ulimit memlock=-1:-1 --memory ${ENGINE_MEM:-34g} --memory-swap ${ENGINE_MEM:-34g} \
+      -v "$BIN:/e" -v "$HOME/models:/models:ro" -v "$HERE/../deploy/draft-vocab:/draft-vocab:ro" \
       lovelace-engine-runtime:cuda13.1 /e/llama-server -m /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf -ngl 99 \
       -np 6 --kv-unified -c 327680 -ctk q5_0 -ctv q5_0 $SPEC_ARGS \
       -fa on -ub 1024 -b 2048 --jinja --reasoning-preserve -ctxcp 8 --kv-budget --prefill-chunk-gen 1024 \
