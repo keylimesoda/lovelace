@@ -1,0 +1,13 @@
+== test-backend-ops -o FLASH_ATTN_EXT
+Backend 1/2: CUDA0
+  4052/4052 tests passed
+  Backend CUDA0: [1;32mOK[0m
+Backend 2/2: CPU
+2/2 backends passed
+== test-gdn-replay
+CUDA0: S=128 H=4/12: OK
+CPU: S=32 H=2/6: OK
+CPU: S=128 H=4/4: OK
+CPU: S=128 H=4/12: OK
+all ReplaySSM checks passed
+exit 0

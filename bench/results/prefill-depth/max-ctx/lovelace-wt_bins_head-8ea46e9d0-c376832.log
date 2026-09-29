@@ -1,0 +1,35 @@
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.1.2
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+0.00.054.241 I srv  llama_server: initializing ...
+0.00.054.254 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.054.494 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.056.614 I srv    load_model: loading model '/models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf'
+0.00.598.738 W common_fit_params: failed to fit params to free device memory: n_gpu_layers already set by user to 99, abort
+0.01.749.041 W llama_context: n_ctx_seq (376832) > n_ctx_train (262144) -- possible training context overflow
+0.01.890.474 I cmn          init: llama threadpool init, n_threads = 16
+0.01.938.067 I common_speculative_init_result: creating MTP draft context against the target model '/models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf'
+0.01.938.091 W llama_context: n_ctx_seq (376832) > n_ctx_train (262144) -- possible training context overflow
+0.01.947.275 W srv    load_model: the slot context (376832) exceeds the training context of the model (262144) - capping
+0.01.947.282 I srv    load_model: initializing, n_slots = 6, n_ctx_slot = 262144, kv_unified = 'true'
+0.05.865.033 I srv    load_model: session store: 30720 MiB of pinned host memory in 2048 chunks of 15360 KiB (3.9 s)
+0.05.865.036 I srv    load_model: session store: --cache-ram is superseded by --session-ram
+0.05.865.185 I srv    load_model: session store: directory '/sessions', disk max unlimited, TTL 86400 s, 0 sessions on disk
+0.05.865.190 I srv    load_model: KV budget: 376832 cells shared by 6 slots, reserving up to 8192 generated tokens per request, headroom 256 cells
+0.05.865.190 I srv    load_model: KV budget: --cache-idle-slots is superseded, idle slots are parked on demand
+0.05.888.581 I srv  server_obser: telemetry: NVML attached to NVIDIA GeForce RTX 4090, energy counter available
+0.05.888.953 I srv      obs_init: telemetry enabled: GET /telemetry, GET /events, request log: /tmp/requests.jsonl
+0.05.888.989 I srv  llama_server: model loaded
+0.05.888.994 I srv  llama_server: listening on http://127.0.0.1:18400

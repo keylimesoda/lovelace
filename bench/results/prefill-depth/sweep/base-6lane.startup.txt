@@ -1,0 +1,3 @@
+0.03.059.400 I srv    load_model: initializing, n_slots = 6, n_ctx_slot = 262144, kv_unified = 'true'
+0.06.604.552 I srv    load_model: KV budget: 327680 cells shared by 6 slots, reserving up to 8192 generated tokens per request, headroom 256 cells
+0.06.604.552 I srv    load_model: KV budget: --cache-idle-slots is superseded, idle slots are parked on demand

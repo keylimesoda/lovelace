@@ -1,0 +1,21 @@
+==PROF== Connected to process 99 (/e/test-backend-ops)
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24100 MiB):
+  Device 0: NVIDIA GeForce RTX 4090, compute capability 8.9, VMM: yes, VRAM: 24100 MiB
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+==PROF== Profiling "flash_attn_ext_mma_q_pf": 0%.
+==WARNING== Launching the workload is taking more time than expected.If this continues to hang, terminate the profile and re-try by profiling the complete graph launch using '--graph-profiling graph'. See https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html#replay for more details.
+...50%....100% - 20 passes
+Testing 2 devices
+
+Backend 1/2: CUDA0
+  Device description: NVIDIA GeForce RTX 4090
+  Device memory: 24100 MB (22979 MB free)
+
+  FLASH_ATTN_EXT(hsk=256,hsv=256,nh=4,nr23=[6,1],kv=131072,nb=1024,mask=1,sinks=0,max_bias=0.000000,logit_softcap=0.000000,prec=f32,type_K=q5_0,type_V=q5_0,permute=[0,1,2,3],kv_view=1,v_is_view_of_k=0,n_kv_max=0,n_seq=1,causal=1):                     2 runs - 4286003.00 us/run -   3.30 TFLOP/run - [1;34m769.61 GFLOPS[0m
+  Backend CUDA0: [1;32mOK[0m
+Backend 2/2: CPU
+  Skipping
+2/2 backends passed
+[1;32mOK[0m
+==PROF== Disconnected from process 99
+==PROF== Report: /out/pf-v1-q5_0-128k.ncu-rep
