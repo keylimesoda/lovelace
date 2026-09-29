@@ -1,39 +1,87 @@
 # lovelace
 
-Lovelace is a llama.cpp-based serving engine for Qwen3.8-27B, targeted at a single NVIDIA RTX 4090 (sm_89) with an AMD Ryzen 9 9950X host.
+A llama.cpp-based serving engine for **Qwen3.8-27B** on one NVIDIA RTX 4090 (24 GB, sm_89) with a Ryzen 9 9950X
+host. It is built for 4–6 concurrent coding agents, each with its own context of up to 262,144 tokens.
+
+## Configuration (decided by measurement)
+
+| Choice | Value | Evidence |
+|---|---|---|
+| Weights | ShapeLearn `Qwen3.8-27B-IQ4_XS-3.84bpw.gguf` (embedded MTP head) | lowest KL vs Q8_0 of the candidates that fit (docs/quality-kld.md) |
+| KV cache | q5_0 / q5_0 | KL 0.00155 vs f16 KV through 250k, ~10% of the weight-quant error |
+| Speculation | MTP, 3 draft tokens | acceptance 0.54–0.57 on replayed agent traffic (DFlash2: 0.27) |
+| GPU KV pool | 327,680 cells shared by 6 slots | largest fit, with `-ubd 32` draft ubatch |
+| Sessions | every agent keeps its full context; host mirror in pinned RAM (30 GiB), NVMe overflow | docs/design/session-store.md |
 
 ## Architecture
 
-The `engine/` directory is a llama.cpp subtree with ReplaySSM rollback for recurrent state, a KV-budget scheduler that parks sessions in pinned host memory, sm_89 CUDA kernels, and telemetry, request logging, and a web dashboard. `bench/replay/capture_proxy.py` is the front door for client traffic and stores captures separately from the engine's request log.
+`engine/` is a llama.cpp subtree (upstream b11223) with:
 
-## Measured quality
+- **ReplaySSM rollback** for the Gated-DeltaNet layers: speculative verify records inputs and folds only the
+  accepted tokens, instead of snapshotting the 151 MB recurrent state per draft token (7.2 GB → 1.06 GB at 6 slots).
+- **KV-budget scheduler**: admits requests against real KV capacity (no "context size exceeded"), interleaves
+  prefill chunks with decode, preempts at token boundaries, and places checkpoints at message boundaries.
+- **Per-agent session store**: sessions are identified by prompt prefix. Each one has an append-only mirror of its
+  KV cells plus its recurrent state in pinned host memory, synced after every request (parking is free),
+  restored at ~25 GB/s, and demoted to NVMe instead of ever being dropped.
+- **sm_89 kernels**: FlashAttention that reads quantized KV directly for decode and verify batches (int8 tensor-core
+  QK), IQ-quant matmul tuning for 1–24 rows, and fused DeltaNet input/state/norm chains.
+- **Observability**: `/telemetry`, an `/events` SSE stream, a JSONL request log, NVML board-energy attribution,
+  per-session tier and restore stats, and the dashboard (`apps/web`) served on the API port.
 
-The current `docs/quality-kld.md` results use sparse top-64 KL over recorded agent replies. On the weight study, IQ4_XS-3.84bpw weights against the Q8_0 reference had mean KL 0.0163, median KL 0.0011, 95.64% top-1 agreement, and ΔNLL +0.0096. On the KV study, q5_0/q5_0 used 22 KB/token and measured mean KL 0.00155, 98.63% top-1 agreement, ΔNLL +0.00101, and KL 0.00170 at 250k tokens. The quality profile uses q8_0/q5_0 KV; that row measured mean KL 0.00117 and 98.89% top-1 agreement.
+`bench/replay/capture_proxy.py` fronts the engine on :8080 and records request bodies for future replay and eval.
 
-## Quick start
+## Measured results (RTX 4090)
 
-The serving image expects the built engine at `engine/build-sm89/bin`, the dashboard at `apps/web/dist`, and the base image `lovelace-engine-runtime:cuda13.1`. Models are mounted from `~/models`; they are not included in the image. Request logs and proxy captures go to `~/.local/state/lovelace` (override with `LOVELACE_STATE`).
+llama-bench, q5_0 KV (bench/results/main-gate/REPORT.md), stock llama.cpp b11223 → lovelace:
 
-Build the engine, dashboard and serving image, then start a profile:
+| test | stock | lovelace |
+|---|---:|---:|
+| decode, depth 0 | 54.2 t/s | 60.2 t/s |
+| decode @ 64k | 39.7 t/s | 54.3 t/s |
+| 4-token verify @ 64k | 116 t/s | 185.8 t/s |
+| 4-token verify @ 196k | 70 t/s (q4_0) | 159.3 t/s |
+
+Replayed OMP agent traffic, 6 agents, 20 min (bench/results/main-327k, bench/results/session-store):
+
+| workload | errors | steady aggregate | TTFT p50 / p90 | cache hit |
+|---|---:|---:|---:|---:|
+| stock llama.cpp, 6 agents ≥60k | most requests failed (context exceeded) | – | – | – |
+| lovelace, real depth (median ~68k) | 0 | 76.8 t/s | 18.4 / 41.4 s | 0.93 |
+| lovelace, 6 sessions of ~150k each (≈3x the GPU pool) | 0, no session lost | 25.0 t/s | queue-bound | restores from mirrors |
+
+## Operations
 
 ```sh
-deploy/build-engine.sh llama-server
-(cd apps/web && bun install && bun run build)
+deploy/build-engine.sh llama-server                       # CUDA 13.1 devel image, sm_89
+(cd apps/web && bun install && bun run build)             # dashboard
 docker build -f deploy/serve.Dockerfile -t lovelace-serve:latest .
-deploy/serve.sh balanced
+deploy/serve.sh balanced                                  # engine :8090, capture proxy :8080
+deploy/serve.sh status | logs [engine|proxy] | stop
 ```
 
-Available profiles are `balanced` (q5_0/q5_0 KV), `quality` (q8_0/q5_0 KV), and `vision` (balanced KV plus the mmproj model; MTP works with images). `CTX` overrides the shared GPU KV pool size; defaults are the largest measured fits: 327680 (balanced), 262144 (quality), 294912 (vision). Use `deploy/serve.sh stop`, `status`, or `logs [engine|proxy]` to manage or inspect the services. `deploy/compose.yaml` is an alternative Compose configuration for the balanced profile; run `docker compose -f deploy/compose.yaml up -d` from the repository root.
+Profiles: `balanced` (q5_0 KV, 327,680 cells), `quality` (q8_0/q5_0 KV, 262,144), `vision` (balanced plus
+`--mmproj`, 294,912). `CTX=` overrides the pool. State lives in `~/.local/state/lovelace` (`log/` request log,
+`lib/captures/` proxy captures, `lib/sessions/` spilled sessions). The dashboard is at http://127.0.0.1:8080/.
+
+GPU work while developing: every GPU job goes through `deploy/gpu-lock.sh` (FIFO queue; it holds until GPU memory
+is idle again). `deploy/gpu-watchdog.sh` flags a queue stalled on an idle GPU. Stop production first
+(`deploy/serve.sh stop`).
 
 ## Benchmarks and evaluation
 
-- `bench/replay/` replays recorded multi-agent traffic against the OpenAI-compatible API. See its README for extraction and replay commands.
-- `bench/bakeoff/` runs and analyzes engine comparison matrices.
-- `eval/kld/` measures quantization divergence on recorded reply windows. See its README for inputs and run instructions.
+- `bench/replay/`: multi-agent replay of recorded OMP sessions (README there). `bench/run_replay.sh` runs one replay in
+  a single GPU-lock hold; `bench/bakeoff/analyze.py` summarizes the steady state.
+- `eval/kld/`: sparse top-k KL divergence at 32k–250k depth on recorded agent replies (weights and KV types).
+
+## Known follow-ups
+
+- Session restore copies take 70–300 ms but 1.1–1.8 s wall, and prefetch rarely fires (docs/design/session-store.md).
+- Aggregate throughput saturates at ~80 t/s with 5–6 agents at ~68k depth: next target is batched-verify efficiency.
+- Parked capacity option: large-batch quantized FA without the f16 copy (branch `feat/fattn-prefill`, +~10% pool,
+  −11–15% prefill at depth).
 
 ## Upstream
-
-Pull a tagged llama.cpp release into the subtree with:
 
 ```sh
 git subtree pull --prefix engine llama-upstream <tag> --squash
