@@ -1,0 +1,105 @@
+{
+ "label": "smoke-3a-60k",
+ "base_url": "http://127.0.0.1:18000/v1",
+ "model": "qwen3.8-27b",
+ "config": {
+  "base_url": "http://127.0.0.1:18000/v1",
+  "model": "qwen3.8-27b",
+  "agents": 3,
+  "duration": 240.0,
+  "max_turns": null,
+  "no_drain": true,
+  "think_scale": 0.25,
+  "max_think": 20.0,
+  "stagger": 2.0,
+  "output_tokens": "recorded",
+  "start_turn_min_depth": 60000,
+  "max_depth": 0,
+  "temperature": 1.0,
+  "reasoning_effort": null,
+  "request_timeout": 1800.0,
+  "warmup": true,
+  "warmup_timeout": 3600.0,
+  "seed": 0,
+  "sessions": null,
+  "label": "smoke-3a-60k",
+  "extra": {
+   "top_p": 0.95,
+   "top_k": 20
+  }
+ },
+ "started_at": "2026-09-28T23:33:31-07:00",
+ "wall_s": 240.003,
+ "active_span_s": 239.997,
+ "total_turns": 34,
+ "by_status": {
+  "ok": 31,
+  "cancelled": 3
+ },
+ "errors": 0,
+ "warmup": {
+  "turns": 3,
+  "errors": 0,
+  "wall_s": 132.943
+ },
+ "completion_tokens": 19351,
+ "agg_output_tps": 80.63,
+ "mean_decode_tps_per_agent": 43.357,
+ "decode_tps": {
+  "p10": 29.193,
+  "p50": 46.689,
+  "p90": 63.283
+ },
+ "ttft_s": {
+  "p50": 3.0285,
+  "p90": 6.0327,
+  "p99": 16.6197,
+  "max": 16.6197
+ },
+ "e2e_s": {
+  "p50": 9.4689,
+  "p90": 51.4736
+ },
+ "prompt_depth_tokens": {
+  "p50": 63103,
+  "p90": 75472,
+  "max": 85233
+ },
+ "prompt_tokens_total": 2033758,
+ "cache_hit_ratio": 0.9684,
+ "cache_reported_requests": 31,
+ "prefill_tps_p50": 558.9,
+ "draft_acceptance": 0.5171,
+ "per_agent": {
+  "0": {
+   "turns": 16,
+   "ok": 15,
+   "completion_tokens": 6870,
+   "mean_decode_tps": 51.65,
+   "ttft_p50_s": 1.9954,
+   "sessions": [
+    "2026-09-26T09-54-32_01a0dd23"
+   ]
+  },
+  "1": {
+   "turns": 13,
+   "ok": 12,
+   "completion_tokens": 7227,
+   "mean_decode_tps": 47.38,
+   "ttft_p50_s": 3.0285,
+   "sessions": [
+    "2026-09-26T09-53-08_01a0dd22"
+   ]
+  },
+  "2": {
+   "turns": 5,
+   "ok": 4,
+   "completion_tokens": 5254,
+   "mean_decode_tps": 31.04,
+   "ttft_p50_s": 4.2407,
+   "sessions": [
+    "2026-09-25T05-26-18_01a0d707"
+   ]
+  }
+ }
+}
