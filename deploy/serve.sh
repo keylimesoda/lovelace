@@ -74,8 +74,11 @@ start_service() {
         fi
     done
 
+    # hard memory cap: pinned session arena (--session-ram) + host compute buffers + runtime; an overrun kills the
+    # engine (restarted by docker, sessions survive on disk), never the desktop
     docker run --detach --init --name lovelace --label com.lovelace.managed=serve \
         --restart unless-stopped --gpus all --network host --user 1000:1000 \
+        --memory "${ENGINE_MEM:-34g}" --memory-swap "${ENGINE_MEM:-34g}" --ulimit memlock=-1:-1 \
         --mount "type=bind,src=$HOME/models,dst=/models,readonly" \
         --mount "type=bind,src=$state/log,dst=/var/log/lovelace" \
         --mount "type=bind,src=$state/lib,dst=/var/lib/lovelace" \

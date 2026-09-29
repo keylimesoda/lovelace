@@ -8,6 +8,17 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 OUT=$(realpath -m "${1:?OUT_DIR}")
 export BIN CTX SERVER_ARGS="--spec-draft-vocab /draft-vocab/qwen3.8-27b.txt"
 mkdir -p "$OUT"
+# RAM sampler and guard: log host MemAvailable and the engine container's usage every 10 s; if the host drops below
+# 4 GiB available, stop the engine container so the desktop never gets OOM-killed (the run is then marked FAILED)
+( while :; do
+    avail=$(awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo)
+    used=$(docker stats --no-stream --format '{{.MemUsage}}' h2h 2>/dev/null || true)
+    echo "$(date +%T) avail_gib=$avail h2h=${used:-none}" >> "$OUT/mem.log"
+    if (( avail < 4 )); then echo "$(date +%T) GUARD: stopping h2h" >> "$OUT/mem.log"; docker rm -f h2h >/dev/null 2>&1; fi
+    sleep 10
+  done ) &
+SAMPLER=$!
+trap 'kill $SAMPLER 2>/dev/null' EXIT
 run() { # LABEL LANES MODE [WARMUP]
     local label=$1 lanes=$2 mode=$3 warm=${4:-0}
     if [[ -s $OUT/$label.sweep.out || -s $OUT/$label/requests.jsonl ]]; then echo "skip $label"; return; fi

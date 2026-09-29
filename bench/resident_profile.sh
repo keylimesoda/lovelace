@@ -27,19 +27,19 @@ for spec in "${SPECS[@]}"; do
   OUT=$1 BIN=$2 HERE=$3 L=$4 D=$5; shift 5
   PORT=18410 C=resprof
   docker rm -f $C >/dev/null 2>&1
-  rm -rf /tmp/resprof-sessions; mkdir -p /tmp/resprof-sessions
+  SD=$HOME/.cache/lovelace-bench/resprof-sessions; rm -rf "$SD"; mkdir -p "$SD"   # NVMe, never /tmp (tmpfs is RAM)
   LAUNCH=(); START=true; STOP=true
   if [ "$NSYS" = 1 ]; then
     LAUNCH=(nsys launch --session-new=$C --trace=cuda,osrt --cuda-graph-trace=node)
     START="docker exec $C nsys start --session=$C --sample=none --cpuctxsw=none --output=/out/$L --force-overwrite=true >/dev/null"
     STOP="docker exec $C nsys stop --session=$C >/dev/null"
   fi
-  docker run -d --name $C --gpus all --network host --ulimit memlock=-1:-1 -e LD_LIBRARY_PATH=/e \
-    -v "$BIN:/e" -v "$HOME/models:/models:ro" -v "$OUT:/out" -v /tmp/resprof-sessions:/sessions \
+  docker run -d --name $C --gpus all --network host --ulimit memlock=-1:-1 --memory ${ENGINE_MEM:-34g} --memory-swap ${ENGINE_MEM:-34g} -e LD_LIBRARY_PATH=/e \
+    -v "$BIN:/e" -v "$HOME/models:/models:ro" -v "$OUT:/out" -v "$SD:/sessions" \
     lovelace-nsys:cuda13.1 "${LAUNCH[@]}" \
     /e/llama-server -m /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf -ngl 99 -np 6 --kv-unified -c $CTX \
       -ctk q5_0 -ctv q5_0 --spec-type draft-mtp --spec-draft-n-max 3 -ctkd q5_0 -ctvd q5_0 -fa on -ub 1024 -b 2048 \
-      --jinja --reasoning-preserve --session-ram 30720 --session-dir /sessions -ctxcp 8 --kv-budget --prefill-chunk-gen 1024 \
+      --jinja --reasoning-preserve --session-ram ${SESSION_RAM:-24576} --session-dir /sessions -ctxcp 8 --kv-budget --prefill-chunk-gen 1024 \
       --alias qwen3.8-27b --telemetry --metrics --slots --host 127.0.0.1 --port $PORT "$@" >/dev/null
   ok=0
   for i in $(seq 300); do

@@ -16,7 +16,7 @@
 -b 2048
 --jinja
 --reasoning-preserve
---session-ram 30720
+--session-ram 24576
 --session-dir /var/lib/lovelace/sessions
 -ctxcp 8
 --kv-budget

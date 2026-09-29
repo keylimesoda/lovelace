@@ -18,11 +18,12 @@ exec "$HERE/../deploy/gpu-lock.sh" bash -c '
   BIN=$1 OUT=$2 LABEL=$3 CTX=$4 AGENTS=$5 MIND=$6 TURNS=$7 HERE=$8 BUSY=$9; shift 9
   PORT=18400
   docker rm -f restore-lat >/dev/null 2>&1
-  docker run -d --name restore-lat --gpus all --network host --ulimit memlock=-1:-1 -v "$BIN:/e" -v "$HOME/models:/models:ro" \
+  docker run -d --name restore-lat --gpus all --network host --ulimit memlock=-1:-1 --memory ${ENGINE_MEM:-34g} --memory-swap ${ENGINE_MEM:-34g} \
+    -v "$BIN:/e" -v "$HOME/models:/models:ro" \
     -v "$OUT/$LABEL:/out" lovelace-engine-runtime:cuda13.1 /e/llama-server \
     -m /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf -ngl 99 -np $((AGENTS + BUSY)) --kv-unified -c "$CTX" -ctk q5_0 -ctv q5_0 \
     --spec-type draft-mtp --spec-draft-n-max 3 -ctkd q5_0 -ctvd q5_0 -fa on -ub 1024 -b 2048 --jinja --reasoning-preserve \
-    --session-ram 30720 --session-dir /tmp/sessions -ctxcp 8 --kv-budget --prefill-chunk-gen 1024 \
+    --session-ram ${SESSION_RAM:-24576} --session-dir /tmp/sessions -ctxcp 8 --kv-budget --prefill-chunk-gen 1024 \
     --alias qwen3.8-27b --telemetry --request-log-jsonl /out/requests.server.jsonl --host 127.0.0.1 --port $PORT "$@" >/dev/null
   for i in $(seq 180); do curl -sf 127.0.0.1:$PORT/health >/dev/null && break; sleep 2; done
   (cd "$HERE/replay" && uv run python restore_latency.py --base-url http://127.0.0.1:$PORT/v1 --agents "$AGENTS" \

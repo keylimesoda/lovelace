@@ -7,6 +7,10 @@ services:
     user: "1000:1000"
     gpus: all
     network_mode: host
+    mem_limit: 34g
+    memswap_limit: 34g
+    ulimits:
+      memlock: -1
     labels:
       com.lovelace.managed: serve
     volumes:
@@ -52,7 +56,7 @@ services:
       - --jinja
       - --reasoning-preserve
       - --session-ram
-      - "30720"
+      - "24576"
       - --session-dir
       - /var/lib/lovelace/sessions
       - -ctxcp

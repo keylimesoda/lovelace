@@ -18,12 +18,15 @@ set -uo pipefail
 ENGINE=$1 LANES=$2 MODE=$3 OUT=$4 LABEL=$5 HERE=$6 BIN=$7
 PORT=18300
 start_lovelace() {
-  mkdir -p /tmp/h2h-sessions
-  docker run -d --name h2h --gpus all --network host --ulimit memlock=-1:-1 -v "$BIN:/e" -v "$HOME/models:/models:ro" \
-    -v /tmp/h2h-sessions:/sessions -v "$HERE/../deploy/draft-vocab:/draft-vocab:ro" lovelace-engine-runtime:cuda13.1 /e/llama-server \
+  # session disk tier on the NVMe (never /tmp: tmpfs is RAM), wiped per run; hard memory cap so an overrun kills
+  # the engine, not the desktop
+  SD=$HOME/.cache/lovelace-bench/h2h-sessions; rm -rf "$SD"; mkdir -p "$SD"
+  docker run -d --name h2h --gpus all --network host --ulimit memlock=-1:-1 --memory ${ENGINE_MEM:-34g} --memory-swap ${ENGINE_MEM:-34g} \
+    -v "$BIN:/e" -v "$HOME/models:/models:ro" \
+    -v "$SD:/sessions" -v "$HERE/../deploy/draft-vocab:/draft-vocab:ro" lovelace-engine-runtime:cuda13.1 /e/llama-server \
     -m /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf -ngl 99 -np "$LANES" --kv-unified -c "${CTX:-327680}" -ctk q5_0 -ctv q5_0 \
     --spec-type draft-mtp --spec-draft-n-max 3 -ctkd q5_0 -ctvd q5_0 -fa on -ub 1024 -b 2048 --jinja --reasoning-preserve \
-    --session-ram 30720 --session-dir /sessions -ctxcp 8 --kv-budget --prefill-chunk-gen 1024 \
+    --session-ram ${SESSION_RAM:-24576} --session-dir /sessions -ctxcp 8 --kv-budget --prefill-chunk-gen 1024 \
     --alias qwen3.8-27b --telemetry --metrics --host 127.0.0.1 --port $PORT ${SERVER_ARGS:-} >/dev/null
 }
 start_ninfer() { # $1 = max context

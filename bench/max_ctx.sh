@@ -15,7 +15,7 @@ exec "$HERE/../deploy/gpu-lock.sh" bash -c '
 set -uo pipefail
 OUT=$1 HERE=$2; shift 2
 PROFILE=${PROFILE:-balanced} START=${START:-327680} STEP=${STEP:-8192} PORT=18400 C=max-ctx
-mkdir -p /tmp/max-ctx-sessions
+SD=$HOME/.cache/lovelace-bench/max-ctx-sessions; rm -rf "$SD"; mkdir -p "$SD"   # NVMe, never /tmp (tmpfs is RAM)
 args_for() { # ctx -> profile args, one per line
   sed -e "s/\${CTX}/$1/" -e "s#/var/lib/lovelace/sessions#/sessions#" -e "s#/var/log/lovelace/#/tmp/#" \
       -e "s/^--port .*/--port $PORT/" "$HERE/../deploy/profiles/$PROFILE.args" | grep -v "^--web-dir"
@@ -25,8 +25,9 @@ try() { # bin ctx log -> 0 if the server becomes healthy
   local bin=$1 ctx=$2 log=$3 ok=1
   docker rm -f $C >/dev/null 2>&1
   mapfile -t A < <(args_for "$ctx" | tr " " "\n")
-  docker run -d --name $C --gpus all --network host --ulimit memlock=-1:-1 -v "$bin:/e" -v "$HOME/models:/models:ro" \
-    -v /tmp/max-ctx-sessions:/sessions -v "$HERE/../deploy/draft-vocab:/opt/lovelace/draft-vocab:ro" \
+  docker run -d --name $C --gpus all --network host --ulimit memlock=-1:-1 --memory ${ENGINE_MEM:-34g} --memory-swap ${ENGINE_MEM:-34g} \
+    -v "$bin:/e" -v "$HOME/models:/models:ro" \
+    -v "$SD:/sessions" -v "$HERE/../deploy/draft-vocab:/opt/lovelace/draft-vocab:ro" \
     lovelace-engine-runtime:cuda13.1 /e/llama-server "${A[@]}" >/dev/null
   for i in $(seq 200); do
     [ "$(docker inspect -f {{.State.Running}} $C 2>/dev/null)" = true ] || break

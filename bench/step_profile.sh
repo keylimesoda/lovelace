@@ -27,13 +27,13 @@ OUT=$1 BIN=$2 HERE=$3 NSPEC=$4; shift 4
 SPECS=("${@:1:$NSPEC}"); shift $NSPEC
 PORT=18400 C=stepprof
 docker rm -f $C >/dev/null 2>&1
-mkdir -p /tmp/stepprof-sessions
-docker run -d --name $C --gpus all $CAPS_STR --network host --ulimit memlock=-1:-1 -e LD_LIBRARY_PATH=/e \
-  -v "$BIN:/e" -v "$HOME/models:/models:ro" -v "$OUT:/out" -v /tmp/stepprof-sessions:/sessions -v "$HERE/../deploy/draft-vocab:/draft-vocab:ro" \
+SD=$HOME/.cache/lovelace-bench/stepprof-sessions; rm -rf "$SD"; mkdir -p "$SD"   # NVMe, never /tmp (tmpfs is RAM)
+docker run -d --name $C --gpus all $CAPS_STR --network host --ulimit memlock=-1:-1 --memory ${ENGINE_MEM:-34g} --memory-swap ${ENGINE_MEM:-34g} -e LD_LIBRARY_PATH=/e \
+  -v "$BIN:/e" -v "$HOME/models:/models:ro" -v "$OUT:/out" -v "$SD:/sessions" -v "$HERE/../deploy/draft-vocab:/draft-vocab:ro" \
   lovelace-nsys:cuda13.1 nsys launch --session-new=$C --trace=cuda,nvtx,osrt --cuda-graph-trace=node \
   /e/llama-server -m /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf -ngl 99 -np 6 --kv-unified -c 327680 \
     -ctk q5_0 -ctv q5_0 --spec-type draft-mtp --spec-draft-n-max ${SPEC_N:-3} -ctkd q5_0 -ctvd q5_0 -fa on -ub 1024 -b 2048 \
-    --jinja --reasoning-preserve --session-ram 30720 --session-dir /sessions -ctxcp 8 --kv-budget --prefill-chunk-gen 1024 \
+    --jinja --reasoning-preserve --session-ram ${SESSION_RAM:-24576} --session-dir /sessions -ctxcp 8 --kv-budget --prefill-chunk-gen 1024 \
     --alias qwen3.8-27b --telemetry --metrics --host 127.0.0.1 --port $PORT "$@" >/dev/null
 ok=0
 for i in $(seq 300); do
