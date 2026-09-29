@@ -43,6 +43,7 @@ public:
             ext[i].reset();
             shift[i] =  0;
             seq[i].reset();
+            seq_lo_sync(i);
         }
 
         has_shift = false;
@@ -71,6 +72,7 @@ public:
         ext.resize(n);
         shift.resize(n);
         seq.resize(n);
+        seq_lo.resize(n);
 
         reset();
     }
@@ -136,6 +138,7 @@ public:
             res.pos[j] = pos[idx];
             res.ext[j] = ext[idx];
             res.seq[j] = seq[idx];
+            res.seq_lo[j] = seq_lo[idx];
 
             assert(shift[idx] == 0);
         }
@@ -155,6 +158,7 @@ public:
             res.pos[j] = pos[idx];
             res.ext[j] = ext[idx];
             res.seq[j] = seq[idx];
+            res.seq_lo[j] = seq_lo[idx];
 
             assert(shift[idx] == 0);
         }
@@ -184,6 +188,7 @@ public:
             pos[idx] = other.pos[j];
             ext[idx] = other.ext[j];
             seq[idx] = other.seq[j];
+            seq_lo_sync(idx);
 
             if (pos[idx] != -1) {
                 seq_pos_add(i + j);
@@ -215,6 +220,7 @@ public:
             pos[idx] = other.pos[j];
             ext[idx] = other.ext[j];
             seq[idx] = other.seq[j];
+            seq_lo_sync(idx);
 
             if (pos[idx] != -1) {
                 seq_pos_add(idx);
@@ -231,6 +237,7 @@ public:
 
         seq_pos_rm(i);
         seq[i].reset();
+        seq_lo_sync(i);
 
         pos[i] = -1;
         ext[i].reset();
@@ -248,6 +255,7 @@ public:
         assert(seq_id >= 0);
 
         seq[i].reset(seq_id);
+        seq_lo_sync(i);
         seq_pos_dec(seq_id, i);
 
         if (seq[i].none()) {
@@ -270,8 +278,10 @@ public:
         if (seq[i].test(seq_id)) {
             seq_pos_rm(i);
             seq[i].reset();
+            seq_lo_sync(i);
 
             seq[i].set(seq_id);
+            seq_lo_sync(i);
             seq_pos_inc(seq_id, i);
 
             return false;
@@ -280,6 +290,7 @@ public:
         if (seq[i].any()) {
             seq_pos_rm(i);
             seq[i].reset();
+            seq_lo_sync(i);
 
             pos[i] = -1;
             ext[i].reset();
@@ -308,6 +319,13 @@ public:
         assert(i < pos.size());
 
         return seq[i];
+    }
+
+    // the sequences 0..63 of the cell as a bitmask (a compact copy of the low word of seq_get_all())
+    uint64_t seq_get_lo(uint32_t i) const {
+        assert(i < pos.size());
+
+        return seq_lo[i];
     }
 
     // check if the cell contains seq_id
@@ -343,6 +361,7 @@ public:
         assert(!seq[i].test(seq_id));
 
         seq[i].set(seq_id);
+        seq_lo_sync(i);
         seq_pos_inc(seq_id, i);
     }
 
@@ -461,6 +480,7 @@ public:
 
         if (pos[i] < 0) {
             seq[i].reset();
+            seq_lo_sync(i);
             pos[i] = -1;
             shift[i] = 0;
 
@@ -523,6 +543,15 @@ private:
 
     // the bitset seq[i] tells us which sequences are currently occupying the i-th cell
     std::vector<seq_set_t> seq;
+
+    // seq_lo[i] = the bits of sequences 0..63 of seq[i], kept in sync on every write of seq[i]: scanning 8 bytes per
+    // cell instead of the 32-byte bitset keeps per-decode passes over a large cache (the KQ mask) cheap
+    std::vector<uint64_t> seq_lo;
+
+    void seq_lo_sync(uint32_t i) {
+        static const seq_set_t lo_mask(~0ULL);
+        seq_lo[i] = (seq[i] & lo_mask).to_ullong();
+    }
 
     // the set seq_pos[s] holds one (pos, cell) pair per cell that carries sequence s, ordered by position
     // this way seq_pos[s].begin() and seq_pos[s].rbegin() give us the min/max positions currently in the cache

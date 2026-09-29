@@ -6,6 +6,9 @@
 #include "llama-context.h"
 
 #include <algorithm>
+#if defined(__BMI2__)
+#include <immintrin.h>
+#endif
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -1742,12 +1745,14 @@ static void set_input_kq_mask_impl(const args_set_input_kq_mask & args, T * data
     }
 }
 
-// Fast path for the common case (no ALiBi, no SWA): one pass over the cells gathers, for every cell, its
-// position and the set of batch sequences that can see it (a bitmask over the distinct sequences of the stream); then
-// every row is a branch-free, vectorizable select over those two arrays. The generic path above walks the cells once
-// per sequence and tests the 256-bit sequence set of every cell each time, which dominates the host time of
-// multi-sequence decode batches over a large unified cache (~1 ms per 6-sequence draft step at ~290k cells).
-// Returns false when a stream has more distinct sequences than bits in own_t; the caller then rewrites the whole mask.
+// Fast path for the common case (no ALiBi, no SWA, sequence ids < 64): one pass over the cells gathers, for every
+// cell, its position and the set of batch sequences that can see it (a bitmask over the distinct sequences of the
+// stream, from the compact 64-bit copy of the cell's sequence set); then every row is a branch-free, vectorizable
+// select over those two arrays. The generic path above walks the cells once per sequence and tests the 256-bit
+// sequence set of every cell each time, which dominates the host time of multi-sequence decode batches over a large
+// unified cache (~1.5 ms per 6-sequence draft step at ~290k cells).
+// Returns false when a stream has more distinct sequences than bits in own_t or a sequence id >= 64; the caller then
+// rewrites the whole mask.
 template<typename T, typename own_t, bool causal, bool is_2d>
 static bool set_input_kq_mask_dense(const args_set_input_kq_mask & args, T * data,
         std::vector<llama_pos> & cell_pos, std::vector<uint64_t> & cell_own_buf, std::vector<uint32_t> & cells_at_p1) {
@@ -1762,6 +1767,15 @@ static bool set_input_kq_mask_dense(const args_set_input_kq_mask & args, T * dat
     own_t * cell_own = (own_t *) cell_own_buf.data();
 
     constexpr int n_own_max = 8*sizeof(own_t);
+
+    // restrict-qualified so that the compiler vectorizes the select
+    const auto fill_row = [n_kv, mask_keep, mask_drop](T * __restrict row, const own_t * __restrict own,
+            const llama_pos * __restrict pos, const own_t bit, const llama_pos p1) {
+        for (int64_t j = 0; j < n_kv; ++j) {
+            const bool keep = (own[j] & bit) && (!causal || pos[j] <= p1);
+            row[j] = keep ? mask_keep : mask_drop;
+        }
+    };
 
     for (int64_t s = 0; s < args.n_stream; ++s) {
         // distinct sequences of this stream, in order of appearance
@@ -1779,26 +1793,35 @@ static bool set_input_kq_mask_dense(const args_set_input_kq_mask & args, T * dat
         for (int64_t ii = 0; ii < args.n_tps; ++ii) {
             const llama_seq_id seq_id = ubatch->seq_id[s*args.n_tps + ii][0];
             if (seq_bit(seq_id) == n_seqs) {
-                if (n_seqs == n_own_max) {
+                if (n_seqs == n_own_max || seq_id >= 64) {
                     return false;
                 }
                 seqs[n_seqs++] = seq_id;
             }
         }
 
+        // bit k of a cell's visibility mask = the k-th smallest sequence id of the batch (what PEXT produces)
+        std::sort(seqs, seqs + n_seqs);
+        uint64_t seq_mask = 0;
+        for (int k = 0; k < n_seqs; ++k) {
+            seq_mask |= uint64_t(1) << seqs[k];
+        }
+
         const auto & cells = args.v_cells.at(args.seq_to_stream[seqs[0]]);
 
         for (int64_t j = 0; j < n_kv; ++j) {
+            // empty cells have no sequence bits
+            const uint64_t lo = cells.seq_get_lo(j);
+#if defined(__BMI2__)
+            const own_t own = (own_t) _pext_u64(lo, seq_mask);
+#else
+            GGML_UNUSED(seq_mask);
             own_t own = 0;
-            if (!cells.is_empty(j)) {
-                const auto & seq_set = cells.seq_get_all(j);
-                for (int k = 0; k < n_seqs; ++k) {
-                    own |= own_t(seq_set[seqs[k]]) << k;
-                }
-                cell_pos[j] = cells.pos_get(j);
-            } else {
-                cell_pos[j] = 0;
+            for (int k = 0; k < n_seqs; ++k) {
+                own |= own_t((lo >> seqs[k]) & 1) << k;
             }
+#endif
+            cell_pos[j] = own ? cells.pos_get(j) : 0;
             cell_own[j] = own;
         }
 
@@ -1808,10 +1831,7 @@ static bool set_input_kq_mask_dense(const args_set_input_kq_mask & args, T * dat
             const llama_pos p1  = ubatch->pos[i];
             T * row = data + n_kv*i;
 
-            for (int64_t j = 0; j < n_kv; ++j) {
-                const bool keep = (cell_own[j] & bit) && (!causal || cell_pos[j] <= p1);
-                row[j] = keep ? mask_keep : mask_drop;
-            }
+            fill_row(row, cell_own, cell_pos.data(), bit, p1);
 
             // M-RoPE causal mask: among the cells at the same position, hide those after this token in 2D order
             if (causal && is_2d) {
