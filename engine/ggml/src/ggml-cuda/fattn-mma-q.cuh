@@ -116,7 +116,8 @@ static __device__ __forceinline__ void fattn_mma_q_u8x4_to_h2(const uint32_t q, 
 
 // Bits 0..3 of h -> bit 4 of bytes 0..3.
 static __device__ __forceinline__ uint32_t fattn_mma_q_spread_qh(const uint32_t h) {
-    return ((h << 4) & 0x00000010) | ((h << 11) & 0x00001000) | ((h << 18) & 0x00100000) | ((h << 25) & 0x10000000);
+    // (h & 0xF) << 4, << 11, << 18, << 25 don't overlap, so the product has no carries
+    return ((h & 0xF) * 0x02040810) & 0x10101010;
 }
 
 // 16 values of a block as f16: dst[0..3] are the dimensions i0...i0+7, dst[4..7] the dimensions i1...i1+7,
@@ -1353,9 +1354,23 @@ static __global__ void flash_attn_ext_mma_q_pf(
                     const int ib   = u % (D/QK8_0);
                     const uint8_t * b = raw_K + cell*row_bytes_K + ib*bs;
                     uint32_t w[8];
+                    if constexpr (type_K == GGML_TYPE_Q5_0) {
+                        // all 32 values at once: low nibble | (high bit ? 0x00 : 0xF0) = q - 16 as int8
+                        const uint16_t * b16 = (const uint16_t *) b;
+                        const uint32_t qh = b16[1] | (uint32_t(b16[2]) << 16);
 #pragma unroll
-                    for (int l = 0; l < 4; ++l) {
-                        fattn_mma_q_K_i8<type_K>(b, l, w[l], w[4 + l]);
+                        for (int l = 0; l < 4; ++l) {
+                            const uint32_t x = b16[3 + 2*l] | (uint32_t(b16[4 + 2*l]) << 16);
+                            const uint32_t h0 = ~fattn_mma_q_spread_qh(qh >> (4*l +  0)) & 0x10101010;
+                            const uint32_t h1 = ~fattn_mma_q_spread_qh(qh >> (4*l + 16)) & 0x10101010;
+                            w[l]     = ((x >> 0) & 0x0F0F0F0F) | (h0*15);
+                            w[4 + l] = ((x >> 4) & 0x0F0F0F0F) | (h1*15);
+                        }
+                    } else {
+#pragma unroll
+                        for (int l = 0; l < 4; ++l) {
+                            fattn_mma_q_K_i8<type_K>(b, l, w[l], w[4 + l]);
+                        }
                     }
                     *(uint4 *) (tile_K + cell*stride_K + ib*QK8_0 +  0) = make_uint4(w[0], w[1], w[2], w[3]);
                     *(uint4 *) (tile_K + cell*stride_K + ib*QK8_0 + 16) = make_uint4(w[4], w[5], w[6], w[7]);
@@ -1417,16 +1432,16 @@ static __global__ void flash_attn_ext_mma_q_pf(
                     const int c = hw*NBH + 8*j + 2*lq;
                     if constexpr (has_m_K) {
                         const float4 dm = *(const float4 *) ((const float2 *) tile_Kdm + ib*NB + c);
-                        KQ[j][0] += dm.x*ds0.x * fattn_mma_q_i2f(acc[0]) + dm.y*ds0.y;
-                        KQ[j][1] += dm.z*ds0.x * fattn_mma_q_i2f(acc[1]) + dm.w*ds0.y;
-                        KQ[j][2] += dm.x*ds1.x * fattn_mma_q_i2f(acc[2]) + dm.y*ds1.y;
-                        KQ[j][3] += dm.z*ds1.x * fattn_mma_q_i2f(acc[3]) + dm.w*ds1.y;
+                        KQ[j][0] += dm.x*ds0.x * __int2float_rn(acc[0]) + dm.y*ds0.y;
+                        KQ[j][1] += dm.z*ds0.x * __int2float_rn(acc[1]) + dm.w*ds0.y;
+                        KQ[j][2] += dm.x*ds1.x * __int2float_rn(acc[2]) + dm.y*ds1.y;
+                        KQ[j][3] += dm.z*ds1.x * __int2float_rn(acc[3]) + dm.w*ds1.y;
                     } else {
                         const float2 dk = *(const float2 *) (tile_Kdm + ib*NB + c);
-                        KQ[j][0] += dk.x*ds0.x * fattn_mma_q_i2f(acc[0]);
-                        KQ[j][1] += dk.y*ds0.x * fattn_mma_q_i2f(acc[1]);
-                        KQ[j][2] += dk.x*ds1.x * fattn_mma_q_i2f(acc[2]);
-                        KQ[j][3] += dk.y*ds1.x * fattn_mma_q_i2f(acc[3]);
+                        KQ[j][0] += dk.x*ds0.x * __int2float_rn(acc[0]);
+                        KQ[j][1] += dk.y*ds0.x * __int2float_rn(acc[1]);
+                        KQ[j][2] += dk.x*ds1.x * __int2float_rn(acc[2]);
+                        KQ[j][3] += dk.y*ds1.x * __int2float_rn(acc[3]);
                     }
                 }
             }
