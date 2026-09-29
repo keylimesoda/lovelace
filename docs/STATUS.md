@@ -21,6 +21,7 @@ Updated: 2026-09-28 ~20:50 local.
 | feat/batched-verify | BatchedVerify (Opus) | raise 6-agent aggregate tok/s above ~77 (profile, then cut the top step costs) | 5 commits |
 | feat/restore-latency | SessionCore (Opus) | agent-switch restore wall 1.1-1.8 s -> <= 0.4 s; working prefetch | 1 commit |
 | feat/prefill-depth | FattnQuantKV (Opus) | prefill at 126k >= 1620 tok/s (ninfer parity), no compute-buffer growth; 4 h timebox | started |
+| feat/sched-v2 | SessionCore (Opus), after restore-latency | charter C3: no aggregate collapse at 6 x 150k (Scheduling v2 in docs/design/session-store.md) | queued |
 
 Merge rule for each branch: test-backend-ops for the touched ops, test-gdn-replay, the greedy e2e identity check,
 and before/after numbers from the branch's own script; then `bench/acceptance.sh` (only missing steps run) and a
