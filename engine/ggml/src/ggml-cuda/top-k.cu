@@ -210,6 +210,154 @@ static void top_k_radix_cuda(
 
 #endif // !defined(GGML_CUDA_USE_CUB) && defined(GGML_USE_HIP)
 
+
+// Top-k for small k (sampling: top-k 10..32 over a vocabulary of ~250k logits for a few rows). Several blocks per row:
+// every thread keeps a sorted register list of its K best values, a block merges its threads' lists by a K-round
+// tournament, and a single warp per row merges the blocks' lists the same way. Ties go to the lower column, so the
+// result is deterministic. Much cheaper than one CUB top-k per row (several passes and launches per row).
+#define TOP_K_SMALL_MAX_BLOCKS 32
+
+// threads per block of the partial kernel, sized so that the K-lists of all threads fit in 32 KiB of shared memory
+static constexpr __host__ __device__ int top_k_small_threads(int K) {
+    return 4096 / K;
+}
+
+// the larger of (v, i) under "greater value, then lower index"
+static __device__ __forceinline__ bool top_k_small_better(float va, int ia, float vb, int ib) {
+    return va > vb || (va == vb && (unsigned) ia < (unsigned) ib);
+}
+
+static __device__ __forceinline__ void top_k_small_warp_argmax(float & v, int & i, int & who) {
+#pragma unroll
+    for (int offset = WARP_SIZE/2; offset > 0; offset >>= 1) {
+        const float vo = __shfl_xor_sync(0xFFFFFFFF, v,   offset);
+        const int   io = __shfl_xor_sync(0xFFFFFFFF, i,   offset);
+        const int   wo = __shfl_xor_sync(0xFFFFFFFF, who, offset);
+        if (top_k_small_better(vo, io, v, i)) {
+            v = vo; i = io; who = wo;
+        }
+    }
+}
+
+template <int K, int nthreads = top_k_small_threads(K)>
+static __global__ void __launch_bounds__(nthreads) top_k_small_partial(const float * __restrict__ src, float * __restrict__ cand_v, int * __restrict__ cand_i,
+        const int ncols, const int cols_per_block) {
+    const int row = blockIdx.y;
+    const int tid = threadIdx.x;
+    const float * x = src + (int64_t) row*ncols;
+
+    const int col0 = blockIdx.x*cols_per_block;
+    const int col1 = min(ncols, col0 + cols_per_block);
+
+    // sorted descending; index -1 marks an empty entry (loses against any real one)
+    float v[K];
+    int   id[K];
+#pragma unroll
+    for (int j = 0; j < K; ++j) {
+        v[j]  = -INFINITY;
+        id[j] = -1;
+    }
+
+    for (int col = col0 + tid; col < col1; col += nthreads) {
+        const float xv = x[col];
+        if (top_k_small_better(xv, col, v[K-1], id[K-1])) {
+            v[K-1] = xv; id[K-1] = col;
+#pragma unroll
+            for (int j = K-1; j > 0; --j) {
+                if (top_k_small_better(v[j], id[j], v[j-1], id[j-1])) {
+                    const float tv = v[j]; v[j] = v[j-1]; v[j-1] = tv;
+                    const int   ti = id[j]; id[j] = id[j-1]; id[j-1] = ti;
+                }
+            }
+        }
+    }
+
+    __shared__ float s_v[nthreads*K];
+    __shared__ int   s_i[nthreads*K];
+    __shared__ float w_v[nthreads/WARP_SIZE];
+    __shared__ int   w_i[nthreads/WARP_SIZE];
+    __shared__ int   w_who[nthreads/WARP_SIZE];
+    __shared__ int   winner;
+
+#pragma unroll
+    for (int j = 0; j < K; ++j) {
+        s_v[tid*K + j] = v[j];
+        s_i[tid*K + j] = id[j];
+    }
+    __syncthreads();
+
+    const int lane = tid % WARP_SIZE;
+    const int warp = tid / WARP_SIZE;
+    int head = 0;
+    float * out_v = cand_v + ((int64_t) row*gridDim.x + blockIdx.x)*K;
+    int   * out_i = cand_i + ((int64_t) row*gridDim.x + blockIdx.x)*K;
+
+    for (int r = 0; r < K; ++r) {
+        float bv  = head < K ? s_v[tid*K + head] : -INFINITY;
+        int   bi  = head < K ? s_i[tid*K + head] : -1;
+        int   who = tid;
+        top_k_small_warp_argmax(bv, bi, who);
+        if (lane == 0) {
+            w_v[warp] = bv; w_i[warp] = bi; w_who[warp] = who;
+        }
+        __syncthreads();
+        if (warp == 0) {
+            bv  = lane < nthreads/WARP_SIZE ? w_v[lane]   : -INFINITY;
+            bi  = lane < nthreads/WARP_SIZE ? w_i[lane]   : -1;
+            who = lane < nthreads/WARP_SIZE ? w_who[lane] : 0;
+            top_k_small_warp_argmax(bv, bi, who);
+            if (lane == 0) {
+                out_v[r] = bv;
+                out_i[r] = bi;
+                winner   = who;
+            }
+        }
+        __syncthreads();
+        if (tid == winner) {
+            head++;
+        }
+    }
+}
+
+// one warp per row: lane b owns the sorted list of block b
+template <int K>
+static __global__ void top_k_small_merge(const float * __restrict__ cand_v, const int * __restrict__ cand_i, int * __restrict__ dst,
+        const int nblocks, const int k) {
+    const int row  = blockIdx.x;
+    const int lane = threadIdx.x;
+    const float * lv = cand_v + ((int64_t) row*nblocks + lane)*K;
+    const int   * li = cand_i + ((int64_t) row*nblocks + lane)*K;
+
+    int head = 0;
+    for (int r = 0; r < k; ++r) {
+        float bv  = lane < nblocks && head < K ? lv[head] : -INFINITY;
+        int   bi  = lane < nblocks && head < K ? li[head] : -1;
+        int   who = lane;
+        top_k_small_warp_argmax(bv, bi, who);
+        if (lane == 0) {
+            dst[(int64_t) row*k + r] = bi;
+        }
+        if (lane == who) {
+            head++;
+        }
+    }
+}
+
+template <int K>
+static void top_k_small_cuda(ggml_cuda_pool & pool, const float * src, int * dst, const int ncols, const int nrows, const int k,
+        cudaStream_t stream) {
+    // enough blocks to spread a few rows over the SMs, but each thread still sees >= 16 columns
+    constexpr int nthreads   = top_k_small_threads(K);
+    const int nblocks        = std::max(1, std::min(TOP_K_SMALL_MAX_BLOCKS, ncols / (nthreads*16)));
+    const int cols_per_block = (ncols + nblocks - 1) / nblocks;
+
+    ggml_cuda_pool_alloc<float> cand_v(pool, (size_t) nrows*nblocks*K);
+    ggml_cuda_pool_alloc<int>   cand_i(pool, (size_t) nrows*nblocks*K);
+
+    top_k_small_partial<K><<<dim3(nblocks, nrows, 1), nthreads, 0, stream>>>(src, cand_v.get(), cand_i.get(), ncols, cols_per_block);
+    top_k_small_merge<K><<<nrows, WARP_SIZE, 0, stream>>>(cand_v.get(), cand_i.get(), dst, nblocks, k);
+}
+
 void ggml_cuda_op_top_k(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * src0   = dst->src[0];
     const float *       src0_d = (const float *) src0->data;
@@ -225,6 +373,16 @@ void ggml_cuda_op_top_k(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int64_t    nrows = ggml_nrows(src0);
     const int64_t    k     = dst->ne[0];
     ggml_cuda_pool & pool  = ctx.pool();
+
+    // grid dims: nrows goes to gridDim.y
+    if (k <= 32 && nrows <= 65535) {
+        if (k <= 16) {
+            top_k_small_cuda<16>(pool, src0_d, dst_d, ncols, nrows, k, stream);
+        } else {
+            top_k_small_cuda<32>(pool, src0_d, dst_d, ncols, nrows, k, stream);
+        }
+        return;
+    }
 #ifdef CUB_TOP_K_AVAILABLE
     // TODO: Switch to `DeviceSegmentedTopK` for multi-row TopK once implemented
     // https://github.com/NVIDIA/cccl/issues/6391
