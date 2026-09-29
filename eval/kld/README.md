@@ -75,6 +75,18 @@ docker run --rm -v /home/ric/Work:/home/ric/Work -w /home/ric/Work/lovelace/eval
 
 `selftest` checks the math only and needs no GPU or model.
 
+Against a lovelace engine build instead (engine swap, e.g. to gate a kernel change against the existing base files):
+
+```sh
+E=/home/ric/Work/lovelace-wt/prefill/engine   # engine tree with a CUDA build in build-sm89 (deploy/build-engine.sh)
+docker run --rm --user 1000:1000 -e HOME=/tmp -v /home/ric/Work:/home/ric/Work -w $PWD lovelace-engine-devel:cuda13.1 \
+  bash -c "cmake -S . -B build/engine -DLLAMA_ROOT=$E -DLLAMA_LIB_DIR=$E/build-sm89/bin \
+             -DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath-link,/opt/cuda-stubs && cmake --build build/engine -j 8"
+LLAMA_LIB=<engine bin dir> KLD_EXE=build/engine/lovelace-kld TAG=<name> ONLY=wq-iq4xs-q5_0 ./run_kld.sh
+```
+
+The last line runs only the production-config step (A1) with that engine and writes `results/wq-iq4xs-q5_0-<name>.json`.
+
 ## Run
 
 The llama.cpp libraries carry `RUNPATH=/src/build-sm89/bin`, which is the path from their own
