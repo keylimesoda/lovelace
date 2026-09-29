@@ -87,6 +87,7 @@ def main():
     ap.add_argument("db")
     ap.add_argument("--steps", type=int, default=20, help="steady steps to report (middle of the capture)")
     ap.add_argument("--detail", type=int, default=30, help="rows of the per-kernel detail table")
+    ap.add_argument("--gaps", action="store_true", help="also split the host gap by the GPU work around each idle span")
     a = ap.parse_args()
     db = sqlite3.connect(a.db)
     q = lambda sql: db.execute(sql).fetchall()  # noqa: E731
@@ -161,6 +162,7 @@ def main():
     per_step = []   # dicts class -> ms
     detail = defaultdict(lambda: [0.0, 0])
     walls = []
+    gaps = defaultdict(float)   # (work before, work after) -> idle ms summed over steps
     for members in steps:
         acts = []
         cls = defaultdict(float)
@@ -170,6 +172,8 @@ def main():
             if lab == "draft":
                 phase = "MTP catch-up" if d_idx == 0 else f"MTP draft {d_idx}"
                 d_idx += 1
+            else:
+                phase = "target"
             for s, e, sn, dn in segs[i]["k"]:
                 c, det = classify(sn, dn)
                 key = f"target {c}" if lab == "target" else phase
@@ -177,24 +181,27 @@ def main():
                 dk = f"{c:9s} {det}" if lab == "target" else f"{phase if d_idx == 1 else 'MTP draft':12s} {c:9s} {det}"
                 detail[dk][0] += (e - s) / 1e6
                 detail[dk][1] += 1
-                acts.append((s, e))
+                acts.append((s, e, f"{phase} kernel"))
             for s, e, kind, b, ck in segs[i]["m"]:
                 cls[f"{kind} (copyKind {ck})"] += (e - s) / 1e6
-                acts.append((s, e))
+                acts.append((s, e, f"{phase} {kind} {ck}"))
         acts.sort()
         t0 = acts[0][0]
         # the step ends where the next target decode begins
         nxt_first = min(x[0] for x in segs[[t for t in targets if t > members[0]][0]]["k"])
-        busy, cur_s, cur_e = 0.0, None, None
-        for s, e in acts:
+        busy, cur_s, cur_e, cur_lab = 0.0, None, None, None
+        for s, e, lab in acts:
             e = min(e, nxt_first)
             if cur_e is None or s > cur_e:
                 if cur_e is not None:
                     busy += cur_e - cur_s
-                cur_s, cur_e = s, e
-            else:
-                cur_e = max(cur_e, e)
+                    gaps[(cur_lab, lab)] += (s - cur_e) / 1e6
+                cur_s, cur_e, cur_lab = s, e, lab
+            elif e >= cur_e:
+                cur_e, cur_lab = e, lab
         busy += cur_e - cur_s
+        if nxt_first > cur_e:
+            gaps[(cur_lab, "next target")] += (nxt_first - cur_e) / 1e6
         wall = (nxt_first - t0) / 1e6
         cls["host gap (GPU idle)"] = wall - busy / 1e6
         walls.append(wall)
@@ -215,6 +222,11 @@ def main():
         rows = sorted(((k, v) for k, v in detail.items() if sel(k)), key=lambda kv: -kv[1][0])
         for k, (ms, cnt) in rows[:a.detail]:
             print(f"  {k:78s} {ms / n:7.3f} {cnt / n:6.1f} {1000 * ms / cnt:8.1f}")
+    if a.gaps:
+        print(f"\nhost gap by the GPU work before -> after the idle span (per step): {'':12s} {'ms':>7s}")
+        for (b, f), ms in sorted(gaps.items(), key=lambda kv: -kv[1]):
+            if ms / n >= 0.01:
+                print(f"  {b:38s} -> {f:38s} {ms / n:7.3f}")
 
 
 if __name__ == "__main__":

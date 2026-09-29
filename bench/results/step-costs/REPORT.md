@@ -66,21 +66,67 @@ per request, on every capture, so the draft (MTP) context's mask is not implicat
 | 1 x 64k step wall, ms | 30.82 | **28.52** |
 | 1 x 64k decode, tok/s | 108.6 | **114.9** |
 
-## Item 2: reduced-vocab MTP draft head — implemented, NOT yet measured
+## Item 2: reduced-vocab MTP draft head (0abc321bb) — measured: keep with the 32k set, not the 16k set
 
 - `--spec-draft-vocab FILE` (MTP only): `llama_set_draft_vocab()` gathers the listed rows of the Q6_K output
   weights once (16384 rows, 69 MB) into a draft head; the Qwen3.5/Qwen3-Next MTP graphs compute logits over those
   rows and scatter them into a full-vocabulary row (-INF elsewhere), so samplers and logits readers are unchanged.
   The target's verification uses the full head: outputs stay exact; only acceptance can change.
-- Token set: `bench/draft_vocab.py` (docstring has the regenerate command) → `deploy/draft-vocab/qwen3.8-27b.txt`.
-  Ranked by frequency in the agents' rendered assistant turns + 0.25 x frequency in tool results/user messages.
-  28 sessions, 2.06 M output tokens, 23,287 distinct: in-corpus coverage 99.41%, leave-one-session-out coverage
-  **96.85%** (32k rows: 99.02%). The out-of-sample number matters: step_drive replays corpus sessions, so its
-  acceptance is an in-sample (optimistic) measurement; 32k rows may be the safer choice for unseen traffic.
-- Bench scripts mount deploy/draft-vocab at /draft-vocab (`step_profile.sh`, `greedy_gate.sh`: `-- --spec-draft-vocab
-  /draft-vocab/qwen3.8-27b.txt`; `h2h.sh`: `SERVER_ARGS=...`).
-- Missing: step profile (6 x 50k, 1 x 64k) with acceptance and summed decode, greedy gate 6/6, and the
-  production profile flag (deploy/profiles/*.args) only after those pass.
+- Token sets: `bench/draft_vocab.py` → `deploy/draft-vocab/`. Ranked by frequency in the agents' rendered assistant
+  turns + 0.25 x frequency in tool results/user messages. 28 sessions, 2.06 M output tokens, 23,287 distinct.
+  `qwen3.8-27b.txt` (16k): corpus coverage 99.41%, leave-one-session-out 96.85%; `qwen3.8-27b-32k.txt` (32,768
+  rows, i.e. every token the agents emitted plus the most frequent read ones): 100% / 99.02%.
+- Held-out sets (`draft_vocab.py --exclude`, the six sessions step_drive uses at 50k): `heldout6-16k.txt`,
+  `heldout6-32k.txt` (30,235 rows: all tokens of the other 22 sessions), built from 22 sessions without them;
+  coverage of the six sessions' outputs 95.44% / 98.10%. The held-out drives use only those six sessions
+  (`SESSIONS=...`, step_drive `--sessions`), at 20k, 35k and 50k (6 concurrent requests each) and 1 x 64k.
+
+Commands (binary `../step-head-bin` = cf57614a5, GPU mask + draft vocab; temperature 0, ignore_eos):
+
+```sh
+H=2026-09-27T08-42-53,2026-09-27T08-18-54,2026-09-25T07-15-46,2026-09-26T02-32-58,2026-09-26T09-54-32,2026-09-27T09-11-19
+uv run python ../draft_vocab.py --bin ../../engine/build-sm89/bin --model /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf \
+    --n 16384 --exclude $H --out ../../deploy/draft-vocab/heldout6-16k.txt          # and --n 32768 -> heldout6-32k.txt
+V="-- --spec-draft-vocab /draft-vocab/heldout6-16k.txt"                              # none for the full head
+GREEDY=1 BIN=../step-head-bin bench/step_profile.sh bench/results/step-costs/vocab/h16 six=$D one=64000 $V   # 256 tokens
+GREEDY=1 MAX_TOKENS=1024 BIN=../step-head-bin bench/step_profile.sh bench/results/step-costs/vocab1k/h16 six=$D one=64000 $V
+SESSIONS=$H GREEDY=1 MAX_TOKENS=1024 BIN=../step-head-bin bench/step_profile.sh bench/results/step-costs/vocab1k/h16-b \
+    six20=20000,20000,20000,20000,20000,20000 six35=35000,35000,35000,35000,35000,35000 $V
+```
+
+Held-out acceptance, 1024 tokens per request (`vocab1k/`; accepted/drafted, pooled over the 18 six-way requests):
+
+| | full head | 16k held-out | 32k held-out |
+|---|---:|---:|---:|
+| 6 x 50k | 4427/5125 = 0.864 | 0.856 (-0.78) | 0.858 (-0.56) |
+| 6 x 35k | 4276/5575 = 0.767 | 0.752 (-1.53) | 0.774 (+0.67) |
+| 6 x 20k | 4340/5388 = 0.806 | 0.793 (-1.25) | 0.807 (+0.11) |
+| **pooled 18 requests** | **0.8107** (3.420 tok/step) | **0.7986 (-1.21 pts)** (3.385) | **0.8118 (+0.11 pts)** (3.424) |
+| 1 x 64k (one request, noisy) | 661/1085 = 0.609 | 0.585 | 0.640 |
+
+One request moves by +-10 accepted tokens from a single changed draft (it shifts every later draft window), so
+single-request and 256-token numbers are noise-level (`vocab/`, 256 tokens: 6 x 50k full 0.763, in-sample 16k
+0.764 / 32k 0.759, held-out 16k 0.763 / 32k 0.766). The pooled 16k loss is consistent at every depth; 32k is flat.
+
+Cost (per step; the draft head is `mmvq q6_K`, 1109 us per draft step at 151,936 rows):
+
+| | full head | 16k | 32k |
+|---|---:|---:|---:|
+| draft head per draft step, us (6 rows) | 1109 | 77 | 139 (30k rows) - 150 (32k) |
+| MTP draft step, ms (6 x 50k / 1 x 64k) | 2.00 / 1.47 | 0.975 / 0.475 | 1.04 / 0.54 |
+| 6 x 50k step wall, ms (`vocab1k/*/six`) | 49.13 | **46.05** | 50.17 measured, 46.2 expected [a] |
+| 1 x 64k step wall, ms | 27.48 | **24.58** | 25.95 (median 25.10) |
+| summed decode, 6 x 50k / 35k / 20k, tok/s | 442.6 / 427.1 / 465.0 | 462.7 / 457.0 / 507.3 (+6.9%) | 438.6 / 448.2 / 500.3 (+3.9%) |
+| 1 x 64k decode, tok/s | 103.9 | 110.9 | 108.3 (+4.2%) |
+
+[a] The draft vocabulary does not touch the target graph, but in the 32k 6 x 50k capture the target's own kernels
+ran 8% slower (matmul 23.55 vs 21.78 ms, FA 10.01 vs 9.68) and the host gap was 1.5 ms higher: machine noise
+between holds. Full step minus the measured draft saving (3 x 0.96 ms) gives 46.2 ms.
+
+**Decision:** 16k fails the held-out criterion (-1.21 points > 0.5) despite the larger speedup; **32k passes**
+(held-out +0.11 points, summed decode +3.9% over three depths, -2.9 ms of GPU time per 6-sequence step, -2.8 ms
+single-stream). Recommend `--spec-draft-vocab /draft-vocab/qwen3.8-27b-32k.txt`. Its greedy gate (MTP on, base vs
+`step-head-bin` + 32k) is in `greedy/vocab32k-mtp/`; the production profile flag waits for it.
 
 ## Not done
 
