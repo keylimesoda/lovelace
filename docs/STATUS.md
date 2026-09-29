@@ -1,6 +1,17 @@
 # Live status (update at every milestone; read with docs/CHARTER.md at the start of a session)
 
-Updated: 2026-09-29 ~03:30 local.
+Updated: 2026-09-29 ~10:25 local.
+
+## Incidents 2026-09-29
+- **Benches OOM-killed the desktop** (05:09 and 09:42, both in the 6 x 150k replay): the session disk tier of the bench
+  scripts was /tmp (tmpfs = RAM). Fixed on main: session dirs on the NVMe (~/.cache/lovelace-bench), hard
+  `--memory 34g` cap on every engine container (bench and production), arena 30 -> 24 GiB, RAM sampler + guard in
+  bench/final_acceptance.sh. Verified: container 26.1 of 34 GiB, host >= 27 GiB available during a 200k warm-up.
+- **Scheduler lost wake-up on main** (10:06-10:17, 3 agents x 200k): KV-waiting requests are not re-admitted when the
+  idle victim's session sync completes; the server sat idle with 2 queued until an unrelated request arrived. Blocks
+  redeploy. Fix in progress: fix/sched-wakeup (agent SchedWakeup), with a failing-then-passing test.
+- Final acceptance so far (bench/results/final, main fca2e7862, CTX 376832): sweep and 6 x 60k done (153.6 t/s,
+  TTFT 8.7/16.7 s, 0 errors); 6 x 150k and 3 x 200k to rerun after the fix.
 
 ## Production
 - Stopped during measurement. Restart with `deploy/serve.sh balanced` (lovelace engine :8090, capture proxy :8080).
