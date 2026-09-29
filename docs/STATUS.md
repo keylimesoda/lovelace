@@ -1,6 +1,6 @@
 # Live status (update at every milestone; read with docs/CHARTER.md at the start of a session)
 
-Updated: 2026-09-28 ~20:50 local.
+Updated: 2026-09-28 ~23:00 local.
 
 ## Production
 - Stopped during measurement. Restart with `deploy/serve.sh balanced` (lovelace engine :8090, capture proxy :8080).
@@ -9,19 +9,21 @@ Updated: 2026-09-28 ~20:50 local.
 ## Acceptance (docs/CHARTER.md rows)
 - A1 quality: **PASS**. lovelace KL 0.0171 vs ninfer 0.0282 against the same Q8_0 reference (docs/quality-kld.md).
 - B1 single stream (bench/results/h2h/*-sweep.jsonl): **decode PASS** (equal or faster at 5k-198k); **prefill FAIL at depth**
-  (126k: 1132 vs 1619 tok/s; 62k: 1739 vs 2018). A fix is in progress (feat/prefill-depth).
-- B2 multi-agent: ninfer 3 lanes = 41.0 t/s steady, TTFT p50/p90 62/159 s; ninfer 6 lanes can't start at >= 163k.
-  lovelace same-day run `bench/results/h2h/lovelace-6a` was finishing at 20:50; earlier lovelace runs got 76.8 t/s,
-  TTFT 18/41 s. `bench/acceptance.sh` (background) then tries ninfer 6 lanes at lower context and writes
-  bench/results/acceptance/REPORT.md. Regenerate the report any time: `bench/acceptance.sh report`.
+  (126k: 1132 vs 1619 tok/s; 62k: 1739 vs 2018). Cause (bench/results/prefill-profile on feat/prefill-depth): at 128k,
+  FA is 53% of a prefill ubatch and the f16 kernel already runs near the f16/f32-acc peak (~140 of 165 TFLOPS), so
+  the fix needs cheaper math (int8 PV, blockwise f16 accumulation), gated by KLD.
+- B2 multi-agent: **PASS** (bench/results/acceptance/REPORT.md): lovelace 76.3 t/s steady, TTFT 19/40 s vs ninfer
+  3 lanes 41.0 t/s, 62/159 s; ninfer 6 lanes can't start at >= 163k.
+- C3 no collapse at 6 x 150k: **FAIL** (25.0 vs 76.8 t/s); Scheduling v2 in progress.
+- TTFT p90 swings ~40-60 s run to run on an unchanged build; judge TTFT with 2 runs per side or by p50.
 
 ## In-flight engineering (worktrees in ~/Work/lovelace-wt/, branches not yet merged)
-| branch | agent (model) | goal | state at 20:50 |
+| branch | agent | goal | state at 23:00 |
 |---|---|---|---|
-| feat/batched-verify | BatchedVerify (Opus) | raise 6-agent aggregate tok/s above ~77 (profile, then cut the top step costs) | 5 commits |
-| feat/restore-latency | SessionCore (Opus) | agent-switch restore wall 1.1-1.8 s -> <= 0.4 s; working prefetch | 1 commit |
-| feat/prefill-depth | FattnQuantKV (Opus) | prefill at 126k >= 1620 tok/s (ninfer parity), no compute-buffer growth; 4 h timebox | started |
-| feat/sched-v2 | SessionCore (Opus), after restore-latency | charter C3: no aggregate collapse at 6 x 150k (Scheduling v2 in docs/design/session-store.md) | queued |
+| feat/batched-verify | BatchedVerify | 6-seq step 60.8 -> 54.0 ms (+17% summed decode); replay +1.9% (admission-bound) | greedy gate FAILED (divergences, ' MB' vs 'MB' suspect: stream-k cap); spec-off margin check + bisect running; then rebase + push. Next (fresh agent): KQ mask on GPU, reduced-vocab draft head, MMQ 24 rows |
+| feat/restore-latency | SessionCore | switch park+issue+copies 80-95 ms (was 1.1-1.8 s wall); replay 82.8 t/s | done; byte-exact restore gate running, then push |
+| feat/prefill-depth | PrefillFA | phase 1: gates + compute buffer for 8ea46e9d0 (no f16 K/V copy; +2.5-4% to 64k, -4% at 192k); phase 2: cheaper FA math, 126k >= 1620 tok/s, KLD <= 0.01707+0.0005 | started 23:00 |
+| feat/sched-v2 (stacked on restore-latency 72a1f2890) | SchedV2-2 | charter C3 (Scheduling v2 in docs/design/session-store.md) | started 23:00 |
 
 Merge rule for each branch: test-backend-ops for the touched ops, test-gdn-replay, the greedy e2e identity check,
 and before/after numbers from the branch's own script; then `bench/acceptance.sh` (only missing steps run) and a
