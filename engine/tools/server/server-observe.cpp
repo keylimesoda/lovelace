@@ -635,6 +635,14 @@ std::string server_observer::format(const server_obs_record & rec, uint64_t seq)
                     {"wait_reason",         rec.wait_reason},
                     {"error",               rec.error_msg.empty() ? json(nullptr) : json(rec.error_msg)},
                 };
+                res["session"] = rec.session_tier == nullptr ? json(nullptr) : json {
+                    {"id",              rec.session_id},
+                    {"tier",            rec.session_tier},
+                    {"restore_bytes",   rec.restore_bytes},
+                    {"restore_ms",      r3(rec.restore_ms)},
+                    {"restore_wait_ms", r3(rec.restore_wait_ms)},
+                    {"prefetch_hit",    rec.prefetch_hit},
+                };
                 res["timings_ms"] = {
                     {"queue_wait", r3(std::max(0.0, rec.queue_wait_ms))},
                     {"prefill",    r3(rec.t_prefill_ms)},

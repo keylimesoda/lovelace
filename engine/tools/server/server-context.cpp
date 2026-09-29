@@ -5866,6 +5866,65 @@ public:
             {"entries",      prompt_cache ? prompt_cache->states.size()  : 0},
         };
 
+        json sessions_json = nullptr;
+        if (sessions) {
+            const auto st = sessions->stats();
+            const int64_t t_now = ggml_time_us();
+            json list = json::array();
+            for (const auto & it : sessions->sessions) {
+                const auto & s = *it.second;
+                const bool gpu = s.id_slot >= 0;
+                list.push_back({
+                    {"id",                 s.id},
+                    {"tier",               gpu ? "gpu" : server_session_tier_name(s.tier)},
+                    {"slot",               s.id_slot},
+                    {"resident_cells",     gpu ? slots[s.id_slot].prompt.n_tokens() : 0},
+                    {"mirror_tokens",      s.n_kv},
+                    {"mirror_bytes",       s.bytes()},
+                    {"mirror_segments",    s.segs.size()},
+                    {"checkpoints",        s.checkpoints.size()},
+                    {"file_bytes",         s.file_bytes},
+                    {"stale",              s.stale},
+                    {"sync_ms",            s.t_synced_us > s.t_sync_us ? json((s.t_synced_us - s.t_sync_us) / 1e3) : json(nullptr)},
+                    {"since_sync_s",       s.t_sync_us > 0 ? json((t_now - s.t_sync_us) / 1e6) : json(nullptr)},
+                    {"syncs",              s.n_sync},
+                    {"truncations",        s.n_truncate},
+                    {"restores",           s.n_restore},
+                    {"last_restore_bytes", s.last_restore_bytes},
+                    {"last_restore_ms",    s.last_restore_ms},
+                    {"last_restore_wall_ms", s.last_restore_wall_ms},
+                    {"prefetches",         s.n_prefetch},
+                    {"prefetch_hits",      s.n_prefetch_hit},
+                    {"demotions",          s.n_demote},
+                    {"promotions",         s.n_promote},
+                });
+            }
+            sessions_json = {
+                {"arena_bytes",      st.arena_bytes},
+                {"arena_free_bytes", st.arena_free},
+                {"ram_bytes",        st.ram_bytes},
+                {"disk_bytes",       st.disk_bytes},
+                {"disk_limit_bytes", sessions->params.disk_limit},
+                {"n_sessions",       st.n_sessions},
+                {"n_gpu",            st.n_gpu},
+                {"n_ram",            st.n_ram},
+                {"n_disk",           st.n_disk},
+                {"n_io",             st.n_io},
+                {"demotions",        st.n_demote},
+                {"promotions",       st.n_promote},
+                {"deleted",          st.n_deleted},
+                {"stale_syncs",      st.n_sync_stale},
+                {"prefetches",       st.n_prefetch},
+                {"prefetch_hits",    st.n_prefetch_hit},
+                {"syncs",            sched_stats.n_sync},
+                {"sync_bytes",       sched_stats.bytes_sync},
+                {"io_bytes_written", st.io_bytes_written},
+                {"io_bytes_read",    st.io_bytes_read},
+                {"io_write_s",       st.io_write_s},
+                {"io_read_s",        st.io_read_s},
+                {"sessions",         list},
+            };
+        }
         res["memory"] = {
             {"kv", {
                 {"cells_total",  n_ctx},
@@ -5877,6 +5936,7 @@ public:
                 {"cache_type_v", ggml_type_name(params_base.cache_type_v)},
             }},
             {"prompt_cache", prompt_cache_json},
+            {"sessions",     sessions_json},
             {"vram", obs_vram},
         };
         return res;
@@ -6115,6 +6175,12 @@ private:
         rec.n_ctx_used          = slot.prompt.n_tokens();
         rec.wait_reason         = slot.obs_wait_reason;
         rec.n_unparked_tokens   = slot.obs_n_unparked;
+        rec.session_id          = slot.session_id;
+        rec.session_tier        = slot.obs_session_tier;
+        rec.restore_bytes       = slot.obs_restore_bytes;
+        rec.restore_ms          = slot.obs_restore_ms;
+        rec.restore_wait_ms     = slot.obs_restore_wait_ms;
+        rec.prefetch_hit        = slot.obs_prefetch_hit;
         rec.t_prefill_ms        = st.t_prompt_ms();
         rec.t_decode_ms         = st.t_gen_ms();
         rec.t_ttft_ms           = st.n_gen > 0 && st.t_prompt_last > 0 ? (st.t_prompt_last - t_arrival) / 1e3 : -1.0;
