@@ -18,12 +18,13 @@ Updated: 2026-09-28 ~23:00 local.
 - TTFT p90 swings ~40-60 s run to run on an unchanged build; judge TTFT with 2 runs per side or by p50.
 
 ## In-flight engineering (worktrees in ~/Work/lovelace-wt/, branches not yet merged)
-| branch | agent | goal | state at 23:00 |
+| branch | agent | goal | state at 23:40 |
 |---|---|---|---|
-| feat/batched-verify | BatchedVerify | 6-seq step 60.8 -> 54.0 ms (+17% summed decode); replay +1.9% (admission-bound) | greedy gate FAILED (divergences, ' MB' vs 'MB' suspect: stream-k cap); spec-off margin check + bisect running; then rebase + push. Next (fresh agent): KQ mask on GPU, reduced-vocab draft head, MMQ 24 rows |
-| feat/restore-latency | SessionCore | switch park+issue+copies 80-95 ms (was 1.1-1.8 s wall); replay 82.8 t/s | done; byte-exact restore gate running, then push |
+| feat/batched-verify | BatchedVerify | 6-seq step 60.8 -> 54.0 ms (+17% summed decode); replay +1.9% (admission-bound) | **merged** 4b6187d5d (stream-k cap dropped: broke greedy identity) |
+| feat/restore-latency | SessionCore | switch park+issue+copies 80-95 ms (was 1.1-1.8 s wall); replay 82.8 t/s | **merged** 7ea3ef641 (byte-exact restore gate, gdn-replay pass) |
 | feat/prefill-depth | PrefillFA | phase 1: gates + compute buffer for 8ea46e9d0 (no f16 K/V copy; +2.5-4% to 64k, -4% at 192k); phase 2: cheaper FA math, 126k >= 1620 tok/s, KLD <= 0.01707+0.0005 | started 23:00 |
-| feat/sched-v2 (stacked on restore-latency 72a1f2890) | SchedV2-2 | charter C3 (Scheduling v2 in docs/design/session-store.md) | started 23:00 |
+| feat/sched-v2 (stacked on restore-latency) | SchedV2-2 | charter C3 (Scheduling v2 in docs/design/session-store.md) | started 23:00 |
+| feat/step-costs | StepCosts | host gap 9.5 ms (GPU KQ mask), gathered draft LM head (~3 ms), MMQ 24 rows | started 23:40 |
 
 Merge rule for each branch: test-backend-ops for the touched ops, test-gdn-replay, the greedy e2e identity check,
 and before/after numbers from the branch's own script; then `bench/acceptance.sh` (only missing steps run) and a
