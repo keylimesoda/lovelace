@@ -90,6 +90,10 @@ composition depends on request timing, and base disagrees with itself between se
 The concurrent column therefore can't separate a code change from timing, and it includes one flip at 0.167 nats.
 Without the cap the step loses ~0.9 ms (the small alpha/beta fixups return).
 
+Rebased branch (on main 30769f695 + restore-latency merge) vs base, `greedy/final-*`: sequential **6/6 identical
+with MTP on and 6/6 with MTP off**; the concurrent runs diverge at timing-dependent near-ties, the same way base
+does against itself.
+
 Also found: the parallel verify sampling asserted when the server ran without a speculative context (fixed in f4da1fa42).
 
 ## What's left (by size)
