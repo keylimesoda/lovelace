@@ -5,6 +5,10 @@
 #   DRY_RUN=1 ./run_kld.sh    print the VRAM plans, time estimates and commands only (no GPU)
 #   VRAM_GIB=21.5 ./run_kld.sh  plan against less VRAM (after an OOM, or if the printed
 #                               llama.cpp buffer sizes exceed the plan)
+#   LLAMA_LIB=<engine bin dir> KLD_EXE=build/engine/lovelace-kld TAG=<name> ONLY=wq-iq4xs-q5_0 ./run_kld.sh
+#                             engine swap: one compare step (ONLY = its label) with another llama.cpp build, written
+#                             to results/<label>-<TAG>.json against the existing base file (KLD_EXE is built against
+#                             that engine's headers, README "Build")
 #
 # (1) weight quantization: base Q8_0 + f16 KV vs IQ4_XS + f16 KV, buckets 32k-170k
 #     (Q8_0 weights + f16 KV beyond ~175k tokens would stream nearly every FFN)
@@ -28,7 +32,10 @@ KV_CANDIDATES=(q8_0 q4_0 q5_0 q8_0/q4_0 q8_0/q5_0)
 VRAM_GIB=${VRAM_GIB:-22.5}
 DRY_RUN=${DRY_RUN:-0}
 UV=${UV:-uv}
-LLAMA_LIB=/home/ric/Work/src/llama.cpp/build-sm89/bin
+LLAMA_LIB=${LLAMA_LIB:-/home/ric/Work/src/llama.cpp/build-sm89/bin}
+KLD_EXE=${KLD_EXE:-./build/lovelace-kld}
+ONLY=${ONLY:-}
+TAG=${TAG:-}
 
 # identical for every base and compare run: the kernel choice depends on -ub, -fa and --max-outputs
 B=2048
@@ -39,7 +46,7 @@ CTX=(-ngl 99 -fa on -b "$B" -ub "$UB" --max-outputs "$MAX_OUT" -t 16 --load-mode
 KLD=(docker run --rm --gpus all --user 1000:1000 --ulimit memlock=-1:-1
     -v /home/ric/Work:/home/ric/Work -v /home/ric/models:/home/ric/models:ro -w "$PWD"
     -e LD_LIBRARY_PATH="$LLAMA_LIB" -e GGML_OP_OFFLOAD_MIN_BATCH=1
-    lovelace-engine-runtime:cuda13.1 ./build/lovelace-kld)
+    lovelace-engine-runtime:cuda13.1 "$KLD_EXE")
 
 plan() { # model buckets kv-type(K[/V]) label -> stdout: -ot value ("" = fits); stderr: plan + estimate
     local k=${3%/*} v=${3#*/}
@@ -50,6 +57,11 @@ plan() { # model buckets kv-type(K[/V]) label -> stdout: -ot value ("" = fits); 
 
 step() { # base|compare out model buckets kv-type(K[/V]) label [base-file]
     local cmd=$1 out=$2 model=$3 buckets=$4 kv=$5 label=$6 base=${7:-}
+    [[ -n $ONLY && $label != "$ONLY" ]] && return
+    if [[ -n $TAG && $cmd == compare ]]; then
+        out=${out%.json}-$TAG.json
+        label=$label-$TAG
+    fi
     local ot
     ot=$(plan "$model" "$buckets" "$kv" "$label")
     local args=("$cmd" --model "$model" --windows "$WINDOWS" --buckets "$buckets" --out "$out.part"
@@ -70,7 +82,7 @@ step() { # base|compare out model buckets kv-type(K[/V]) label [base-file]
     echo
 }
 
-[[ -x build/lovelace-kld ]] || { echo "build/lovelace-kld missing: build it first (README)"; exit 1; }
+[[ -x $KLD_EXE ]] || { echo "$KLD_EXE missing: build it first (README)"; exit 1; }
 if [[ $DRY_RUN != 1 ]]; then
     used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -n1)
     echo "note: ${used} MiB in use at start; each step waits for the GPU mutex (deploy/gpu-lock.sh)"
@@ -101,7 +113,7 @@ for c in "${WQ_CANDIDATES[@]}"; do
     wq_results+=("results/wq-$label-f16.json")
 done
 
-[[ $DRY_RUN == 1 ]] && exit 0
+[[ $DRY_RUN == 1 || -n $ONLY ]] && exit 0
 results=(results/wq-iq4xs-f16.json results/wq-iq4xs-q5_0.json "${wq_results[@]}")
 for t in "${KV_CANDIDATES[@]}"; do results+=("results/kv-iq4xs-${t//\//-}.json"); done
 python3 summarize.py "${results[@]}" | tee results/summary.txt
