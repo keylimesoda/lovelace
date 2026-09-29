@@ -1062,22 +1062,28 @@ static __global__ void flash_attn_ext_mma_q(
 }
 
 // ------------------------------------------------------------------------------------------------------------------
-// Large batches (prefill). A block handles FATTN_MMA_Q_PF_ROWS (token, head) rows of one K/V head, 16 rows per warp.
-// Each warp owns its rows through KQ, softmax and VKQ: the softmax state and P stay in registers, no cross-warp
-// reductions. The raw K/V rows of a tile of FATTN_MMA_Q_PF_NBATCH cells are copied with cp.async one tile ahead and
-// unpacked once per block: K into an int8 tile plus its scales (B operand of the int8 KQ mma), V into an f16 tile
-// (B operand of the VKQ mma, f16 accumulation within a tile, f32 across tiles). KQ is in log2 units (the Q scale
-// includes log2(e)). K/V tiles that no token of the block can see are skipped; tiles with a zero mask skip the mask.
+// Large batches (prefill). A block handles FATTN_MMA_Q_PF_ROWS (token, head) rows of one K/V head over a chunk of the
+// K/V cells. Two warps share 16 rows: each computes KQ for half of the cells of a tile, they exchange the row maxima and
+// P through shared memory (named barrier per pair), and each computes VKQ for half of the dimensions. That keeps the
+// f32 accumulators at D/4 registers per thread, so 16 warps fit on an SM and hide the latencies of the mma and of the
+// scaling math. The raw K/V rows of a tile of FATTN_MMA_Q_PF_NBATCH cells are copied with cp.async one tile ahead and
+// unpacked once per block: K into an int8 tile plus its scales (B operand of the int8 KQ mma, Q quantized to int8 per
+// 32 values), V into an f16 tile (B operand of the VKQ mma, f16 accumulation within a tile, f32 across tiles). KQ is in
+// log2 units (the Q scale includes log2(e)). K/V tiles that no token of the block can see are skipped, tiles with a
+// zero mask skip the mask.
 
-#define FATTN_MMA_Q_PF_NWARPS   8
+#define FATTN_MMA_Q_PF_NWARPS   16
 #define FATTN_MMA_Q_PF_NTHREADS (FATTN_MMA_Q_PF_NWARPS*WARP_SIZE)
-#define FATTN_MMA_Q_PF_ROWS     (16*FATTN_MMA_Q_PF_NWARPS) // (token, head) rows per block
+#define FATTN_MMA_Q_PF_ROWS     (8*FATTN_MMA_Q_PF_NWARPS) // (token, head) rows per block, 16 per warp pair
 #define FATTN_MMA_Q_PF_NBATCH   32                          // K/V cells per tile, 2 tiles per visibility tile
 
 static_assert(FATTN_MMA_Q_NBATCH == 2*FATTN_MMA_Q_PF_NBATCH, "bad FATTN_MMA_Q_PF_NBATCH");
 
 static constexpr __host__ __device__ int fattn_mma_q_pf_stride_K(const int D) {
     return D + 16; // int8
+}
+static constexpr __host__ __device__ int fattn_mma_q_pf_stride_P() {
+    return FATTN_MMA_Q_PF_NBATCH + 8; // halves
 }
 // Bytes of the scales of one 32 value block of K for all cells of a tile: d (and m) as float.
 static constexpr __host__ __device__ int fattn_mma_q_pf_Kdm_bytes(const ggml_type type_K) {
@@ -1090,6 +1096,8 @@ static constexpr __host__ __device__ int fattn_mma_q_pf_smem(const int D, const 
          + (D/QK8_0)*fattn_mma_q_pf_Kdm_bytes(type_K)                                                    // K scales
          + FATTN_MMA_Q_PF_NBATCH*fattn_mma_q_stride_V(D)*2                                               // V, f16
          + FATTN_MMA_Q_PF_NBATCH*(fattn_mma_q_row_bytes(D, type_K) + fattn_mma_q_row_bytes(D, type_V))  // raw K and V
+         + FATTN_MMA_Q_PF_ROWS*fattn_mma_q_pf_stride_P()*2                                               // P, f16
+         + FATTN_MMA_Q_PF_NWARPS*16*4                                                                    // row max/sum exchange
          + FATTN_MMA_Q_MAX_CHUNK_TILES*4 + 16;                                                           // tile list + count
 }
 
@@ -1106,6 +1114,11 @@ static __device__ __forceinline__ void fattn_mma_q_pf_ldmatrix_K(uint32_t * b, c
     GGML_UNUSED_VARS(b, K_s, stride);
     NO_DEVICE_CODE;
 #endif // AMPERE_MMA_AVAILABLE
+}
+
+// Barrier for the two warps of a pair (ids 1...8, 0 is __syncthreads).
+static __device__ __forceinline__ void fattn_mma_q_pf_pair_sync(const int pair) {
+    asm volatile("bar.sync %0, 64;" : : "r"(pair + 1) : "memory");
 }
 
 template <int D, ggml_type type_K, ggml_type type_V>
@@ -1129,6 +1142,7 @@ static __global__ void flash_attn_ext_mma_q_pf(
 #if defined(AMPERE_MMA_AVAILABLE) && defined(CP_ASYNC_AVAILABLE)
     constexpr int NB          = FATTN_MMA_Q_PF_NBATCH;
     constexpr int nrows       = FATTN_MMA_Q_PF_ROWS;
+    constexpr int nthreads    = FATTN_MMA_Q_PF_NTHREADS;
     constexpr int row_bytes_K = fattn_mma_q_row_bytes(D, type_K);
     constexpr int row_bytes_V = fattn_mma_q_row_bytes(D, type_V);
     constexpr int cpy_K       = fattn_mma_q_cpy_bytes(D, type_K);
@@ -1137,18 +1151,23 @@ static __global__ void flash_attn_ext_mma_q_pf(
     constexpr int stride_Qds  = fattn_mma_q_stride_Qds(D);
     constexpr int stride_K    = fattn_mma_q_pf_stride_K(D);
     constexpr int stride_V    = fattn_mma_q_stride_V(D);
+    constexpr int stride_P    = fattn_mma_q_pf_stride_P();
     constexpr bool has_m_K    = fattn_mma_q_has_m(type_K);
-    constexpr int NT          = D/8;  // VKQ n tiles per warp
-    constexpr int NTK         = NB/8; // KQ n tiles per warp
+    constexpr int DH          = D/2;     // VKQ dimensions per warp
+    constexpr int NT          = DH/8;    // VKQ n tiles per warp
+    constexpr int NBH         = NB/2;    // KQ cells per warp
+    constexpr int NTK         = NBH/8;   // KQ n tiles per warp
     constexpr float log2e     = 1.4426950408889634f;
     static_assert(D % 64 == 0 && D/8 <= WARP_SIZE, "bad D");
-    static_assert(NTK % 2 == 0 && NT % 2 == 0, "bad tiling");
+    static_assert(NTK == 2 && NT % 2 == 0, "bad tiling");
 
     const int warp = threadIdx.y;
     const int lane = threadIdx.x;
     const int tid  = warp*WARP_SIZE + lane;
     const int lq   = lane % 4; // thread in quad
     const int lr   = lane / 4; // quad in warp
+    const int pair = warp / 2; // the 16 rows of the pair
+    const int hw   = warp % 2; // KQ cells hw*NBH..., VKQ dimensions hw*DH...
 
     // the token tiles of a K/V head and chunk are adjacent so that they share the L2 sectors of the K/V rows
     const int tile_tok = blockIdx.x;
@@ -1177,7 +1196,9 @@ static __global__ void flash_attn_ext_mma_q_pf(
     half    * tile_V    = (half *) ((uint8_t *) tile_Kdm + (D/QK8_0)*fattn_mma_q_pf_Kdm_bytes(type_K));
     uint8_t * raw_K     = (uint8_t *) (tile_V + NB*stride_V);
     uint8_t * raw_V     = raw_K + NB*row_bytes_K;
-    int     * tile_list = (int *) (raw_V + NB*row_bytes_V);
+    half    * tile_P    = (half *) (raw_V + NB*row_bytes_V);
+    float   * red       = (float *) (tile_P + nrows*stride_P);
+    int     * tile_list = (int *) (red + FATTN_MMA_Q_PF_NWARPS*16);
     int     * tile_num  = tile_list + FATTN_MMA_Q_MAX_CHUNK_TILES;
 
     ggml_cuda_pdl_sync();
@@ -1187,9 +1208,9 @@ static __global__ void flash_attn_ext_mma_q_pf(
         const uint32_t raw_K_s = __cvta_generic_to_shared(raw_K);
         const uint32_t raw_V_s = __cvta_generic_to_shared(raw_V);
 #pragma unroll
-        for (int i0 = 0; i0 < NB*(row_bytes_K/cpy_K); i0 += FATTN_MMA_Q_PF_NTHREADS) {
+        for (int i0 = 0; i0 < NB*(row_bytes_K/cpy_K); i0 += nthreads) {
             const int i = i0 + tid;
-            if (i0 + FATTN_MMA_Q_PF_NTHREADS > NB*(row_bytes_K/cpy_K) && i >= NB*(row_bytes_K/cpy_K)) {
+            if (i0 + nthreads > NB*(row_bytes_K/cpy_K) && i >= NB*(row_bytes_K/cpy_K)) {
                 break;
             }
             const int row = i / (row_bytes_K/cpy_K);
@@ -1198,9 +1219,9 @@ static __global__ void flash_attn_ext_mma_q_pf(
             fattn_mma_q_cp_async<cpy_K>(raw_K_s + row*row_bytes_K + c*cpy_K, K_h + (valid ? (k0 + row)*nb11 : 0) + c*cpy_K, valid);
         }
 #pragma unroll
-        for (int i0 = 0; i0 < NB*(row_bytes_V/cpy_V); i0 += FATTN_MMA_Q_PF_NTHREADS) {
+        for (int i0 = 0; i0 < NB*(row_bytes_V/cpy_V); i0 += nthreads) {
             const int i = i0 + tid;
-            if (i0 + FATTN_MMA_Q_PF_NTHREADS > NB*(row_bytes_V/cpy_V) && i >= NB*(row_bytes_V/cpy_V)) {
+            if (i0 + nthreads > NB*(row_bytes_V/cpy_V) && i >= NB*(row_bytes_V/cpy_V)) {
                 break;
             }
             const int row = i / (row_bytes_V/cpy_V);
@@ -1256,12 +1277,14 @@ static __global__ void flash_attn_ext_mma_q_pf(
     }
 
     // The rows of this thread and their tokens (for the mask):
-    const int r0 = 16*warp + lr;
+    const int r0 = 16*pair + lr;
     const int row_tok[2] = {min(r0 / gqa_ratio, ntok - 1), min((r0 + 8) / gqa_ratio, ntok - 1)};
+    float * red_own   = red + 16*warp;       // this warp's row maxima/sums
+    float * red_other = red + 16*(warp ^ 1); // the other warp of the pair
 
     float VKQ[NT][4];
     float KQ_max[2] = {-INFINITY, -INFINITY};
-    float KQ_sum[2] = {0.0f, 0.0f};
+    float KQ_sum[2] = {0.0f, 0.0f}; // over the cells of this warp
 #pragma unroll
     for (int j = 0; j < NT; ++j) {
 #pragma unroll
@@ -1297,7 +1320,7 @@ static __global__ void flash_attn_ext_mma_q_pf(
 
         if (nsub == 0 && nchunks > 1 && kt_num <= FATTN_MMA_Q_MAX_CHUNK_TILES) {
             // nothing visible, the merge skips this chunk
-            for (int r = tid; r < rows_valid; r += FATTN_MMA_Q_PF_NTHREADS) {
+            for (int r = tid; r < rows_valid; r += nthreads) {
                 const int t    = tok0 + r / gqa_ratio;
                 const int head = head_kv*gqa_ratio + r % gqa_ratio;
                 dst_meta[((int64_t(sequence)*ne01 + t)*ne02 + head)*nchunks + chunk] = make_float2(-INFINITY, 0.0f);
@@ -1321,9 +1344,9 @@ static __global__ void flash_attn_ext_mma_q_pf(
             {
                 constexpr int bs = fattn_mma_q_block_bytes(type_K);
 #pragma unroll
-                for (int u0 = 0; u0 < NB*(D/QK8_0); u0 += FATTN_MMA_Q_PF_NTHREADS) {
+                for (int u0 = 0; u0 < NB*(D/QK8_0); u0 += nthreads) {
                     const int u = u0 + tid;
-                    if (u0 + FATTN_MMA_Q_PF_NTHREADS > NB*(D/QK8_0) && u >= NB*(D/QK8_0)) {
+                    if (u0 + nthreads > NB*(D/QK8_0) && u >= NB*(D/QK8_0)) {
                         break;
                     }
                     const int cell = u / (D/QK8_0);
@@ -1347,9 +1370,9 @@ static __global__ void flash_attn_ext_mma_q_pf(
             {
                 constexpr int bs = fattn_mma_q_block_bytes(type_V);
 #pragma unroll
-                for (int u0 = 0; u0 < NB*(D/16); u0 += FATTN_MMA_Q_PF_NTHREADS) {
+                for (int u0 = 0; u0 < NB*(D/16); u0 += nthreads) {
                     const int u = u0 + tid;
-                    if (u0 + FATTN_MMA_Q_PF_NTHREADS > NB*(D/16) && u >= NB*(D/16)) {
+                    if (u0 + nthreads > NB*(D/16) && u >= NB*(D/16)) {
                         break;
                     }
                     const int cell = u / (D/16);
@@ -1370,7 +1393,7 @@ static __global__ void flash_attn_ext_mma_q_pf(
                 load_raw((tile_list[(i + 1)/2] >> 1)*FATTN_MMA_Q_NBATCH + ((i + 1) % 2)*NB);
             }
 
-            // KQ for the 16 rows of this warp and the NB cells of the tile:
+            // KQ for the 16 rows of the pair and the NBH cells of this warp:
             float KQ[NTK][4];
 #pragma unroll
             for (int j = 0; j < NTK; ++j) {
@@ -1382,89 +1405,95 @@ static __global__ void flash_attn_ext_mma_q_pf(
 #pragma unroll
             for (int ib = 0; ib < D/QK8_0; ++ib) {
                 uint32_t a[4];
-                fattn_mma_q_ldmatrix_A(a, (const half *) (tile_Q + 16*warp*stride_Q + ib*QK8_0), stride_Q/2);
+                fattn_mma_q_ldmatrix_A(a, (const half *) (tile_Q + 16*pair*stride_Q + ib*QK8_0), stride_Q/2);
                 const float2 ds0 = tile_Qds[(r0    )*stride_Qds + ib];
                 const float2 ds1 = tile_Qds[(r0 + 8)*stride_Qds + ib];
+                uint32_t b[4];
+                fattn_mma_q_pf_ldmatrix_K(b, tile_K + hw*NBH*stride_K + ib*QK8_0, stride_K);
 #pragma unroll
-                for (int j = 0; j < NTK; j += 2) {
-                    uint32_t b[4];
-                    fattn_mma_q_pf_ldmatrix_K(b, tile_K + 8*j*stride_K + ib*QK8_0, stride_K);
-#pragma unroll
-                    for (int jj = 0; jj < 2; ++jj) {
-                        int acc[4] = {0, 0, 0, 0};
-                        fattn_mma_q_mma_i8(acc, a, b[2*jj + 0], b[2*jj + 1]);
-                        const int c = 8*(j + jj) + 2*lq;
-                        if constexpr (has_m_K) {
-                            const float4 dm = *(const float4 *) ((const float2 *) tile_Kdm + ib*NB + c);
-                            KQ[j + jj][0] += dm.x*ds0.x * fattn_mma_q_i2f(acc[0]) + dm.y*ds0.y;
-                            KQ[j + jj][1] += dm.z*ds0.x * fattn_mma_q_i2f(acc[1]) + dm.w*ds0.y;
-                            KQ[j + jj][2] += dm.x*ds1.x * fattn_mma_q_i2f(acc[2]) + dm.y*ds1.y;
-                            KQ[j + jj][3] += dm.z*ds1.x * fattn_mma_q_i2f(acc[3]) + dm.w*ds1.y;
-                        } else {
-                            const float2 dk = *(const float2 *) (tile_Kdm + ib*NB + c);
-                            KQ[j + jj][0] += dk.x*ds0.x * fattn_mma_q_i2f(acc[0]);
-                            KQ[j + jj][1] += dk.y*ds0.x * fattn_mma_q_i2f(acc[1]);
-                            KQ[j + jj][2] += dk.x*ds1.x * fattn_mma_q_i2f(acc[2]);
-                            KQ[j + jj][3] += dk.y*ds1.x * fattn_mma_q_i2f(acc[3]);
-                        }
+                for (int j = 0; j < NTK; ++j) {
+                    int acc[4] = {0, 0, 0, 0};
+                    fattn_mma_q_mma_i8(acc, a, b[2*j + 0], b[2*j + 1]);
+                    const int c = hw*NBH + 8*j + 2*lq;
+                    if constexpr (has_m_K) {
+                        const float4 dm = *(const float4 *) ((const float2 *) tile_Kdm + ib*NB + c);
+                        KQ[j][0] += dm.x*ds0.x * fattn_mma_q_i2f(acc[0]) + dm.y*ds0.y;
+                        KQ[j][1] += dm.z*ds0.x * fattn_mma_q_i2f(acc[1]) + dm.w*ds0.y;
+                        KQ[j][2] += dm.x*ds1.x * fattn_mma_q_i2f(acc[2]) + dm.y*ds1.y;
+                        KQ[j][3] += dm.z*ds1.x * fattn_mma_q_i2f(acc[3]) + dm.w*ds1.y;
+                    } else {
+                        const float2 dk = *(const float2 *) (tile_Kdm + ib*NB + c);
+                        KQ[j][0] += dk.x*ds0.x * fattn_mma_q_i2f(acc[0]);
+                        KQ[j][1] += dk.y*ds0.x * fattn_mma_q_i2f(acc[1]);
+                        KQ[j][2] += dk.x*ds1.x * fattn_mma_q_i2f(acc[2]);
+                        KQ[j][3] += dk.y*ds1.x * fattn_mma_q_i2f(acc[3]);
                     }
                 }
             }
 
             // Mask and out-of-bounds cells:
+            const int kw = k0 + hw*NBH; // first cell of this warp
             if (masked) {
 #pragma unroll
                 for (int h = 0; h < 2; ++h) {
-                    const half * mask_r = mask_h + int64_t(row_tok[h])*stride_mask + k0;
+                    const half * mask_r = mask_h + int64_t(row_tok[h])*stride_mask + kw;
 #pragma unroll
                     for (int j = 0; j < NTK; ++j) {
                         const int c = 8*j + 2*lq;
                         float2 m = make_float2(0.0f, 0.0f);
                         if (mask_vec) {
                             // ne11 % 8 == 0, so the pair is either in or out of bounds
-                            if (k0 + c < ne11) {
+                            if (kw + c < ne11) {
                                 m = __half22float2(*(const half2 *) (mask_r + c));
                             }
                         } else {
-                            m.x = k0 + c + 0 < ne11 ? __half2float(mask_r[c + 0]) : 0.0f;
-                            m.y = k0 + c + 1 < ne11 ? __half2float(mask_r[c + 1]) : 0.0f;
+                            m.x = kw + c + 0 < ne11 ? __half2float(mask_r[c + 0]) : 0.0f;
+                            m.y = kw + c + 1 < ne11 ? __half2float(mask_r[c + 1]) : 0.0f;
                         }
                         KQ[j][2*h + 0] += log2e*m.x;
                         KQ[j][2*h + 1] += log2e*m.y;
                     }
                 }
             }
-            if (k0 + NB > ne11) {
+            if (kw + NBH > ne11) {
 #pragma unroll
                 for (int j = 0; j < NTK; ++j) {
 #pragma unroll
                     for (int l = 0; l < 4; ++l) {
-                        if (k0 + 8*j + 2*lq + l % 2 >= ne11) {
+                        if (kw + 8*j + 2*lq + l % 2 >= ne11) {
                             KQ[j][l] = -INFINITY;
                         }
                     }
                 }
             }
 
-            // Online softmax, the rows are owned by this warp:
+            // Row maxima of this warp's cells, exchanged with the other warp of the pair:
+            float mx[2];
+#pragma unroll
+            for (int h = 0; h < 2; ++h) {
+                mx[h] = fmaxf(fmaxf(KQ[0][2*h + 0], KQ[0][2*h + 1]), fmaxf(KQ[1][2*h + 0], KQ[1][2*h + 1]));
+                mx[h] = fmaxf(mx[h], __shfl_xor_sync(0xFFFFFFFF, mx[h], 1));
+                mx[h] = fmaxf(mx[h], __shfl_xor_sync(0xFFFFFFFF, mx[h], 2));
+            }
+            if (lq == 0) {
+                red_own[lr + 0] = mx[0];
+                red_own[lr + 8] = mx[1];
+            }
+            fattn_mma_q_pf_pair_sync(pair);
+
+            // Online softmax, both warps of the pair compute the same row maxima:
             float scale_old[2];
 #pragma unroll
             for (int h = 0; h < 2; ++h) {
-                float mx = KQ_max[h];
-#pragma unroll
-                for (int j = 0; j < NTK; ++j) {
-                    mx = fmaxf(mx, fmaxf(KQ[j][2*h + 0], KQ[j][2*h + 1]));
-                }
-                mx = fmaxf(mx, __shfl_xor_sync(0xFFFFFFFF, mx, 1));
-                mx = fmaxf(mx, __shfl_xor_sync(0xFFFFFFFF, mx, 2));
-                const float mx_use = mx == -INFINITY ? 0.0f : mx;
-                scale_old[h] = exp2f(KQ_max[h] - mx_use);
-                KQ_max[h] = mx;
+                const float m_new = fmaxf(KQ_max[h], fmaxf(mx[h], red_other[lr + 8*h]));
+                const float m_use = m_new == -INFINITY ? 0.0f : m_new;
+                scale_old[h] = exp2f(KQ_max[h] - m_use);
+                KQ_max[h] = m_new;
                 float sum = 0.0f;
 #pragma unroll
                 for (int j = 0; j < NTK; ++j) {
-                    KQ[j][2*h + 0] = exp2f(KQ[j][2*h + 0] - mx_use);
-                    KQ[j][2*h + 1] = exp2f(KQ[j][2*h + 1] - mx_use);
+                    KQ[j][2*h + 0] = exp2f(KQ[j][2*h + 0] - m_use);
+                    KQ[j][2*h + 1] = exp2f(KQ[j][2*h + 1] - m_use);
                     sum += KQ[j][2*h + 0] + KQ[j][2*h + 1];
                 }
                 KQ_sum[h] = KQ_sum[h]*scale_old[h] + sum;
@@ -1480,24 +1509,29 @@ static __global__ void flash_attn_ext_mma_q_pf(
                 }
             }
 
-            // P as the A operand of VKQ (the C layout of two KQ n tiles is the A layout of one k step):
+            // P of this warp's cells to shared memory, then the P of all NB cells as the A operand of VKQ:
+            half * P_pair = tile_P + 16*pair*stride_P;
+#pragma unroll
+            for (int j = 0; j < NTK; ++j) {
+                const int c = hw*NBH + 8*j + 2*lq;
+                *(half2 *) (P_pair + (lr + 0)*stride_P + c) = make_half2(KQ[j][0], KQ[j][1]);
+                *(half2 *) (P_pair + (lr + 8)*stride_P + c) = make_half2(KQ[j][2], KQ[j][3]);
+            }
+            fattn_mma_q_pf_pair_sync(pair);
             uint32_t P[NB/16][4];
 #pragma unroll
             for (int kk = 0; kk < NB/16; ++kk) {
-                P[kk][0] = fattn_mma_q_h2_as_u32(make_half2(KQ[2*kk + 0][0], KQ[2*kk + 0][1]));
-                P[kk][1] = fattn_mma_q_h2_as_u32(make_half2(KQ[2*kk + 0][2], KQ[2*kk + 0][3]));
-                P[kk][2] = fattn_mma_q_h2_as_u32(make_half2(KQ[2*kk + 1][0], KQ[2*kk + 1][1]));
-                P[kk][3] = fattn_mma_q_h2_as_u32(make_half2(KQ[2*kk + 1][2], KQ[2*kk + 1][3]));
+                fattn_mma_q_ldmatrix_A(P[kk], P_pair + 16*kk, stride_P);
             }
 
-            // VKQ, f16 accumulation within the tile:
+            // VKQ for this warp's dimensions, f16 accumulation within the tile:
 #pragma unroll
             for (int j = 0; j < NT; j += 2) {
                 uint32_t acc[2][2] = {{0, 0}, {0, 0}};
 #pragma unroll
                 for (int kk = 0; kk < NB/16; ++kk) {
                     uint32_t b[4];
-                    fattn_mma_q_ldmatrix_B_trans_x4(b, tile_V + 16*kk*stride_V + 8*j, stride_V);
+                    fattn_mma_q_ldmatrix_B_trans_x4(b, tile_V + 16*kk*stride_V + hw*DH + 8*j, stride_V);
                     fattn_mma_q_mma_f16(acc[0], P[kk], b[0], b[1]);
                     fattn_mma_q_mma_f16(acc[1], P[kk], b[2], b[3]);
                 }
@@ -1515,12 +1549,24 @@ static __global__ void flash_attn_ext_mma_q_pf(
         fattn_mma_q_cp_async_wait<0>();
     }
 
-    // Write the rows of this warp, the row sums are summed over the quad:
+    // Row sums: over the quad, then over the pair (the shared memory of the last tile's maxima is free again after
+    // the pair barrier that follows its P exchange):
 #pragma unroll
     for (int h = 0; h < 2; ++h) {
-        float sum = KQ_sum[h];
-        sum += __shfl_xor_sync(0xFFFFFFFF, sum, 1);
-        sum += __shfl_xor_sync(0xFFFFFFFF, sum, 2);
+        KQ_sum[h] += __shfl_xor_sync(0xFFFFFFFF, KQ_sum[h], 1);
+        KQ_sum[h] += __shfl_xor_sync(0xFFFFFFFF, KQ_sum[h], 2);
+    }
+    __syncthreads();
+    if (lq == 0) {
+        red_own[lr + 0] = KQ_sum[0];
+        red_own[lr + 8] = KQ_sum[1];
+    }
+    fattn_mma_q_pf_pair_sync(pair);
+
+    // Write this warp's dimensions of the rows of the pair:
+#pragma unroll
+    for (int h = 0; h < 2; ++h) {
+        float sum = KQ_sum[h] + red_other[lr + 8*h];
 
         const int r = r0 + 8*h;
         if (r >= rows_valid) {
@@ -1543,16 +1589,16 @@ static __global__ void flash_attn_ext_mma_q_pf(
             const float inv = sum > 0.0f ? scale_VKQ/sum : 0.0f;
 #pragma unroll
             for (int j = 0; j < NT; ++j) {
-                *(float2 *) (dst + row_dst*D + 8*j + 2*lq) = make_float2(inv*VKQ[j][2*h + 0], inv*VKQ[j][2*h + 1]);
+                *(float2 *) (dst + row_dst*D + hw*DH + 8*j + 2*lq) = make_float2(inv*VKQ[j][2*h + 0], inv*VKQ[j][2*h + 1]);
             }
         } else {
             const int64_t row_part = row_dst*nchunks + chunk;
             const float inv = sum > 0.0f ? 1.0f/sum : 0.0f;
 #pragma unroll
             for (int j = 0; j < NT; ++j) {
-                dst_parts[row_part*(D/2) + 4*j + lq] = make_half2(inv*VKQ[j][2*h + 0], inv*VKQ[j][2*h + 1]);
+                dst_parts[row_part*(D/2) + (hw*DH + 8*j)/2 + lq] = make_half2(inv*VKQ[j][2*h + 0], inv*VKQ[j][2*h + 1]);
             }
-            if (lq == 0) {
+            if (hw == 0 && lq == 0) {
                 dst_meta[row_part] = make_float2(mx, sum);
             }
         }
@@ -1766,13 +1812,22 @@ static void ggml_cuda_flash_attn_ext_mma_q_pf_launch(ggml_backend_cuda_context &
             ntok_tile, int(mask_vec));
     }
 
-    // Split the K/V cells into chunks: several waves of blocks (one block per SM), chunks of at least 2048 cells.
+    // Split the K/V cells into chunks (at least 2048 cells each) so that the waves of blocks (one block per SM) are
+    // full: minimize waves * (tiles per chunk + a per-block overhead of ~16 tiles for Q and the partial results).
     const int nunits = ntiles_tok * K->ne[2] * Q->ne[3];
-    const int nblocks_target = 4*nsm;
-    int chunk_tiles = (int64_t(ntiles_kv)*nunits + nblocks_target - 1) / nblocks_target;
-    chunk_tiles = std::max(chunk_tiles, 32);
-    chunk_tiles = std::min(chunk_tiles, ntiles_kv);
-    const int nchunks = (ntiles_kv + chunk_tiles - 1) / chunk_tiles;
+    const int nchunks_max = std::max(1, std::min(16, ntiles_kv/32));
+    int nchunks = 1;
+    int64_t best_cost = INT64_MAX;
+    for (int n = 1; n <= nchunks_max; ++n) {
+        const int64_t waves = (int64_t(nunits)*n + nsm - 1) / nsm;
+        const int64_t cost  = waves*((ntiles_kv + n - 1)/n + 16);
+        if (cost < best_cost) {
+            best_cost = cost;
+            nchunks   = n;
+        }
+    }
+    const int chunk_tiles = (ntiles_kv + nchunks - 1) / nchunks;
+    nchunks = (ntiles_kv + chunk_tiles - 1) / chunk_tiles;
 
     const int64_t nrows_dst = Q->ne[1]*Q->ne[2]*Q->ne[3];
     ggml_cuda_pool_alloc<half2>  parts(ctx.pool());

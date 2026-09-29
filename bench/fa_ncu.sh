@@ -3,8 +3,8 @@
 #   bench/fa_ncu.sh OUT_PREFIX BIN_DIR CASE_REGEX [KERNEL_REGEX]
 #     e.g. bench/fa_ncu.sh bench/results/prefill-depth/ncu-pf engine/build-sm89/bin \
 #            'kv=131072,nb=1024,type_K=q5_0,type_V=q5_0,.*causal' flash_attn_ext_mma_q_pf
-# Writes OUT_PREFIX.ncu-rep and OUT_PREFIX.txt (details page: speed of light, workload, instruction and warp state
-# statistics). KERNEL_REGEX default: flash_attn_ext (the first matching launch after 2 warm-up launches is profiled).
+# Writes OUT_PREFIX.ncu-rep, OUT_PREFIX.txt (details page: speed of light, workload, instruction and warp state
+# statistics) and OUT_PREFIX.sass.csv (per SASS instruction: executed instructions and stall samples). KERNEL_REGEX default: flash_attn_ext (the first matching launch after 2 warm-up launches is profiled).
 set -euo pipefail
 OUT=$(realpath -m "$1") BIN=$(realpath "$2") CASE=$3 KREGEX=${4:-flash_attn_ext}
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -16,5 +16,6 @@ mkdir -p "$(dirname "$OUT")"
       --section WarpStateStats --section MemoryWorkloadAnalysis --section Occupancy --section LaunchStats --section SourceCounters \
       --import-source no /e/test-backend-ops perf -o FLASH_ATTN_EXT -b CUDA0 -p '$CASE' > /out/$(basename "$OUT").run.txt 2>&1
     ncu -i /out/$(basename "$OUT").ncu-rep --page details > /out/$(basename "$OUT").txt
+    ncu -i /out/$(basename "$OUT").ncu-rep --page source --print-source sass --csv > /out/$(basename "$OUT").sass.csv
     chown $(id -u):$(id -g) /out/$(basename "$OUT")*"
 grep -E "Duration|Compute \(SM\) Throughput|Memory Throughput|Registers|Achieved Occupancy|Issue Slots Busy|No Eligible|Warp Cycles Per Issued|Stall|Executed Ipc" "$OUT.txt" | head -40
