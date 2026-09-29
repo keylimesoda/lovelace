@@ -203,6 +203,48 @@ run parameters and the base file's metadata. `summarize.py` puts several results
 python3 summarize.py results/wq-iq4xs-f16.json results/kv-iq4xs-*.json
 ```
 
+## ninfer (the previous setup)
+
+`ninfer-kld` scores the ninfer engine and its `.ninfer` artifact against a lovelace-kld base file
+and writes the JSON schema of `compare`, so `summarize.py` puts it next to the lovelace rows. It
+lives in the ninfer repo (`~/Work/ninfer-4090-lin-hybrid`, local branch `kld-scoring`,
+`apps/kld/`, with a verbatim copy of `kld_math.h`). It tokenizes each window with the artifact's
+tokenizer the same way as `lovelace-kld` (context and reply separately, special tokens parsed)
+and aborts unless every window reproduces the base's token hash, scored-span start, and
+next-token ids. Q is ninfer's own causal-scoring distribution: BF16 output logits, normalized
+over its 248,077-token domain, prefilled in 1024-token chunks with the selected KV mode; the
+tool reports the max |difference| between its log-softmax and the engine's own target
+log-probs (5.7e-6 in the runs below).
+
+Build (inside the `ninfer-build` container, which mounts the repo at `/src` and the build tree
+at `/build`), then copy the binary here:
+
+```sh
+docker start ninfer-build
+docker exec ninfer-build bash -c 'cmake -S /src -B /build && cmake --build /build --parallel 12 --target ninfer-kld'
+cp ~/Work/ninfer-build/apps/ninfer-kld build/ninfer-kld
+```
+
+Run: one command per KV mode, against the Q8_0 + f16 KV base (buckets 32k–170k). It runs in the
+`ninfer-4090:hybrid` image, which has the runtime libraries:
+
+```sh
+for kv in rk4v4-e8 int8; do
+  ../../deploy/gpu-lock.sh docker run --rm --gpus all --user 1000:1000 -v /home/ric/Work:/home/ric/Work \
+    -w /home/ric/Work/lovelace/eval/kld ninfer-4090:hybrid ./build/ninfer-kld \
+    /home/ric/Work/ninfer-artifacts/qwen3_8_27b.ninfer --windows windows.jsonl \
+    --base results/wq-base-q8_0-f16.bin --out results/wq-ninfer-$kv.json --kv-dtype $kv \
+    > results/wq-ninfer-$kv.json.log 2>&1
+done
+python3 summarize.py results/wq-iq4xs-f16.json results/wq-ninfer-*.json
+```
+
+`rk4v4-e8` is ninfer's production KV mode, and `int8` is the high-precision control. `bf16` KV
+doesn't fit 173,824 tokens next to the 15.9 GiB of weights. Each run scores all 24 windows in
+about 17–18 minutes and loads in 3 s from the page cache. GPU memory after load, including
+about 0.95 GiB used by the desktop: 20.3 GiB for `rk4v4-e8` (KV 2.82 GiB) and 23.0 GiB for
+`int8` (KV 5.47 GiB). `--max-context` defaults to the longest window, rounded up to 256.
+
 ## Options
 
 `lovelace-kld base|compare` accept:
