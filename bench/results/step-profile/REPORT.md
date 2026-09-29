@@ -45,6 +45,13 @@ Findings:
 MTP draft steps 2.17 -> 2.00 ms, target matmul/FA unchanged; single stream at 64k 29.9 -> 29.0 ms (gap 4.3 -> 3.3).
 Sum of per-request decode in the six-seq drive: 325 tok/s vs 278 base (+17%).
 
+**Pushed branch (41f763e21: rebased on main, stream-k cap dropped), `step-profile/final`:** six-seq step 58.6 ms
+(median 57.2), host gap 12.7 ms, summed drive decode 287.5 tok/s (+3.4% vs base). Per-gap: draft-step gaps
+1.26 -> 0.48 ms, catch-up gap 1.87 -> 1.33 ms, but the gap between the target's input upload and its first kernel
+(graph launch) grew 1.67 -> 2.19 ms and the post-catch-up gap is 3.5 ms. Relative to v6 (54.0 ms), the difference is
+the dropped cap (~0.9 ms) plus that launch gap, which comes with the rebase onto main (the restore-latency merge);
+not investigated. The replay numbers below are for v6 (with the cap), not for the pushed build.
+
 Step profiles after the intermediate builds (`step-profile/v2..v4`): v4 (all but the last commit) six-seq step
 61.4 ms, sum of per-request decode 292 vs 278 tok/s base (+5%). The first mask version was no faster in practice:
 Qwen3.5 batches carry 4 M-RoPE positions (the 2D path), and the per-cell 256-bit sets made the pass memory-bound;
