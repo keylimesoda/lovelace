@@ -1,0 +1,70 @@
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.1.2
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24100 MiB):
+  Device 0: NVIDIA GeForce RTX 4090, compute capability 8.9, VMM: yes, VRAM: 24100 MiB
+ok   6 rows, n_pos 1, f16, CUDA0: 212852 of 1720320 visible
+ok   6 rows, n_pos 1, f16, CPU: 212852 of 1720320 visible
+ok   6 rows, n_pos 1, f32, CUDA0: 212852 of 1720320 visible
+ok   6 rows, n_pos 1, f32, CPU: 212852 of 1720320 visible
+ok   6 rows, n_pos 1, shared prefix, f16, CUDA0: 213197 of 1720320 visible
+ok   6 rows, n_pos 1, shared prefix, f16, CPU: 213197 of 1720320 visible
+ok   6 rows, n_pos 1, shared prefix, f32, CUDA0: 213197 of 1720320 visible
+ok   6 rows, n_pos 1, shared prefix, f32, CPU: 213197 of 1720320 visible
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ok   6 rows, n_pos 4, f16, CUDA0: 212961 of 1720320 visible
+ok   6 rows, n_pos 4, f16, CPU: 212961 of 1720320 visible
+ok   6 rows, n_pos 4, f32, CUDA0: 212961 of 1720320 visible
+ok   6 rows, n_pos 4, f32, CPU: 212961 of 1720320 visible
+ok   6 rows, n_pos 4, shared prefix, f16, CUDA0: 213231 of 1720320 visible
+ok   6 rows, n_pos 4, shared prefix, f16, CPU: 213231 of 1720320 visible
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ok   6 rows, n_pos 4, shared prefix, f32, CUDA0: 213231 of 1720320 visible
+ok   6 rows, n_pos 4, shared prefix, f32, CPU: 213231 of 1720320 visible
+ggml_backend_cuda_graph_compute: CUDA graph warmup reset
+ok   24 rows, n_pos 1, f16, CUDA0: 851544 of 6881280 visible
+ok   24 rows, n_pos 1, f16, CPU: 851544 of 6881280 visible
+ok   24 rows, n_pos 1, f32, CUDA0: 851544 of 6881280 visible
+ok   24 rows, n_pos 1, f32, CPU: 851544 of 6881280 visible
+ok   24 rows, n_pos 1, shared prefix, f16, CUDA0: 852664 of 6881280 visible
+ok   24 rows, n_pos 1, shared prefix, f16, CPU: 852664 of 6881280 visible
+ok   24 rows, n_pos 1, shared prefix, f32, CUDA0: 852664 of 6881280 visible
+ok   24 rows, n_pos 1, shared prefix, f32, CPU: 852664 of 6881280 visible
+ok   24 rows, n_pos 4, f16, CUDA0: 851556 of 6881280 visible
+ok   24 rows, n_pos 4, f16, CPU: 851556 of 6881280 visible
+ok   24 rows, n_pos 4, f32, CUDA0: 851556 of 6881280 visible
+ok   24 rows, n_pos 4, f32, CPU: 851556 of 6881280 visible
+ok   24 rows, n_pos 4, shared prefix, f16, CUDA0: 852712 of 6881280 visible
+ok   24 rows, n_pos 4, shared prefix, f16, CPU: 852712 of 6881280 visible
+ok   24 rows, n_pos 4, shared prefix, f32, CUDA0: 852712 of 6881280 visible
+ok   24 rows, n_pos 4, shared prefix, f32, CPU: 852712 of 6881280 visible
+ok   non-causal, 6 rows, n_kv 8189, f16, CUDA0: 12000 of 49134 visible
+ok   non-causal, 6 rows, n_kv 8189, f16, CPU: 12000 of 49134 visible
+ok   non-causal, 6 rows, n_kv 8189, f32, CUDA0: 12000 of 49134 visible
+ok   non-causal, 6 rows, n_kv 8189, f32, CPU: 12000 of 49134 visible
+ok   3 streams x 4 rows, f16, CUDA0: 35982 of 49152 visible
+ok   3 streams x 4 rows, f16, CPU: 35982 of 49152 visible
+ok   3 streams x 4 rows, f32, CUDA0: 35982 of 49152 visible
+ok   3 streams x 4 rows, f32, CPU: 35982 of 49152 visible
+ok   window [39936, 50176), 64 prefill rows, f16: window == columns of the full mask
+ok   window [39936, 50176), 64 prefill rows, f16, CUDA0: 637984 of 655360 visible
+ok   window [39936, 50176), 64 prefill rows, f16, CPU: 637984 of 655360 visible
+ok   window [39936, 50176), 64 prefill rows, f32: window == columns of the full mask
+ok   window [39936, 50176), 64 prefill rows, f32, CUDA0: 637984 of 655360 visible
+ok   window [39936, 50176), 64 prefill rows, f32, CPU: 637984 of 655360 visible
+ok   M-RoPE image block (fallback): host mask
+ok   9 sequences (fallback): host mask
+all KQ mask checks passed
+exit 0

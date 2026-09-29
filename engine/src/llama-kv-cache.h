@@ -30,6 +30,8 @@ struct llama_kv_mask_args {
     int64_t n_kv;
     int64_t n_stream; // streams in the ubatch
     int64_t n_tps;    // tokens per stream
+
+    uint32_t kv_lo = 0; // the mask column j is the cell kv_lo + j (llama_kv_cache::get_kv_window())
 };
 
 struct llama_kv_mask_scratch {
@@ -225,11 +227,17 @@ public:
     // graph_build API
     //
 
+    // the used range [0, n_kv) of the streams of sinfo, padded
     uint32_t get_n_kv(const slot_info & sinfo) const;
 
-    // get views of the current state of the cache
-    ggml_tensor * get_k(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
-    ggml_tensor * get_v(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
+    // the cell range [kv_lo, kv_lo + n_kv) the ubatch attends: it covers every cell visible to a sequence of the
+    // ubatch, padded to 256 cells, so K/V views, the KQ mask and the attention cost follow the ubatch's sequences
+    // rather than every resident cell (the unified cache holds all sessions). kv_lo = 0 when windowing is off.
+    void get_kv_window(const slot_info & sinfo, const llama_ubatch & ubatch, uint32_t & kv_lo, uint32_t & n_kv) const;
+
+    // get views of the cells [kv_lo, kv_lo + n_kv) of the current state of the cache
+    ggml_tensor * get_k(ggml_context * ctx, int32_t il, uint32_t kv_lo, uint32_t n_kv, const slot_info & sinfo) const;
+    ggml_tensor * get_v(ggml_context * ctx, int32_t il, uint32_t kv_lo, uint32_t n_kv, const slot_info & sinfo) const;
 
     // store k_cur and v_cur in the cache based on the provided head location
     ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const;
@@ -268,12 +276,14 @@ public:
 
     void set_input_k_shift(ggml_tensor * dst) const;
 
-    void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
+    // dst covers the cells [kv_lo, kv_lo + dst->ne[0])
+    void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn, uint32_t kv_lo) const;
 
-    // the mask built on the device from compact inputs (see llama_kv_mask_on_device())
-    bool kq_mask_on_device    (const llama_ubatch & ubatch, int64_t n_kv, int64_t n_stream, bool causal_attn) const;
-    void set_input_kq_mask_keys(ggml_tensor * keys, ggml_tensor * rows, const llama_ubatch * ubatch, bool causal_attn) const;
-    void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+    // the mask built on the device from compact inputs (see llama_kv_mask_on_device()); keys cover the cells
+    // [kv_lo, kv_lo + keys->ne[0])
+    bool kq_mask_on_device    (const llama_ubatch & ubatch, int64_t n_kv, int64_t n_stream, bool causal_attn, uint32_t kv_lo) const;
+    void set_input_kq_mask_keys(ggml_tensor * keys, ggml_tensor * rows, const llama_ubatch * ubatch, bool causal_attn, uint32_t kv_lo) const;
+    void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch, uint32_t kv_lo) const;
 
     void set_input_k_rot(ggml_tensor * dst) const;
     void set_input_v_rot(ggml_tensor * dst) const;
@@ -316,6 +326,10 @@ private:
     // SWA
     const uint32_t n_swa = 0;
 
+    // attend only the window of cells visible to the ubatch's sequences (get_kv_window()); on for the model
+    // families whose graphs read the cache only through get_k()/get_v() and the KQ mask
+    bool kv_window = false;
+
     // env: LLAMA_ATTN_ROT_DISABLE
     bool attn_rot_k = false;
     bool attn_rot_v = false;
@@ -357,7 +371,7 @@ private:
     // scratch of the KQ mask functions
     mutable llama_kv_mask_scratch kq_mask_scratch;
 
-    llama_kv_mask_args kq_mask_args(const llama_ubatch * ubatch, int64_t n_kv, int64_t n_stream) const;
+    llama_kv_mask_args kq_mask_args(const llama_ubatch * ubatch, int64_t n_kv, int64_t n_stream, uint32_t kv_lo) const;
 
     // pending stream copies that will be applied during the next update
     stream_copy_info sc_info;
@@ -454,6 +468,9 @@ public:
 
     uint32_t get_n_kv() const;
 
+    // first cell of the views and the mask (see llama_kv_cache::get_kv_window())
+    uint32_t get_kv_lo() const;
+
     ggml_type type_k() const;
     ggml_type type_v() const;
 
@@ -527,4 +544,7 @@ private:
     // a heuristic, to avoid attending the full cache if it is not yet utilized
     // as the cache gets filled, the benefit from this heuristic disappears
     int32_t n_kv;
+
+    // first cell of the attended window: the views and the mask start here
+    uint32_t kv_lo = 0;
 };

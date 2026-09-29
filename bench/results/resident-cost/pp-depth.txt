@@ -1,0 +1,50 @@
+== /home/ric/Work/lovelace-wt/resident-base-bin (2026-09-29T03:01:17-07:00)
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.1.2
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24100 MiB):
+  Device 0: NVIDIA GeForce RTX 4090, compute capability 8.9, VMM: yes, VRAM: 24100 MiB
+| model                          |       size |     params | backend    | ngl | n_ubatch | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -------: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35 27B (guessed) all F32   |  12.17 GiB |    27.32 B | CUDA       |  99 |     1024 |   q5_0 |   q5_0 |   1 |          pp2048 |      3005.69 ± 52.39 |
+| qwen35 27B (guessed) all F32   |  12.17 GiB |    27.32 B | CUDA       |  99 |     1024 |   q5_0 |   q5_0 |   1 | pp2048 @ d65536 |      1872.25 ± 24.21 |
+| qwen35 27B (guessed) all F32   |  12.17 GiB |    27.32 B | CUDA       |  99 |     1024 |   q5_0 |   q5_0 |   1 | pp2048 @ d131072 |       1356.00 ± 9.16 |
+
+build: unknown (0)
+== /home/ric/Work/lovelace-wt/resident-win-bin (2026-09-29T03:03:07-07:00)
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.1.2
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24100 MiB):
+  Device 0: NVIDIA GeForce RTX 4090, compute capability 8.9, VMM: yes, VRAM: 24100 MiB
+| model                          |       size |     params | backend    | ngl | n_ubatch | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -------: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35 27B (guessed) all F32   |  12.17 GiB |    27.32 B | CUDA       |  99 |     1024 |   q5_0 |   q5_0 |   1 |          pp2048 |      2998.15 ± 58.39 |
+| qwen35 27B (guessed) all F32   |  12.17 GiB |    27.32 B | CUDA       |  99 |     1024 |   q5_0 |   q5_0 |   1 | pp2048 @ d65536 |       1859.87 ± 2.81 |
+| qwen35 27B (guessed) all F32   |  12.17 GiB |    27.32 B | CUDA       |  99 |     1024 |   q5_0 |   q5_0 |   1 | pp2048 @ d131072 |       1349.92 ± 7.16 |
+
+build: unknown (0)

@@ -1,0 +1,1 @@
+{"req": 0, "measured": true, "target": 128000, "session": "2026-09-26T09-53-08_01a0dd22.jsonl", "prompt_n": 125640, "cache_n": 0, "prompt_ms": 62788.28, "prompt_tps": 2001.0103796440994, "wall_s": 62.9}

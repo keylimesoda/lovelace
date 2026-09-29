@@ -1,0 +1,2 @@
+{"req": 0, "measured": false, "target": 150000, "session": "2026-09-26T02-50-53_01a0db9f.jsonl", "prompt_n": 147684, "cache_n": 0, "prompt_ms": 76645.808, "prompt_tps": 1926.8372772585292, "wall_s": 76.8}
+{"req": 1, "measured": true, "target": 128000, "session": "2026-09-26T09-53-08_01a0dd22.jsonl", "prompt_n": 125640, "cache_n": 0, "prompt_ms": 71227.479, "prompt_tps": 1763.9259702003492, "wall_s": 71.4, "concurrent_decode_events": 395, "concurrent_decode_eps": 5.53}

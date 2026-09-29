@@ -1,6 +1,7 @@
 // The KQ mask built on a backend by ggml_kq_mask() from llama_kv_mask_set_keys() must be bitwise equal to the host
 // mask (llama_kv_mask_set_host()) whenever llama_kv_mask_on_device() accepts the ubatch, and the cases it must refuse
-// (M-RoPE 2D rule hiding a cell, more than 8 sequences in a stream) must be refused.
+// (M-RoPE 2D rule hiding a cell, more than 8 sequences in a stream) must be refused. A mask over a cell window
+// (kv_lo > 0, llama_kv_cache::get_kv_window()) must equal the same columns of the mask over all cells.
 // The cache layouts mirror production decode: a ~286k-cell unified cache holding six ~47.6k sequences in interleaved
 // chunks with holes, idle sequences, a prefix shared by two batch sequences, and 6 (1 row per sequence) or 24 (4 rows
 // per sequence, MTP verify) row ubatches with M-RoPE positions.
@@ -65,6 +66,7 @@ struct mask_case {
     int64_t n_stream;
     bool    causal;
     bool    expect_device;
+    uint32_t kv_lo = 0; // first cell of the mask's window; the full-range mask is [0, kv_lo + n_kv)
 };
 
 static std::mt19937 rng(1234);
@@ -180,6 +182,31 @@ static std::vector<mask_case> make_cases() {
         res.push_back(std::move(c));
     }
 
+    // a prefill ubatch of the second of two sessions in one unified cache, masked over its own window only
+    {
+        mask_case c;
+        llama_kv_cells cells;
+        cells.resize(65536);
+        for (uint32_t i = 0; i < 40000; ++i) {
+            cells.pos_set(i, i);
+            cells.seq_add(i, 0);
+        }
+        for (uint32_t i = 40000; i < 50000; ++i) {
+            cells.pos_set(i, i - 40000);
+            cells.seq_add(i, 3);
+        }
+        c.cells.push_back(std::move(cells));
+        c.seq_to_stream.assign(LLAMA_MAX_SEQ, 0);
+        std::vector<std::pair<llama_seq_id, llama_pos>> rows;
+        for (llama_pos p = 10000 - 64; p < 10000; ++p) {
+            rows.push_back({ 3, p });
+        }
+        make_ubatch(c.u, rows, 1);
+        c.kv_lo = 39936; c.n_kv = 50176 - 39936; c.n_stream = 1; c.causal = true; c.expect_device = true;
+        c.name = "window [39936, 50176), 64 prefill rows";
+        res.push_back(std::move(c));
+    }
+
     // fallback: an image block where cells share a position and the 2D rule hides some of them
     {
         mask_case c;
@@ -290,6 +317,7 @@ int main(int argc, char ** argv) {
             /*.n_kv             =*/ c.n_kv,
             /*.n_stream         =*/ c.n_stream,
             /*.n_tps            =*/ n_tps,
+            /*.kv_lo            =*/ c.kv_lo,
         };
 
         const bool on_device = llama_kv_mask_on_device(args, c.causal, scratch);
@@ -316,6 +344,26 @@ int main(int argc, char ** argv) {
             size_t n_keep = 0;
             for (int64_t i = 0; i < ggml_nelements(host); ++i) {
                 n_keep += type == GGML_TYPE_F16 ? ((const uint16_t *) host->data)[i] == 0 : ((const uint32_t *) host->data)[i] == 0;
+            }
+
+            if (c.kv_lo > 0) {
+                // the windowed mask is the window's columns of the mask over [0, kv_lo + n_kv)
+                llama_kv_mask_args full = args;
+                full.n_kv  = c.kv_lo + c.n_kv;
+                full.kv_lo = 0;
+                ggml_init_params params_full = { (size_t) (full.n_kv*n_tps*c.n_stream*ggml_type_size(type)) + ggml_tensor_overhead(), nullptr, false };
+                ggml_context * ctx_full = ggml_init(params_full);
+                ggml_tensor * host_full = ggml_new_tensor_4d(ctx_full, type, full.n_kv, n_tps, 1, c.n_stream);
+                llama_kv_mask_set_host(full, host_full, c.causal, scratch);
+                bool ok = true;
+                for (int64_t r = 0; r < n_tps*c.n_stream; ++r) {
+                    ok &= memcmp((const char *) host_full->data + r*host_full->nb[1] + c.kv_lo*ggml_type_size(type),
+                                 (const char *) host->data + r*host->nb[1], host->nb[1]) == 0;
+                }
+                fprintf(stderr, "%s %s, %s: window == columns of the full mask\n", ok ? "ok  " : "FAIL", c.name.c_str(),
+                        ggml_type_name(type));
+                n_fail += !ok;
+                ggml_free(ctx_full);
             }
 
             for (ggml_backend_t backend : backends) {
