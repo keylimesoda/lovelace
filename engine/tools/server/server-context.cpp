@@ -1193,7 +1193,7 @@ private:
     server_kv_budget        kv_budget;
     std::deque<sched_entry> sched_queue;     // FIFO of tasks waiting for a slot or for KV cells
     std::vector<int>        sched_preempted; // preempted slot ids, resumed first, in order
-    bool                    sched_dirty = false; // something changed that may allow admission
+    server_sched_gate       sched_gate;      // when admission is retried
     std::vector<server_kv_budget::candidate> sched_cands; // scratch for slot selection
 
     // gauges read by the metrics task, which may run on the queue worker while a decode is in flight
@@ -1619,7 +1619,7 @@ private:
             SLT_TRC(slot, "new slot, n_ctx = %d\n", slot.n_ctx);
 
             slot.callback_on_release = [this](int id_slot) {
-                sched_dirty = true;
+                sched_gate.mark();
                 queue_tasks.pop_deferred_task(id_slot);
             };
 
@@ -1818,6 +1818,10 @@ private:
         });
         queue_tasks.on_update_slots([this]() {
             update_slots();
+            // waiting work is retried without a new task at the latest when the backstop of the gate is due
+            if (kv_budget_on) {
+                queue_tasks.update_slots_after(sched_gate.wait_ms(ggml_time_us(), sched_waiting()));
+            }
         });
         queue_tasks.on_sleeping_state([this](bool sleeping) {
             handle_sleeping_state(sleeping);
@@ -2212,7 +2216,7 @@ private:
                     n_bytes / 1048576.0, (ggml_time_us() - t_start) / 1e3);
             obs_sched_event("park", slot, n_tokens, n_bytes, 0, ggml_time_us() - t_start);
         }
-        sched_dirty = true;
+        sched_gate.mark();
     }
 
     // start restoring a parked session into an empty slot and bind it; the slot runs once the copies are done
@@ -2254,7 +2258,7 @@ private:
                 const int32_t n_tokens = slot.prompt.n_tokens();
                 slot.prompt_clear();
                 sched_stats.n_park_drop++;
-                sched_dirty = true;
+                sched_gate.mark();
                 SLT_INF(slot, "evicted cells without a session: %d tokens\n", n_tokens);
                 obs_sched_event("park", slot, n_tokens, 0, 0, 0);
             }
@@ -2362,8 +2366,9 @@ private:
         if (slot.xfer == server_slot::XFER_PARK) {
             slot.prompt_clear();
             prompt_cache->update();
-            sched_dirty = true;
         }
+        // a park frees cells, a sync or a restore makes the idle slot parkable: waiting work may be admissible now
+        sched_gate.mark();
 
         SLT_INF(slot, "%s session: %d tokens, %.1f MiB in %.1f ms (%.2f GB/s), done %.1f ms after issue, host %.1f ms\n",
                 action, slot.xfer_tokens, slot.xfer_bytes / 1048576.0, t_us / 1e3,
@@ -2437,7 +2442,7 @@ private:
         slot.n_reserved = 0;
 
         sched_preempted.push_back(slot.id);
-        sched_dirty = true;
+        sched_gate.mark();
 
         sched_stats.n_preempt++;
         if (!mirrored) {
@@ -3077,7 +3082,7 @@ private:
             }
         }
         if (sessions->poll(sched_wanted)) {
-            sched_dirty = true;
+            sched_gate.mark();
         }
 
         const int64_t t_now = ggml_time_us();
@@ -3123,12 +3128,15 @@ private:
         }
     }
 
+    bool sched_waiting() const {
+        return !sched_queue.empty() || !sched_preempted.empty();
+    }
+
     // admit waiting work in order: preempted slots first, then the queue; stops at the first that has to wait
     void sched_admit() {
-        if (!sched_dirty) {
+        if (!sched_gate.take(ggml_time_us(), sched_waiting())) {
             return;
         }
-        sched_dirty = false;
 
         bool head_waits = false;
 
@@ -3197,7 +3205,7 @@ private:
 
         sched_queue.push_back(std::move(e));
         sched_n_waiting.store((int32_t) sched_queue.size(), std::memory_order_relaxed);
-        sched_dirty = true;
+        sched_gate.mark();
 
         sched_sessions_poll();
         sched_admit();
@@ -4012,7 +4020,7 @@ private:
                             SRV_DBG("cancelled queued task, id_task = %d\n", task.id_target);
                             sched_queue.erase(it);
                             sched_n_waiting.store((int32_t) sched_queue.size(), std::memory_order_relaxed);
-                            sched_dirty = true;
+                            sched_gate.mark();
                             break;
                         }
                     }

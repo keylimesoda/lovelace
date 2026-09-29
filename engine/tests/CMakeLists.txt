@@ -268,6 +268,12 @@ llama_build_and_test(test-server-sched.cpp)
 target_include_directories(test-server-sched PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
 llama_build_and_test(test-server-session-store.cpp ${PROJECT_SOURCE_DIR}/tools/server/server-session-store.cpp)
 target_include_directories(test-server-session-store PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
+if (LLAMA_BUILD_TOOLS AND LLAMA_BUILD_SERVER)
+    # the server loop (server-queue.cpp) with the KV budget admission gate
+    llama_build_and_test(test-server-wakeup.cpp)
+    target_include_directories(test-server-wakeup PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
+    target_link_libraries(test-server-wakeup PRIVATE server-context)
+endif()
 llama_build_and_test(
     test-peg-parser.cpp
     peg-parser/simple-tokenize.cpp

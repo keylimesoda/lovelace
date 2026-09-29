@@ -46,6 +46,9 @@ private:
     std::function<void(void)>                 callback_update_slots;
     std::vector<std::function<void(bool)>>    callback_sleeping_state;
 
+    // set by callback_update_slots on each run (see update_slots_after()), only touched by the start_loop() thread
+    int64_t update_after_ms = -1;
+
 public:
     ~server_queue() { worker_stop(); }
 
@@ -102,6 +105,14 @@ public:
     //
     // tasks declined by callback_new_task are put back in the queue once this returns
     void yield_to_queue(std::function<void()> && work);
+
+    // run callback_update_slots again after ms milliseconds even if no task arrives (-1: only when one arrives)
+    // must be called from callback_update_slots, applies to the wait that follows it; the loop does not enter the
+    // sleeping state meanwhile
+    // use case: work waits in the server for resources that free up without a new task
+    void update_slots_after(int64_t ms) {
+        update_after_ms = ms;
+    }
 
     // for metrics
     size_t queue_tasks_deferred_size() {

@@ -309,7 +309,9 @@ void server_queue::start_loop(int64_t idle_sleep_ms) {
 
         // this will run the main inference process for all slots
         const int64_t t_update_slots = ggml_time_ms();
+        update_after_ms = -1;
         callback_update_slots();
+        const int64_t t_update_due = update_after_ms >= 0 ? ggml_time_ms() + update_after_ms : -1;
         {
             // update_slots() may take a while to finish, we need to make sure it's not counted as idle
             // shift instead of reset, so that non-task_resets_idle_timer tasks do not delay the sleep
@@ -323,6 +325,20 @@ void server_queue::start_loop(int64_t idle_sleep_ms) {
             std::unique_lock<std::mutex> lock(mutex_tasks);
             if (!running || !queue_tasks.empty()) {
                 break; // go back to process new tasks or terminate
+            }
+
+            // update_slots() asked to run again by a deadline
+            if (t_update_due >= 0) {
+                const int64_t t_left = t_update_due - ggml_time_ms();
+                if (t_left <= 0) {
+                    break;
+                }
+                if (condition_tasks.wait_for(lock, std::min<std::chrono::milliseconds>(max_wait_time, std::chrono::milliseconds(t_left)), [&]{
+                    return (!queue_tasks.empty() || !running);
+                })) {
+                    break; // new task arrived or terminate
+                }
+                continue;
             }
 
             // no tasks, check for sleeping state
