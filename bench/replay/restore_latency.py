@@ -36,12 +36,16 @@ def pick(n_agents, min_depth, n_turns):
 
 
 def busy(base_url, stop, k):
-    """A short-context agent that keeps decoding, so that the switches happen while other slots run."""
+    """An agent that keeps prefilling fresh ~16k-token prompts, so that the switches happen while other slots run long
+    prefill steps (the load under which a restore used to wait for a whole step)."""
+    filler = " ".join(f"item{j} lorem ipsum dolor sit amet" for j in range(2800))
+    i = 0
     with httpx.Client(timeout=3600) as c:
         while not stop.is_set():
+            i += 1
             c.post(base_url + "/chat/completions", json={
-                "model": "qwen3.8-27b", "max_tokens": 1024, "temperature": 0.0,
-                "messages": [{"role": "user", "content": f"Agent {k}: write a long, detailed essay on the history of computing."}],
+                "model": "qwen3.8-27b", "max_tokens": 32, "temperature": 0.0,
+                "messages": [{"role": "user", "content": f"Agent {k} round {i}: summarize this. {filler}"}],
             })
 
 
