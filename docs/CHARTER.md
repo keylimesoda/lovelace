@@ -25,6 +25,7 @@ faster for multi-user**. Benchmarks must be cheap, deterministic scripts; spend 
 | B2 | Multi-agent aggregate >= previous | bench/h2h.sh ENGINE N replay:6:60000:1200 on both engines | **PASS**: 6 agents, 20 min: lovelace 76.3 t/s steady, TTFT p50/p90 19/40 s, 0 errors vs ninfer (best config that starts, 3 lanes) 41.0 t/s, 62/159 s |
 | C1 | >= 170k (target 262k) context per agent, never lost | session-store replays (bench/results/session-store) | met: 0 errors, 0 sessions lost at ~150k x 6 |
 | C2 | 4-6 agents without stalls or errors | bench/results/main-327k, session-store | met: 0 errors; TTFT p90 41 s at real depth |
+| C3 | No aggregate collapse at depth; pausing agents OK, no starvation | 6 x 150k replay, steady after first contacts, vs 6 x 60k (docs/design/session-store.md, Scheduling v2) | **FAIL** today: 25.0 vs 76.8 t/s; scheduling v2 queued |
 | D1 | DFlash2 considered | bake-off: acceptance 0.27 vs MTP 0.55 on agent traffic | done (MTP chosen) |
 | D2 | Exotic KV considered | KLD of q4/q5/q8 mixes; ninfer E8 measured in A1 (adds 0.0055 KL vs q5_0's 0.0008); KVarN not measured | done: q5_0 kept |
 | D3 | SM89 kernels | llama-bench tables (bench/results/main-gate) | done |
