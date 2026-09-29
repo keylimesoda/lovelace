@@ -5,7 +5,8 @@
 #   e.g. bench/step_profile.sh bench/results/step-profile/base six=52000,52000,52000,52000,52000,52000 one=64000
 #   deploy/draft-vocab is mounted at /draft-vocab (e.g. -- --spec-draft-vocab /draft-vocab/qwen3.8-27b.txt)
 # env: BIN (default <worktree>/engine/build-sm89/bin), CAPTURE_S (2), MAX_TOKENS (256), SPEC_N (3),
-#      CPU_SAMPLE=1 adds host CPU sampling with DWARF backtraces (nsys stats --report osrt/cpu views)
+#      CPU_SAMPLE=1 adds host CPU sampling with DWARF backtraces (nsys stats --report osrt/cpu views),
+#      GREEDY=1 decodes at temperature 0 (deterministic draft acceptance; default: production sampling, fixed seeds)
 # Writes OUT_DIR/LABEL.nsys-rep, LABEL.sqlite, LABEL.drive.out, LABEL.table.txt (bench/step_table.py) and server.log.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -42,7 +43,7 @@ if [ $ok = 1 ]; then
   for spec in "${SPECS[@]}"; do
     L=${spec%%=*} D=${spec#*=}
     (cd "$HERE/replay" && uv run python ../step_drive.py --base-url http://127.0.0.1:$PORT/v1 --depths "$D" \
-       --max-tokens ${MAX_TOKENS:-256} --capture-s ${CAPTURE_S:-2} \
+       --max-tokens ${MAX_TOKENS:-256} --capture-s ${CAPTURE_S:-2} $([ "${GREEDY:-0}" = 1 ] && echo --greedy) \
        --on-start "docker exec $C nsys start --session=$C $SAMPLE --output=/out/$L --force-overwrite=true >/dev/null" \
        --on-stop "docker exec $C nsys stop --session=$C >/dev/null") > "$OUT/$L.drive.out" 2>&1
     docker exec $C bash -c "[ -f /out/$L.nsys-rep ] || { \$NSYS_IMPORTER -i /out/$L.qdstrm >/dev/null && rm /out/$L.qdstrm; }"

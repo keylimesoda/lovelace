@@ -12,6 +12,9 @@ BIN=../step-mask-bin bench/step_profile.sh bench/results/step-costs/mask six=$D 
 bench/op_gates.sh bench/results/step-costs/gates/mask.txt ../step-mask-bin KQ_MASK       # + test-gdn-replay, test-kq-mask
 bench/greedy_gate.sh bench/results/step-costs/greedy/mask-mtp ../step-base-bin ../step-mask-bin
 NO_SPEC=1 bench/greedy_gate.sh bench/results/step-costs/greedy/mask-nospec ../step-base-bin ../step-mask-bin
+# deterministic acceptance (temperature 0; six2 = the same six prompts again in the same server)
+GREEDY=1 BIN=../step-base-bin bench/step_profile.sh bench/results/step-costs/accept/base six=$D one=64000 six2=$D
+GREEDY=1 BIN=../step-mask-bin bench/step_profile.sh bench/results/step-costs/accept/mask six=$D one=64000 six2=$D
 ```
 
 ## Item 1: KQ mask built on the GPU (0c727e790) — measured
@@ -47,6 +50,21 @@ Greedy gate (`greedy/mask-mtp/COMPARE.txt`, `greedy/mask-nospec/COMPARE.txt`, si
 identical too (main and GPU mask both 519 accepted / 724 drafted = 0.717, per-session equal). Concurrent: 1/6
 identical on both (MTP and no-MTP), the same as main against itself (step-profile REPORT: timing-dependent batch
 composition flips near-ties; margins 0.04-0.06 here), so it does not separate a code change.
+
+### Deterministic draft acceptance: main vs GPU mask (`accept/`, temperature 0, 256 tokens, ignore_eos)
+
+The stochastic drive's 0.664 -> 0.605 was a sampling artifact: at temperature 0 the draft counters are identical,
+per request, on every capture, so the draft (MTP) context's mask is not implicated and nothing needed fixing.
+
+| | main | GPU mask |
+|---|---:|---:|
+| 6 x 50k acceptance (six / six2) | 1062/1392 = 0.763 / 1061/1399 = 0.758 | **identical** (same per-request counts) |
+| 1 x 64k acceptance | 178/230 = 0.774 | **identical** |
+| 6 x 50k step wall, ms (six / six2) | 56.38 / 57.03 | **52.09 / 51.39** (-8.9%) |
+| 6 x 50k host gap, ms | 11.69 / 12.07 | 7.68 / 6.94 |
+| 6 x 50k summed decode, tok/s (six / six2) | 346.7 / 349.5 | **364.4 / 378.5** (+7%) |
+| 1 x 64k step wall, ms | 30.82 | **28.52** |
+| 1 x 64k decode, tok/s | 108.6 | **114.9** |
 
 ## Item 2: reduced-vocab MTP draft head — implemented, NOT yet measured
 
