@@ -3,6 +3,7 @@
 #   bench/step_profile.sh OUT_DIR SPEC [SPEC ...] [-- extra server args]
 #     SPEC = LABEL=DEPTH[,DEPTH...]   one capture per spec: one concurrent request per depth (bench/step_drive.py)
 #   e.g. bench/step_profile.sh bench/results/step-profile/base six=52000,52000,52000,52000,52000,52000 one=64000
+#   deploy/draft-vocab is mounted at /draft-vocab (e.g. -- --spec-draft-vocab /draft-vocab/qwen3.8-27b.txt)
 # env: BIN (default <worktree>/engine/build-sm89/bin), CAPTURE_S (2), MAX_TOKENS (256), SPEC_N (3),
 #      CPU_SAMPLE=1 adds host CPU sampling with DWARF backtraces (nsys stats --report osrt/cpu views)
 # Writes OUT_DIR/LABEL.nsys-rep, LABEL.sqlite, LABEL.drive.out, LABEL.table.txt (bench/step_table.py) and server.log.
@@ -26,7 +27,7 @@ PORT=18400 C=stepprof
 docker rm -f $C >/dev/null 2>&1
 mkdir -p /tmp/stepprof-sessions
 docker run -d --name $C --gpus all $CAPS_STR --network host --ulimit memlock=-1:-1 -e LD_LIBRARY_PATH=/e \
-  -v "$BIN:/e" -v "$HOME/models:/models:ro" -v "$OUT:/out" -v /tmp/stepprof-sessions:/sessions \
+  -v "$BIN:/e" -v "$HOME/models:/models:ro" -v "$OUT:/out" -v /tmp/stepprof-sessions:/sessions -v "$HERE/../deploy/draft-vocab:/draft-vocab:ro" \
   lovelace-nsys:cuda13.1 nsys launch --session-new=$C --trace=cuda,nvtx,osrt --cuda-graph-trace=node \
   /e/llama-server -m /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf -ngl 99 -np 6 --kv-unified -c 327680 \
     -ctk q5_0 -ctv q5_0 --spec-type draft-mtp --spec-draft-n-max ${SPEC_N:-3} -ctkd q5_0 -ctvd q5_0 -fa on -ub 1024 -b 2048 \

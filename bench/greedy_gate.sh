@@ -2,6 +2,7 @@
 # Greedy e2e token-identity gate: the production server from BIN_A and from BIN_B, one GPU-lock hold each, the same
 # greedy requests (sequential, then all concurrent), then bench/greedy_check.py compare.
 #   bench/greedy_gate.sh OUT_DIR BIN_A BIN_B [DEPTHS] [-- extra server args for B]
+#   deploy/draft-vocab is mounted at /draft-vocab (e.g. -- --spec-draft-vocab /draft-vocab/qwen3.8-27b.txt)
 # A side that already has results in OUT_DIR is not rerun. NO_SPEC=1 serves without MTP (top_logprobs then cover
 # every token, so the compare reports the baseline's top-1/top-2 margin at each divergence).
 # DEPTHS default: six distinct sessions at ~20k (a ~120k-cell unified cache with six live sequences).
@@ -24,7 +25,7 @@ for side in A B; do
     BIN=$1 OUT=$2 SIDE=$3 DEPTHS=$4 HERE=$5; shift 5
     PORT=18500 C=greedy-gate
     docker rm -f $C >/dev/null 2>&1
-    docker run -d --name $C --gpus all --network host --ulimit memlock=-1:-1 -v "$BIN:/e" -v "$HOME/models:/models:ro" \
+    docker run -d --name $C --gpus all --network host --ulimit memlock=-1:-1 -v "$BIN:/e" -v "$HOME/models:/models:ro" -v "$HERE/../deploy/draft-vocab:/draft-vocab:ro" \
       lovelace-engine-runtime:cuda13.1 /e/llama-server -m /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf -ngl 99 \
       -np 6 --kv-unified -c 327680 -ctk q5_0 -ctv q5_0 $SPEC_ARGS \
       -fa on -ub 1024 -b 2048 --jinja --reasoning-preserve -ctxcp 8 --kv-budget --prefill-chunk-gen 1024 \
