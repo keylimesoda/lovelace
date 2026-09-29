@@ -1,0 +1,79 @@
+step-profile/base/four.sqlite: 20 steps, step wall mean 53.81 ms (median 53.82, min 52.70, max 54.68)
+class                               ms/step  share
+target matmul                        21.313  39.6%
+host gap (GPU idle)                  11.895  22.1%
+target FA                             9.833  18.3%
+MTP draft 2                           2.037   3.8%
+MTP draft 3                           2.037   3.8%
+MTP draft 1                           2.025   3.8%
+target DeltaNet                       1.758   3.3%
+MTP catch-up                          0.939   1.7%
+memcpy (copyKind 2)                   0.664   1.2%
+target misc                           0.644   1.2%
+target norms                          0.581   1.1%
+memset (copyKind 0)                   0.057   0.1%
+memcpy (copyKind 8)                   0.027   0.1%
+
+target-decode kernels (per step):                                     ms  calls  us/call
+  FA        flash_attn_ext_mma_q                                                   8.958   16.0    559.9
+  matmul    mmq iq3_s x(int)16                                                     5.566  123.0     45.3
+  matmul    mmq iq4_xs x(int)16                                                    4.017   90.0     44.6
+  matmul    mmq iq3_xxs x(int)16                                                   3.630   80.0     45.4
+  matmul    mmq q4_K x(int)16                                                      2.543   88.0     28.9
+  DeltaNet  gated_delta_net_rr_cuda                                                1.460   48.0     30.4
+  matmul    mmq q6_K x(int)16                                                      1.310   13.0    100.8
+  FA        flash_attn_ext_mma_q_gather                                            0.638   16.0     39.9
+  matmul    mmq q3_K x(int)16                                                      0.567   15.0     37.8
+  matmul    mmq-fixup q8_0 x(int)16                                                0.538   38.0     14.1
+  matmul    mmq-fixup q4_K x(int)16                                                0.480   88.0      5.5
+  matmul    mmq-fixup q5_K x(int)16                                                0.439   45.0      9.7
+  matmul    mmq-fixup iq3_s x(int)16                                               0.412  123.0      3.4
+  matmul    mmq q5_K x(int)16                                                      0.405   45.0      9.0
+  matmul    quantize_q8_1 (activations)                                            0.388  307.0      1.3
+  norms     add_rms_norm_mul_f32                                                   0.367  128.0      2.9
+  misc      k_set_rows_quant                                                       0.274   32.0      8.6
+  matmul    mmq-fixup iq4_xs x(int)16                                              0.266   90.0      3.0
+  matmul    mmq-fixup iq3_xxs x(int)16                                             0.249   80.0      3.1
+  FA        flash_attn_ext_mma_q_combine                                           0.236   16.0     14.7
+  misc      unary_gated_op_kernel                                                  0.215  128.0      1.7
+  norms     rms_norm_f32                                                           0.214   81.0      2.6
+  DeltaNet  ssm_conv_chain_f32                                                     0.213   48.0      4.4
+  matmul    mmq q8_0 x(int)16                                                      0.133   38.0      3.5
+  matmul    mmq iq2_xxs x(int)16                                                   0.121    3.0     40.4
+  matmul    mmq-fixup q6_K x(int)16                                                0.102   12.0      8.5
+  DeltaNet  gated_delta_net_rr_record_cuda                                         0.086   48.0      1.8
+  matmul    mmq-fixup q3_K x(int)16                                                0.075   15.0      5.0
+  misc      fwht_cuda                                                              0.070   64.0      1.1
+  matmul    mmq iq2_xs x(int)16                                                    0.045    1.0     44.6
+
+MTP kernels (draft = all draft steps) (per step):                                     ms  calls  us/call
+  MTP draft    matmul    mmvq q6_K r(int)4                                         3.279    3.0   1092.8
+  MTP draft    FA        flash_attn_ext_mma_q                                      1.455    3.0    484.9
+  MTP catch-up FA        flash_attn_ext_mma_q                                      0.545    1.0    545.1
+  MTP draft    matmul    mmvq iq3_xxs r(int)4                                      0.464   12.0     38.7
+  MTP draft    misc      DeviceRadixSortOnesweepKernel                             0.445   48.0      9.3
+  MTP catch-up matmul    mmq iq3_xxs x(int)16                                      0.182    4.0     45.6
+  MTP draft    matmul    mmvq iq4_xs r(int)4                                       0.164    9.0     18.2
+  MTP catch-up matmul    mmq iq4_xs x(int)16                                       0.065    3.0     21.5
+  MTP catch-up FA        flash_attn_ext_mma_q_gather                               0.040    1.0     39.7
+  MTP draft    misc      DeviceRadixSortHistogramKernel                            0.035   12.0      2.9
+  MTP draft    norms     rms_norm_f32                                              0.035   15.0      2.3
+  MTP draft    misc      k_get_rows_float                                          0.031   15.0      2.1
+  MTP draft    misc      k_set_rows_quant                                          0.028    6.0      4.6
+  MTP draft    matmul    quantize_q8_1 (activations)                               0.021   18.0      1.1
+  MTP draft    matmul    mmvq q5_K r(int)4                                         0.019    3.0      6.4
+  MTP draft    misc      pad_f32                                                   0.018    3.0      5.9
+  MTP draft    norms     add_rms_norm_mul_f32                                      0.017    6.0      2.9
+  MTP catch-up misc      k_set_rows_quant                                          0.017    2.0      8.6
+  MTP draft    misc      init_indices                                              0.016   12.0      1.3
+  MTP draft    FA        flash_attn_ext_mma_q_combine                              0.016    3.0      5.2
+  MTP catch-up FA        flash_attn_ext_mma_q_combine                              0.015    1.0     14.6
+  MTP draft    misc      fwht_cuda                                                 0.012   12.0      1.0
+  MTP draft    misc      DeviceRadixSortExclusiveSumKernel                         0.012   12.0      1.0
+  MTP draft    FA        flash_attn_ext_mma_q_visible                              0.012    3.0      3.9
+  MTP catch-up matmul    mmq-fixup iq4_xs x(int)16                                 0.012    3.0      3.9
+  MTP catch-up norms     rms_norm_f32                                              0.012    5.0      2.3
+  MTP catch-up matmul    mmq-fixup iq3_xxs x(int)16                                0.011    4.0      2.8
+  MTP catch-up matmul    mmq q5_K x(int)16                                         0.008    1.0      8.3
+  MTP catch-up matmul    quantize_q8_1 (activations)                               0.008    6.0      1.3
+  MTP draft    misc      rope_multi                                                0.007    6.0      1.2

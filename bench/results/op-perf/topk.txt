@@ -1,0 +1,66 @@
+== libs /l0
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.1.2
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24100 MiB):
+  Device 0: NVIDIA GeForce RTX 4090, compute capability 8.9, VMM: yes, VRAM: 24100 MiB
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+Testing 2 devices
+
+Backend 1/2: CUDA0
+  Device description: NVIDIA GeForce RTX 4090
+  Device memory: 24100 MB (23085 MB free)
+
+  TOP_K(type=f32,ne=[151936,1,1,1],k=20,ties=0):               16384 runs -    84.88 us/run -      593 kB/run - [1;34m   6.67 GB/s[0m
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+  TOP_K(type=f32,ne=[151936,1,1,1],k=40,ties=0):               16384 runs -    83.76 us/run -      593 kB/run - [1;34m   6.76 GB/s[0m
+  Backend CUDA0: [1;32mOK[0m
+Backend 2/2: CPU
+  Skipping
+2/2 backends passed
+[1;32mOK[0m
+== libs /l1
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.1.2
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24100 MiB):
+  Device 0: NVIDIA GeForce RTX 4090, compute capability 8.9, VMM: yes, VRAM: 24100 MiB
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+Testing 2 devices
+
+Backend 1/2: CUDA0
+  Device description: NVIDIA GeForce RTX 4090
+  Device memory: 24100 MB (23085 MB free)
+
+  TOP_K(type=f32,ne=[151936,1,1,1],k=20,ties=0):               32768 runs -    35.73 us/run -      593 kB/run - [1;34m  15.84 GB/s[0m
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+  TOP_K(type=f32,ne=[151936,1,1,1],k=40,ties=0):               16384 runs -    84.72 us/run -      593 kB/run - [1;34m   6.68 GB/s[0m
+  Backend CUDA0: [1;32mOK[0m
+Backend 2/2: CPU
+  Skipping
+2/2 backends passed
+[1;32mOK[0m

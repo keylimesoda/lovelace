@@ -1,0 +1,25 @@
+== test-backend-ops -o MUL_MAT
+Backend 1/2: CUDA0
+  1297/1297 tests passed
+  Backend CUDA0: [1;32mOK[0m
+Backend 2/2: CPU
+2/2 backends passed
+== test-backend-ops -o MUL_MAT_ID
+Backend 1/2: CUDA0
+  929/929 tests passed
+  Backend CUDA0: [1;32mOK[0m
+Backend 2/2: CPU
+2/2 backends passed
+== test-backend-ops -o TOP_K
+Backend 1/2: CUDA0
+  525/525 tests passed
+  Backend CUDA0: [1;32mOK[0m
+Backend 2/2: CPU
+2/2 backends passed
+== test-gdn-replay
+CUDA0: S=128 H=4/12: OK
+CPU: S=32 H=2/6: OK
+CPU: S=128 H=4/4: OK
+CPU: S=128 H=4/12: OK
+all ReplaySSM checks passed
+exit 0

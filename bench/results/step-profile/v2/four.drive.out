@@ -1,0 +1,9 @@
+{"prefill": 0, "target": 128000, "rec_depth": 128013, "session": "2026-09-26T09-53-08_01a0dd22.jsonl", "prompt_tokens": 125640, "wall_s": 123.7}
+{"prefill": 1, "target": 64000, "rec_depth": 63948, "session": "2026-09-27T08-18-54_01a0e1f2.jsonl", "prompt_tokens": 61500, "wall_s": 18.4}
+{"prefill": 2, "target": 64000, "rec_depth": 63926, "session": "2026-09-26T09-54-32_01a0dd23.jsonl", "prompt_tokens": 61565, "wall_s": 18.9}
+{"prefill": 3, "target": 48000, "rec_depth": 47926, "session": "2026-09-26T09-53-08_01a0dd22__priorart-panel-layout.jsonl", "prompt_tokens": 46417, "wall_s": 46.3}
+{"capture_s": 2.0, "stream_events_in_capture": 377, "approx_aggregate_tps": 188.5}
+{"req": 0, "prompt_n": 4, "cache_n": 125636, "predicted_n": 256, "decode_tps": 42.66582071219796, "draft_n": 334, "draft_accepted": 142, "acceptance": 0.425}
+{"req": 1, "prompt_n": 4, "cache_n": 61496, "predicted_n": 256, "decode_tps": 56.50662734100863, "draft_n": 240, "draft_accepted": 173, "acceptance": 0.721}
+{"req": 2, "prompt_n": 4, "cache_n": 61561, "predicted_n": 256, "decode_tps": 50.57908088884305, "draft_n": 271, "draft_accepted": 164, "acceptance": 0.605}
+{"req": 3, "prompt_n": 4, "cache_n": 46413, "predicted_n": 256, "decode_tps": 42.988572288824535, "draft_n": 327, "draft_accepted": 145, "acceptance": 0.443}

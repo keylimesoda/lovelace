@@ -1,0 +1,18 @@
+Using CPython 3.14.7 interpreter at: /usr/bin/python3
+Creating virtual environment at: .venv
+Installed 8 packages in 3ms
+{"prefill": 0, "target": 50000, "rec_depth": 50017, "session": "2026-09-27T08-42-53_01a0e208.jsonl", "prompt_tokens": 47478, "wall_s": 21.0}
+{"prefill": 1, "target": 50000, "rec_depth": 49958, "session": "2026-09-27T08-18-54_01a0e1f2.jsonl", "prompt_tokens": 47510, "wall_s": 28.2}
+{"prefill": 2, "target": 50000, "rec_depth": 49922, "session": "2026-09-25T07-15-46_01a0d76b.jsonl", "prompt_tokens": 47611, "wall_s": 35.7}
+{"prefill": 3, "target": 50000, "rec_depth": 49864, "session": "2026-09-26T02-32-58_01a0db8f.jsonl", "prompt_tokens": 47632, "wall_s": 42.3}
+{"prefill": 4, "target": 50000, "rec_depth": 50162, "session": "2026-09-26T09-54-32_01a0dd23.jsonl", "prompt_tokens": 47847, "wall_s": 50.6}
+{"prefill": 5, "target": 50000, "rec_depth": 50198, "session": "2026-09-27T09-11-19_01a0e222.jsonl", "prompt_tokens": 47659, "wall_s": 56.7}
+Importer error status: An unknown error occurred.
+Unable to retrieve the importer version: skipping importation of the QDSTRM file.
+{"capture_s": 2.0, "stream_events_in_capture": 500, "approx_aggregate_tps": 250.0}
+{"req": 0, "prompt_n": 4, "cache_n": 47474, "predicted_n": 256, "decode_tps": 52.981772608049575, "draft_n": 237, "draft_accepted": 176, "acceptance": 0.743}
+{"req": 1, "prompt_n": 4, "cache_n": 47506, "predicted_n": 256, "decode_tps": 47.54663999082629, "draft_n": 260, "draft_accepted": 167, "acceptance": 0.642}
+{"req": 2, "prompt_n": 4, "cache_n": 47607, "predicted_n": 256, "decode_tps": 45.58070895698469, "draft_n": 270, "draft_accepted": 164, "acceptance": 0.607}
+{"req": 3, "prompt_n": 4, "cache_n": 47628, "predicted_n": 256, "decode_tps": 44.707789885309616, "draft_n": 277, "draft_accepted": 162, "acceptance": 0.585}
+{"req": 4, "prompt_n": 4, "cache_n": 47843, "predicted_n": 256, "decode_tps": 41.901258943864796, "draft_n": 313, "draft_accepted": 149, "acceptance": 0.476}
+{"req": 5, "prompt_n": 4, "cache_n": 47655, "predicted_n": 256, "decode_tps": 45.49440374231613, "draft_n": 267, "draft_accepted": 165, "acceptance": 0.618}

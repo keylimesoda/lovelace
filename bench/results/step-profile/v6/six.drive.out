@@ -1,0 +1,2 @@
+{"prefill": 0, "target": 50000, "rec_depth": 50017, "session": "2026-09-27T08-42-53_01a0e208.jsonl", "prompt_tokens": 47478, "wall_s": 21.7}
+{"prefill": 1, "target": 50000, "rec_depth": 49958, "session": "2026-09-27T08-18-54_01a0e1f2.jsonl", "prompt_tokens": 47510, "wall_s": 29.4}
