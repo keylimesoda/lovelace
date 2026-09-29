@@ -23,7 +23,7 @@ docker build -f deploy/serve.Dockerfile -t lovelace-serve:latest .
 deploy/serve.sh balanced
 ```
 
-Available profiles are `balanced` (q5_0/q5_0 KV), `quality` (q8_0/q5_0 KV), and `vision` (balanced KV with the mmproj model). `CTX` overrides the context size; defaults are 327680 for balanced and quality and 262144 for vision. Use `deploy/serve.sh stop`, `status`, or `logs [engine|proxy]` to manage or inspect the services. `deploy/compose.yaml` is an alternative Compose configuration for the balanced profile; run `docker compose -f deploy/compose.yaml up -d` from the repository root.
+Available profiles are `balanced` (q5_0/q5_0 KV), `quality` (q8_0/q5_0 KV), and `vision` (balanced KV plus the mmproj model; MTP works with images). `CTX` overrides the shared GPU KV pool size; defaults are the largest measured fits: 327680 (balanced), 262144 (quality), 294912 (vision). Use `deploy/serve.sh stop`, `status`, or `logs [engine|proxy]` to manage or inspect the services. `deploy/compose.yaml` is an alternative Compose configuration for the balanced profile; run `docker compose -f deploy/compose.yaml up -d` from the repository root.
 
 ## Benchmarks and evaluation
 

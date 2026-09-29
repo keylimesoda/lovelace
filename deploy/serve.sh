@@ -13,7 +13,8 @@ Usage:
   deploy/serve.sh logs [engine|proxy]
   deploy/serve.sh --help
 
-CTX overrides the profile context. Defaults: balanced/quality 327680, vision 262144.
+CTX overrides the profile context. Defaults (largest measured fit on a 24 GB 4090 with ~0.6 GB used by the desktop):
+balanced 327680, quality 262144, vision 294912.
 
 Host state lives in ${LOVELACE_STATE:-~/.local/state/lovelace} (log/: request log, lib/captures/: proxy captures).
 USAGE
@@ -42,8 +43,9 @@ start_service() {
     local profile=$1 default_ctx ctx file line label name
     local -a args=() tokens=()
     case "$profile" in
-        balanced|quality) default_ctx=327680 ;;
-        vision) default_ctx=262144 ;;
+        balanced) default_ctx=327680 ;;
+        quality) default_ctx=262144 ;;
+        vision) default_ctx=294912 ;;
         *) fail "unknown profile: $profile (choose balanced, quality, or vision)" ;;
     esac
     ctx=${CTX:-$default_ctx}

@@ -1,5 +1,5 @@
 -m /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf
--mmproj /models/ref/mmproj-Qwen3.8-27B-Q8_0.gguf
+--mmproj /models/ref/mmproj-Qwen3.8-27B-Q8_0.gguf
 -ngl 99
 -np 6
 --kv-unified
