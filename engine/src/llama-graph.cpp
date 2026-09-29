@@ -47,6 +47,10 @@ static ggml_tensor * build_attn_inp_kq_mask(
         ggml_set_input(*keys);
         ggml_set_name(*keys, "attn_inp_kq_mask_keys");
 
+        // the K/V views start at the window's first cell: recorded for can_reuse_kq_mask() (inputs have no op,
+        // their op_params are free)
+        (*keys)->op_params[0] = (int32_t) mctx->get_kv_lo();
+
         *rows = ggml_new_tensor_4d(ctx, GGML_TYPE_I32, 2, n_tokens/n_stream, 1, n_stream);
         ggml_set_input(*rows);
         ggml_set_name(*rows, "attn_inp_kq_mask_rows");
@@ -61,11 +65,16 @@ static ggml_tensor * build_attn_inp_kq_mask(
     ggml_set_input(res);
     ggml_set_name(res, "attn_inp_kq_mask");
 
+    // see above: the window's first cell, for can_reuse_kq_mask()
+    res->op_params[0] = (int32_t) mctx->get_kv_lo();
+
     return res;
 }
 
-static bool can_reuse_kq_mask(
+// kv_lo_input: the input tensor of the mask that records the window start (the host mask or the device keys)
+static bool can_reuse_kq_mask_impl(
         ggml_tensor * kq_mask,
+        ggml_tensor * kv_lo_input,
         const llama_kv_cache_context * mctx,
         const llama_ubatch & ubatch,
         const llama_cparams & cparams) {
@@ -76,11 +85,20 @@ static bool can_reuse_kq_mask(
     bool res = true;
 
     res &= (kq_mask->ne[0] == n_kv);
+    res &= (kv_lo_input->op_params[0] == (int32_t) mctx->get_kv_lo());
     res &= (kq_mask->ne[1] == n_tokens/n_stream);
     res &= (kq_mask->ne[2] == 1);
     res &= (kq_mask->ne[3] == n_stream);
 
     return res;
+}
+
+static bool can_reuse_kq_mask(
+        ggml_tensor * kq_mask,
+        const llama_kv_cache_context * mctx,
+        const llama_ubatch & ubatch,
+        const llama_cparams & cparams) {
+    return can_reuse_kq_mask_impl(kq_mask, kq_mask, mctx, ubatch, cparams);
 }
 
 // for a mask from build_attn_inp_kq_mask() with keys/rows: the host/device choice is part of the reuse key
@@ -92,7 +110,7 @@ static bool can_reuse_kq_mask(
         const llama_cparams & cparams) {
     const auto n_stream = cparams.kv_unified ? 1 : ubatch.n_seqs_unq;
 
-    bool res = can_reuse_kq_mask(kq_mask, mctx, ubatch, cparams);
+    bool res = can_reuse_kq_mask_impl(kq_mask, kq_keys ? kq_keys : kq_mask, mctx, ubatch, cparams);
 
     res &= (kq_keys != nullptr) == mctx->kq_mask_on_device(ubatch, n_stream, cparams.causal_attn);
 

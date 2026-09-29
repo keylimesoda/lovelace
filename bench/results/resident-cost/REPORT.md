@@ -44,3 +44,26 @@ Why every cost follows the resident cells:
 - The MTP pass does not grow (its FA runs 15.5 vs 16.2 ms).
 
 So the FA kernel is the dominant cause (89%); mask upload, conversion and host mask build add the rest (11%).
+
+## 2. Fix: attend only the cell window of the ubatch's sequences
+
+`llama_kv_cache::get_kv_window()` (engine/src/llama-kv-cache.cpp) replaces `[0, n_kv)` per ubatch with
+`[kv_lo, kv_lo + n_kv)`: the first to one past the last cell that holds any sequence of the ubatch (a word scan of
+the per-cell sequence bits from both ends), padded to 256 cells as before. The K/V views start at `kv_lo`
+(`get_k/get_v` take it), and the KQ mask (host dense and generic builders, pos buckets) covers the same cells. So
+every term of the table above follows the ubatch's own cells, for every FA kernel: the FA kernel range, the f16
+conversion, the mask size (host build and upload) and the mask pre-pass.
+
+- Graph reuse: the window start is recorded in the mask input's (unused) `op_params[0]` and is part of
+  `can_reuse_kq_mask()`, so a reused graph never keeps stale view offsets.
+- Scope: on for LLM_ARCH_QWEN35/QWEN35MOE caches without SWA/ALiBi (the MTP draft cache shares the cells and gets its
+  own window). Families that index cells directly (indexer caches, relative position buckets, DeepSeek-V4) keep
+  `kv_lo = 0`. Sequence ids >= 64 fall back to the full range. `LLAMA_KV_WINDOW=0` turns it off (A/B).
+- It narrows a ubatch whose sequences sit in a compact cell range: a prefill (alone in its ubatch) and any session
+  whose cells are contiguous. A ubatch that mixes several sessions (a prefill chunk batched with another session's
+  decode) gets the union of their ranges; there the kernel-level tile skipping of feat/prefill-depth
+  (`flash_attn_ext_mma_q_pf`, skips 64-cell tiles no row of the block sees) is what removes the FA cost, see the
+  mixed run below. Placement is unchanged (first fit from the head); a session appended after another one's later
+  cells spans them.
+- Not duplicated: the GPU-built KQ mask (feat/step-costs 0c727e790) is not needed for this case (the window makes
+  the host mask the same size as alone); it still helps mixed ubatches.

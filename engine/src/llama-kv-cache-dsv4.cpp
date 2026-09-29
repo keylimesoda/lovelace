@@ -1875,7 +1875,7 @@ uint32_t llama_kv_cache_dsv4_raw_context::get_n_write() const {
 }
 
 ggml_tensor * llama_kv_cache_dsv4_raw_context::get_k(ggml_context * ctx, int32_t il) const {
-    return kv_swa->get_k(ctx, il, n_kv, sinfos_read[i_next]);
+    return kv_swa->get_k(ctx, il, 0, n_kv, sinfos_read[i_next]);
 }
 
 ggml_tensor * llama_kv_cache_dsv4_raw_context::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const {
@@ -1925,7 +1925,7 @@ void llama_kv_cache_dsv4_raw_context::set_input_k_idxs(ggml_tensor * dst) const 
 }
 
 void llama_kv_cache_dsv4_raw_context::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const {
-    kv_swa->set_input_kq_mask(dst, ubatch, causal_attn);
+    kv_swa->set_input_kq_mask(dst, ubatch, causal_attn, 0);
 }
 
 void llama_kv_cache_dsv4_raw_context::set_input_k_rot(ggml_tensor * dst) const {
@@ -1976,7 +1976,7 @@ uint32_t llama_kv_cache_dsv4_comp_context::get_n_kv() const {
 }
 
 ggml_tensor * llama_kv_cache_dsv4_comp_context::get_k(ggml_context * ctx, int32_t il) const {
-    return kv->get_k(ctx, il, n_kv, sinfos[i_cur]);
+    return kv->get_k(ctx, il, 0, n_kv, sinfos[i_cur]);
 }
 
 ggml_tensor * llama_kv_cache_dsv4_comp_context::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const {
