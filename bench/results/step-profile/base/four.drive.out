@@ -1,0 +1,11 @@
+{"prefill": 0, "target": 128000, "rec_depth": 128013, "session": "2026-09-26T09-53-08_01a0dd22.jsonl", "prompt_tokens": 125640, "wall_s": 102.0}
+{"prefill": 1, "target": 64000, "rec_depth": 63948, "session": "2026-09-27T08-18-54_01a0e1f2.jsonl", "prompt_tokens": 61500, "wall_s": 17.8}
+{"prefill": 2, "target": 64000, "rec_depth": 63926, "session": "2026-09-26T09-54-32_01a0dd23.jsonl", "prompt_tokens": 61565, "wall_s": 18.0}
+{"prefill": 3, "target": 48000, "rec_depth": 47926, "session": "2026-09-26T09-53-08_01a0dd22__priorart-panel-layout.jsonl", "prompt_tokens": 46417, "wall_s": 45.0}
+Importer error status: An unknown error occurred.
+Unable to retrieve the importer version: skipping importation of the QDSTRM file.
+{"capture_s": 2.0, "stream_events_in_capture": 358, "approx_aggregate_tps": 179.0}
+{"req": 0, "prompt_n": 4, "cache_n": 125636, "predicted_n": 256, "decode_tps": 41.91309098691029, "draft_n": 356, "draft_accepted": 135, "acceptance": 0.379}
+{"req": 1, "prompt_n": 4, "cache_n": 61496, "predicted_n": 256, "decode_tps": 49.02901402460525, "draft_n": 282, "draft_accepted": 160, "acceptance": 0.567}
+{"req": 2, "prompt_n": 4, "cache_n": 61561, "predicted_n": 256, "decode_tps": 56.82710853643453, "draft_n": 245, "draft_accepted": 173, "acceptance": 0.706}
+{"req": 3, "prompt_n": 4, "cache_n": 46413, "predicted_n": 256, "decode_tps": 44.26234971630438, "draft_n": 320, "draft_accepted": 148, "acceptance": 0.463}

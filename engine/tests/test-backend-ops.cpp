@@ -11725,6 +11725,18 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
+    // Qwen3.8-27B (ShapeLearn IQ4_XS mix) multi-sequence decode/verify: 6 rows per MTP draft step, 16/24 rows per
+    // target verify of 4/6 sequences x 4 tokens. m=48 is the Gated-DeltaNet alpha/beta projection.
+    for (int bs : {6, 16, 24}) {
+        for (ggml_type type_a : {GGML_TYPE_Q8_0, GGML_TYPE_Q5_K, GGML_TYPE_Q4_K}) {
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 48, bs, 5120, {1, 1}, {1, 1}));
+        }
+        for (ggml_type type_a : {GGML_TYPE_IQ3_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ4_XS, GGML_TYPE_Q4_K}) {
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 17408, bs, 5120, {1, 1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 5120, bs, 17408, {1, 1}, {1, 1}));
+        }
+    }
+
     // Q4_K multi-column mat-vec
     for (int64_t m : {4096, 6144, 6272, 14336}) {
         for (int bs : {1, 2, 3, 4, 8}) {

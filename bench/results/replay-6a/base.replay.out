@@ -1,0 +1,128 @@
+replay base: 6 agents over 18 sessions -> /home/ric/Work/lovelace-wt/verify/bench/results/replay-6a/base (duration=1200.0 max_turns=None)
+[   153.3s] a0 2026-09-26T09-54-32_01a0dd23         t54   ok        prompt   58039 cached       0 ttft   39.83s out   314 @    2.8 tok/s
+[   154.5s] a1 2026-09-26T09-53-08_01a0dd22         t19   ok        prompt   58089 cached       0 ttft   73.82s out   231 @    2.9 tok/s
+[   332.5s] a0 2026-09-26T09-54-32_01a0dd23         t55   ok        prompt   58459 cached   58035 ttft    7.60s out   343 @    2.0 tok/s
+[   351.5s] a1 2026-09-26T09-53-08_01a0dd22         t20   ok        prompt   58593 cached   58085 ttft  186.15s out   178 @   17.2 tok/s
+[   355.7s] a0 2026-09-26T09-54-32_01a0dd23         t56   ok        prompt   59004 cached   58455 ttft   20.80s out   117 @   48.0 tok/s
+[   359.2s] a3 2026-09-27T08-42-53_01a0e208         t19   ok        prompt   59979 cached       0 ttft  195.11s out   592 @    3.7 tok/s
+[   362.4s] a5 2026-09-27T08-18-54_01a0e1f2         t28   ok        prompt   58383 cached       0 ttft  338.17s out   360 @   25.2 tok/s
+[   368.1s] a1 2026-09-26T09-53-08_01a0dd22         t21   ok        prompt   59149 cached   58589 ttft    5.91s out   223 @   20.8 tok/s
+[   371.2s] a5 2026-09-27T08-18-54_01a0e1f2         t29   ok        prompt   58811 cached   58379 ttft    6.96s out    94 @   51.2 tok/s
+[   374.1s] a0 2026-09-26T09-54-32_01a0dd23         t57   ok        prompt   59628 cached   59000 ttft    5.79s out   311 @   24.6 tok/s
+[   374.5s] a2 2026-09-25T05-26-18_01a0d707         t23   ok        prompt   58954 cached       0 ttft  126.75s out  1143 @    4.7 tok/s
+[   377.3s] a1 2026-09-26T09-53-08_01a0dd22         t22   ok        prompt   59405 cached   59145 ttft    4.11s out   139 @   27.0 tok/s
+[   383.4s] a0 2026-09-26T09-54-32_01a0dd23         t58   ok        prompt   60058 cached   59624 ttft    2.05s out   117 @   16.1 tok/s
+[   386.2s] a5 2026-09-27T08-18-54_01a0e1f2         t30   ok        prompt   59131 cached   58807 ttft    4.83s out   167 @   16.5 tok/s
+[   388.4s] a1 2026-09-26T09-53-08_01a0dd22         t23   ok        prompt   60190 cached   59401 ttft    7.82s out   133 @   40.3 tok/s
+[   393.2s] a3 2026-09-27T08-42-53_01a0e208         t20   ok        prompt   60777 cached   59975 ttft    6.11s out   608 @   21.8 tok/s
+[   393.9s] a4 2026-09-25T07-09-44_01a0d766         t15   ok        prompt   57905 cached       0 ttft  263.04s out  1020 @    8.3 tok/s
+[   400.1s] a5 2026-09-27T08-18-54_01a0e1f2         t31   ok        prompt   60109 cached   59127 ttft    5.60s out   124 @   14.9 tok/s
+[   406.2s] a0 2026-09-26T09-54-32_01a0dd23         t59   ok        prompt   60333 cached   60054 ttft    1.42s out   366 @   19.4 tok/s
+[   413.3s] a3 2026-09-27T08-42-53_01a0e208         t21   ok        prompt   61833 cached   60773 ttft    5.64s out   440 @   30.3 tok/s
+[   425.2s] a0 2026-09-26T09-54-32_01a0dd23         t60   ok        prompt   61065 cached   60329 ttft    9.06s out   351 @   37.1 tok/s
+[   429.3s] a0 2026-09-26T09-54-32_01a0dd23         t61   ok        prompt   61565 cached   61061 ttft    1.39s out   122 @   46.5 tok/s
+[   436.4s] a1 2026-09-26T09-53-08_01a0dd22         t24   ok        prompt   61496 cached   60186 ttft   10.20s out   985 @   26.0 tok/s
+[   441.8s] a0 2026-09-26T09-54-32_01a0dd23         t62   ok        prompt   62471 cached   61561 ttft    2.99s out   252 @   26.4 tok/s
+[   450.1s] a2 2026-09-25T05-26-18_01a0d707         t24   ok        prompt   61243 cached   58950 ttft    8.09s out  1325 @   19.6 tok/s
+[   454.6s] a0 2026-09-26T09-54-32_01a0dd23         t63   ok        prompt   62779 cached   62467 ttft    9.30s out   161 @   46.1 tok/s
+[   463.9s] a3 2026-09-27T08-42-53_01a0e208         t22   ok        prompt   63825 cached   61829 ttft    7.48s out   679 @   29.4 tok/s
+[   475.4s] a1 2026-09-26T09-53-08_01a0dd22         t25   ok        prompt   66050 cached   61492 ttft   12.51s out   839 @   31.9 tok/s
+[   481.1s] a0 2026-09-26T09-54-32_01a0dd23         t64   ok        prompt   63753 cached   62775 ttft   16.16s out   403 @   38.8 tok/s
+[   483.0s] a3 2026-09-27T08-42-53_01a0e208         t23   ok        prompt   64587 cached   63821 ttft   14.04s out   253 @   51.1 tok/s
+[   514.8s] a5 2026-09-27T08-18-54_01a0e1f2         t32   ok        prompt   61500 cached   60105 ttft    8.83s out  3066 @   28.9 tok/s
+[   528.4s] a4 2026-09-25T07-09-44_01a0d766         t16   ok        prompt   59268 cached   57901 ttft    9.26s out  4096 @   32.7 tok/s
+[   531.9s] a0 2026-09-26T09-54-32_01a0dd23         t65   ok        prompt   64374 cached   63749 ttft   35.83s out   706 @   47.1 tok/s
+[   549.9s] a2 2026-09-25T05-26-18_01a0d707         t25   ok        prompt   63103 cached   61239 ttft   20.83s out  2552 @   32.5 tok/s
+[   559.8s] a3 2026-09-27T08-42-53_01a0e208         t24   ok        prompt   65945 cached   64583 ttft   59.29s out   411 @   23.4 tok/s
+[   584.2s] a5 2026-09-27T08-18-54_01a0e1f2         t33   ok        prompt   65838 cached   61496 ttft   29.72s out   610 @   15.4 tok/s
+[   589.3s] a3 2026-09-27T08-42-53_01a0e208         t25   ok        prompt   66535 cached   65941 ttft   26.46s out   181 @   60.3 tok/s
+[   603.3s] a2 2026-09-25T05-26-18_01a0d707         t26   ok        prompt   67055 cached   63099 ttft   29.96s out   318 @   43.9 tok/s
+[   611.6s] a1 2026-09-26T09-53-08_01a0dd22         t26   ok        prompt   68211 cached   66046 ttft   11.63s out  3169 @   25.4 tok/s
+[   615.9s] a3 2026-09-27T08-42-53_01a0e208         t26   ok        prompt   67301 cached   66531 ttft   17.52s out    93 @   42.0 tok/s
+[   623.9s] a1 2026-09-26T09-53-08_01a0dd22         t27   ok        prompt   71780 cached   68207 ttft   10.07s out   119 @   51.8 tok/s
+[   627.4s] a3 2026-09-27T08-42-53_01a0e208         t27   ok        prompt   67417 cached   67297 ttft    8.68s out   164 @   59.3 tok/s
+[   634.3s] a5 2026-09-27T08-18-54_01a0e1f2         t34   ok        prompt   66866 cached   65834 ttft   21.52s out   948 @   33.3 tok/s
+[   640.6s] a0 2026-09-26T09-54-32_01a0dd23         t66   ok        prompt   64228 cached   50086 ttft   28.05s out  1551 @   25.6 tok/s
+[   643.1s] a3 2026-09-27T08-42-53_01a0e208         t28   ok        prompt   67595 cached   67413 ttft   14.12s out    64 @   42.3 tok/s
+[   643.7s] a1 2026-09-26T09-53-08_01a0dd22         t28   ok        prompt   75472 cached   71776 ttft   16.35s out   119 @   42.2 tok/s
+[   665.7s] a0 2026-09-26T09-54-32_01a0dd23         t67   ok        prompt   66343 cached   64224 ttft    9.26s out   806 @   51.2 tok/s
+[   668.5s] a4 2026-09-25T07-09-44_01a0d766         t17   ok        prompt   64374 cached   59264 ttft   22.34s out  2801 @   25.3 tok/s
+[   675.5s] a3 2026-09-27T08-42-53_01a0e208         t29   ok        prompt   67690 cached   67591 ttft   23.41s out   191 @   21.0 tok/s
+[   678.6s] a1 2026-09-26T09-53-08_01a0dd22         t29   ok        prompt   78172 cached   75468 ttft   29.90s out   118 @   23.1 tok/s
+[   689.4s] a5 2026-09-27T08-18-54_01a0e1f2         t35   ok        prompt   68058 cached   66862 ttft   15.40s out  1049 @   26.6 tok/s
+[   690.7s] a2 2026-09-25T05-26-18_01a0d707         t27   ok        prompt   67537 cached   67051 ttft   10.05s out  1539 @   24.9 tok/s
+[   710.5s] a3 2026-09-27T08-42-53_01a0e208         t30   ok        prompt   70155 cached   67686 ttft   25.22s out   255 @   58.3 tok/s
+[   721.5s] a4 2026-09-25T07-09-44_01a0d766         t18   ok        prompt   67224 cached   64370 ttft   17.93s out   605 @   17.5 tok/s
+[   737.0s] a1 2026-09-26T09-53-08_01a0dd22         t30   ok        prompt   84176 cached   78168 ttft   26.75s out   865 @   27.3 tok/s
+[   744.5s] a0 2026-09-26T09-54-32_01a0dd23         t68   ok        prompt   70653 cached   66339 ttft   18.94s out  1368 @   22.9 tok/s
+[   748.4s] a5 2026-09-27T08-18-54_01a0e1f2         t36   ok        prompt   71345 cached   68054 ttft   26.72s out   980 @   31.5 tok/s
+[   753.3s] a3 2026-09-27T08-42-53_01a0e208         t31   ok        prompt   70827 cached   70151 ttft   27.78s out   428 @   30.6 tok/s
+[   759.3s] a1 2026-09-26T09-53-08_01a0dd22         t31   ok        prompt   85233 cached   84172 ttft   14.45s out   257 @   32.8 tok/s
+[   768.2s] a0 2026-09-26T09-54-32_01a0dd23         t69   ok        prompt   72180 cached   70649 ttft   12.41s out   283 @   25.0 tok/s
+[   776.0s] a5 2026-09-27T08-18-54_01a0e1f2         t37   ok        prompt   74516 cached   71341 ttft   16.74s out   434 @   40.2 tok/s
+[   779.0s] a2 2026-09-25T05-26-18_01a0d707         t28   ok        prompt   70069 cached   67533 ttft   35.49s out  1483 @   28.1 tok/s
+[   783.4s] a4 2026-09-25T07-09-44_01a0d766         t19   ok        prompt   69016 cached   67220 ttft   26.29s out   836 @   23.5 tok/s
+[   801.6s] a5 2026-09-27T08-18-54_01a0e1f2         t38   ok        prompt   75932 cached   74512 ttft   18.56s out   348 @   57.9 tok/s
+[   813.3s] a3 2026-09-27T08-42-53_01a0e208         t32   ok        prompt   71436 cached   70823 ttft    7.53s out  1025 @   31.6 tok/s
+[   822.6s] a4 2026-09-25T07-09-44_01a0d766         t20   ok        prompt   70575 cached   69012 ttft   27.03s out   200 @   43.3 tok/s
+[   827.8s] a0 2026-09-26T09-54-32_01a0dd23         t70   ok        prompt   72521 cached   72176 ttft    9.13s out  1295 @   26.0 tok/s
+[   836.2s] a3 2026-09-27T08-42-53_01a0e208         t33   ok        prompt   73664 cached   71432 ttft   12.52s out   311 @   42.3 tok/s
+[   853.3s] a5 2026-09-27T08-18-54_01a0e1f2         t39   ok        prompt   77358 cached   75928 ttft   13.96s out  1029 @   45.2 tok/s
+[   856.5s] a4 2026-09-25T07-09-44_01a0d766         t21   ok        prompt   71228 cached   70571 ttft   15.53s out   730 @   39.7 tok/s
+[   869.5s] a2 2026-09-25T05-26-18_01a0d707         t29   ok        prompt   72471 cached   70065 ttft   27.22s out  1721 @   27.2 tok/s
+[   880.3s] a0 2026-09-26T09-54-32_01a0dd23         t71   ok        prompt   74457 cached   72517 ttft   35.61s out   618 @   36.6 tok/s
+[   884.3s] a3 2026-09-27T08-42-53_01a0e208         t34   ok        prompt   75921 cached   73660 ttft   27.51s out   713 @   34.6 tok/s
+[   892.5s] a5 2026-09-27T08-18-54_01a0e1f2         t40   ok        prompt   80313 cached   77354 ttft   21.44s out   492 @   27.8 tok/s
+[   907.0s] a1 2026-09-26T09-53-08_01a0dd22         t32   ok        prompt   86451 cached   85229 ttft   12.04s out  4096 @   30.2 tok/s
+[   911.7s] a3 2026-09-27T08-42-53_01a0e208         t35   ok        prompt   76877 cached   75917 ttft   25.28s out   122 @   58.4 tok/s
+[   922.5s] a0 2026-09-26T09-54-32_01a0dd23         t72   ok        prompt   76377 cached   74453 ttft   16.47s out   978 @   38.5 tok/s
+[   929.7s] a5 2026-09-27T08-18-54_01a0e1f2         t41   ok        prompt   83094 cached   80309 ttft   25.44s out   569 @   48.5 tok/s
+[   942.2s] a4 2026-09-25T07-09-44_01a0d766         t22   ok        prompt   72011 cached   71224 ttft   18.49s out  1574 @   26.2 tok/s
+[   947.7s] a3 2026-09-27T08-42-53_01a0e208         t36   ok        prompt   77083 cached   76873 ttft   28.23s out   144 @   18.4 tok/s
+[   949.4s] a0 2026-09-26T09-54-32_01a0dd23         t73   ok        prompt   77737 cached   76373 ttft   23.96s out   157 @   53.4 tok/s
+[  1044.3s] a5 2026-09-27T08-18-54_01a0e1f2         t42   ok        prompt   83915 cached   83090 ttft   27.78s out   184 @    2.2 tok/s
+[  1050.3s] a3 2026-09-27T08-42-53_01a0e208         t37   ok        prompt   77397 cached   77079 ttft   97.77s out   196 @   41.9 tok/s
+[  1055.2s] a2 2026-09-25T05-26-18_01a0d707         t30   ok        prompt   75573 cached   72467 ttft   21.39s out  1906 @   11.6 tok/s
+[  1061.8s] a1 2026-09-26T09-53-08_01a0dd22         t33   ok        prompt   91378 cached   86447 ttft   32.94s out  1176 @    9.6 tok/s
+[  1070.2s] a0 2026-09-26T09-54-32_01a0dd23         t74   ok        prompt   78471 cached   77733 ttft  102.91s out   509 @   28.6 tok/s
+[  1078.9s] a4 2026-09-26T07-38-39_01a0dca6         t23   ok        prompt   59112 cached       0 ttft  101.78s out   999 @   28.6 tok/s
+[  1080.0s] a3 2026-09-27T08-42-53_01a0e208         t38   ok        prompt   79082 cached   77393 ttft   15.57s out   305 @   21.7 tok/s
+[  1104.2s] a5 2026-09-27T08-18-54_01a0e1f2         t43   ok        prompt   84419 cached   83911 ttft   13.02s out  1484 @   31.7 tok/s
+[  1130.1s] a4 2026-09-26T07-38-39_01a0dca6         t24   ok        prompt   62997 cached   59108 ttft   32.86s out   994 @   54.8 tok/s
+[  1140.3s] a2 2026-09-25T05-26-18_01a0d707         t31   ok        prompt   79523 cached   75569 ttft   21.55s out  2173 @   34.2 tok/s
+[  1146.0s] a0 2026-09-26T09-54-32_01a0dd23         t75   ok        prompt   79209 cached   78467 ttft   59.26s out   227 @   58.0 tok/s
+[  1153.1s] a5 2026-09-27T08-18-54_01a0e1f2         t44   ok        prompt   86022 cached   84415 ttft   45.26s out   168 @   45.6 tok/s
+[  1161.7s] a4 2026-09-26T07-38-39_01a0dca6         t25   ok        prompt   65000 cached   62993 ttft   27.64s out   230 @   58.4 tok/s
+[  1164.8s] a3 2026-09-27T08-42-53_01a0e208         t39   ok        prompt   83582 cached   79078 ttft   58.06s out   789 @   29.4 tok/s
+[  1179.1s] a0 2026-09-26T09-54-32_01a0dd23         t76   ok        prompt   80326 cached   79205 ttft   18.21s out   656 @   43.9 tok/s
+[  1185.4s] a1 2026-09-26T09-53-08_01a0dd22         t34   ok        prompt   93371 cached   91374 ttft   23.98s out  3976 @   39.9 tok/s
+[  1192.1s] a5 2026-09-27T08-18-54_01a0e1f2         t45   ok        prompt   86588 cached   86018 ttft   13.72s out   981 @   38.8 tok/s
+[  1200.0s] a3 2026-09-27T08-42-53_01a0e208         t40   cancelled prompt   88216 cached - ttft -s out - @ - tok/s
+[  1200.0s] a0 2026-09-26T09-54-32_01a0dd23         t77   cancelled prompt   82861 cached - ttft -s out - @ - tok/s
+[  1200.0s] a2 2026-09-25T05-26-18_01a0d707         t32   cancelled prompt   80562 cached - ttft   23.92s out   632 @   41.9 tok/s
+[  1200.0s] a1 2026-09-26T09-53-08_01a0dd22         t35   cancelled prompt   98354 cached - ttft -s out - @ - tok/s
+[  1200.0s] a4 2026-09-26T07-38-39_01a0dca6         t26   cancelled prompt   74879 cached - ttft   25.97s out   821 @   70.5 tok/s
+
+========================================================================
+label                        base
+turns (ok/total)             98/103  status={'ok': 98, 'cancelled': 5}
+errors+timeouts              0
+active span                  1200.0 s (wall 1200.0 s)
+aggregate output tok/s       64.94
+mean decode tok/s per agent  31.19
+decode tok/s p10/p50/p90     14.89 / 30.27 / 51.79
+TTFT s p50/p90/p99           18.56 / 59.29 / 338.17
+e2e s p50/p90                41.73 / 152.41
+prompt depth p50/p90/max     67595 / 83582 / 93371
+cache hit ratio              0.915 (98 reqs reported)
+prefill tok/s p50            409
+draft acceptance             0.541
+------------------------------------------------------------------------
+agent  turns   ok  out tok  decode tok/s  ttft p50  sessions
+0         24   23    12011         33.25     16.16  2026-09-26T09-54-32_01a0dd23
+1         17   16    16623         28.03     14.45  2026-09-26T09-53-08_01a0dd22
+2         10    9    14160         25.19     21.55  2026-09-25T05-26-18_01a0d707
+3         22   21     7964         35.79     23.41  2026-09-27T08-42-53_01a0e208
+4         12   11    14085         32.56     26.29  2026-09-25T07-09-44_01a0d766,2026-09-26T07-38-39_01a0dca6
+5         18   18    13087         32.31     18.56  2026-09-27T08-18-54_01a0e1f2
+========================================================================

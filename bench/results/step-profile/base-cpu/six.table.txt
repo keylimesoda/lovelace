@@ -1,0 +1,47 @@
+/home/ric/Work/lovelace-wt/verify/bench/results/step-profile/base-cpu/six.sqlite: 20 steps, step wall mean 71.06 ms (median 69.77, min 63.77, max 92.40)
+class                               ms/step  share
+host gap (GPU idle)                  23.801  33.5%
+target matmul                        23.452  33.0%
+target FA                            10.621  14.9%
+target DeltaNet                       2.807   4.0%
+MTP draft 2                           2.246   3.2%
+MTP draft 3                           2.246   3.2%
+MTP draft 1                           2.226   3.1%
+memcpy (copyKind 2)                   1.119   1.6%
+MTP catch-up                          0.962   1.4%
+target misc                           0.772   1.1%
+target norms                          0.629   0.9%
+memcpy (copyKind 8)                   0.096   0.1%
+memset (copyKind 0)                   0.088   0.1%
+
+target-decode kernels (per step): kernel                                                  ms  calls  us/call
+  FA        flash_attn_ext_mma_q                                                   9.698   16.0    606.1
+  matmul    mmq iq3_s x(int)24                                                     5.926  119.0     49.8
+  matmul    mmq iq4_xs x(int)24                                                    4.526   90.0     50.3
+  matmul    mmq iq3_xxs x(int)24                                                   4.282   79.0     54.2
+  matmul    mmq q4_K x(int)24                                                      2.481   67.0     37.0
+  DeltaNet  gated_delta_net_rr_cuda                                                2.459   48.0     51.2
+  matmul    mmq q6_K x(int)24                                                      1.418    9.0    157.6
+  FA        flash_attn_ext_mma_q_gather                                            0.707   16.0     44.2
+  matmul    mmq q3_K x(int)24                                                      0.600   12.0     50.0
+  matmul    mmq-fixup q8_0 x(int)32                                                0.561   36.0     15.6
+  matmul    quantize_q8_1 (activations)                                            0.415  307.0      1.4
+  norms     add_rms_norm_mul_f32                                                   0.398  128.0      3.1
+  matmul    mmq-fixup iq3_s x(int)24                                               0.388  119.0      3.3
+  matmul    mmq-fixup q5_K x(int)32                                                0.378   26.0     14.5
+  matmul    mmq q5_K x(int)24                                                      0.335   19.0     17.6
+  misc      unary_gated_op_kernel                                                  0.328  128.0      2.6
+  matmul    mmq-fixup iq4_xs x(int)24                                              0.327   90.0      3.6
+  matmul    mmq-fixup q4_K x(int)32                                                0.298   21.0     14.2
+  matmul    mmq-fixup iq3_xxs x(int)24                                             0.282   79.0      3.6
+  misc      k_set_rows_quant                                                       0.276   32.0      8.6
+  DeltaNet  ssm_conv_chain_f32                                                     0.264   48.0      5.5
+  matmul    mmq-fixup q4_K x(int)24                                                0.253   67.0      3.8
+  norms     rms_norm_f32                                                           0.231   81.0      2.9
+  FA        flash_attn_ext_mma_q_combine                                           0.217   16.0     13.6
+  matmul    mmq iq2_xxs x(int)24                                                   0.147    3.0     49.0
+  matmul    mmq q8_0 x(int)32                                                      0.140   36.0      3.9
+  matmul    mmq q5_K x(int)32                                                      0.098   26.0      3.8
+  DeltaNet  gated_delta_net_rr_record_cuda                                         0.084   48.0      1.7
+  matmul    mmq-fixup q5_K x(int)24                                                0.082   19.0      4.3
+  matmul    mmq q4_K x(int)32                                                      0.076   21.0      3.6

@@ -22,12 +22,15 @@
 #include "mtmd-helper.h"
 
 #include <algorithm>
+#include <condition_variable>
 #include <cstddef>
 #include <cinttypes>
 #include <exception>
 #include <memory>
+#include <mutex>
 #include <filesystem>
 #include <random>
+#include <thread>
 #include <utility>
 #include <fstream>
 
@@ -41,6 +44,97 @@
 #endif
 
 constexpr int HTTP_POLLING_SECONDS = 1;
+
+// Persistent worker threads for one parallel section at a time: run(n, fn) calls fn(0..n-1) on the workers and on
+// the calling thread, and returns when all calls are done. Used to sample the verified rows of several slots at once
+// (the CPU sampling of a 248k-token vocabulary is ~0.15 ms per row, serialized between the GPU decodes).
+struct server_parallel_pool {
+    explicit server_parallel_pool(int n_workers) {
+        for (int i = 0; i < n_workers; ++i) {
+            workers.emplace_back([this] { worker_loop(); });
+        }
+    }
+
+    ~server_parallel_pool() {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            stop = true;
+        }
+        cv_start.notify_all();
+        for (auto & w : workers) {
+            w.join();
+        }
+    }
+
+    void run(int n_jobs, const std::function<void(int)> & fn) {
+        if (n_jobs <= 1 || workers.empty()) {
+            for (int i = 0; i < n_jobs; ++i) {
+                fn(i);
+            }
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            job_fn    = &fn;
+            job_count = n_jobs;
+            n_pending = n_jobs;
+            next_job  = 0;
+            generation++;
+        }
+        cv_start.notify_all();
+        work();
+        std::unique_lock<std::mutex> lock(mutex);
+        cv_done.wait(lock, [this] { return n_pending == 0; });
+        job_fn = nullptr;
+    }
+
+private:
+    void work() {
+        for (;;) {
+            const std::function<void(int)> * fn;
+            int i;
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                if (job_fn == nullptr || next_job >= job_count) {
+                    return;
+                }
+                fn = job_fn;
+                i  = next_job++;
+            }
+            (*fn)(i);
+            std::lock_guard<std::mutex> lock(mutex);
+            if (--n_pending == 0) {
+                cv_done.notify_one();
+            }
+        }
+    }
+
+    void worker_loop() {
+        uint64_t seen = 0;
+        for (;;) {
+            {
+                std::unique_lock<std::mutex> lock(mutex);
+                cv_start.wait(lock, [&] { return stop || generation != seen; });
+                if (stop) {
+                    return;
+                }
+                seen = generation;
+            }
+            work();
+        }
+    }
+
+    std::vector<std::thread> workers;
+    std::mutex               mutex;
+    std::condition_variable  cv_start;
+    std::condition_variable  cv_done;
+    const std::function<void(int)> * job_fn = nullptr;
+    int      job_count  = 0;
+    int      next_job   = 0;
+    int      n_pending  = 0;
+    uint64_t generation = 0;
+    bool     stop       = false;
+};
 
 static common_speculative_output_limits server_output_limits(const common_params & params) {
     if (params.embedding ||
@@ -263,6 +357,10 @@ struct server_slot {
     common_prompt_checkpoint spec_ckpt;
     bool spec_is_replay = false;
     std::mt19937 spec_synth_rng;
+
+    // verification results, computed for all slots in parallel before post_decode() applies them in slot order
+    llama_tokens       spec_accepted;
+    common_sampler_ptr spec_smpl_save;
 
     // TODO: move members that belong to the task (such as `generated_text`, `has_new_line`) to task_results_state
     //       see https://github.com/ggml-org/llama.cpp/pull/18283#issuecomment-3710175837
@@ -1042,6 +1140,9 @@ private:
 
     common_speculative_ptr spec;
 
+    // samples the verified rows of the slots in parallel (null without speculative decoding or with a single slot)
+    std::unique_ptr<server_parallel_pool> spec_sample_pool;
+
     bool add_bos_token = true;
 
     int32_t n_ctx; // total context for all clients / slots
@@ -1149,6 +1250,7 @@ private:
         slots.clear();
         state_arena.reset();
 
+        spec_sample_pool.reset();
         spec.reset();
         spec_init.reset();
 
@@ -1486,6 +1588,10 @@ private:
 
         if (spec) {
             SRV_TRC("%s", "speculative decoding context initialized\n");
+            const int n_workers = std::min<int>(params_base.n_parallel, (int) std::thread::hardware_concurrency()) - 1;
+            if (n_workers > 0) {
+                spec_sample_pool = std::make_unique<server_parallel_pool>(n_workers);
+            }
         } else {
             spec_init.reset();
             ctx_dft   = nullptr;
@@ -5474,9 +5580,51 @@ private:
         });
 
         // speculative decoding - main model sample and accept
+        const auto spec_verifies = [](const server_slot & slot) {
+            return slot.state == SLOT_STATE_GENERATING && slot.can_speculate() &&
+                   !slot.spec_draft.empty() && !slot.spec_i_batch.empty();
+        };
+
+        // sample the verified rows of all slots first, in parallel: each slot has its own sampler and reads its own
+        // output rows; the context is synchronized (and its outputs reordered) once, here, before the workers start
+        if (spec) {
+            const auto & synth_probs = common_speculative_get_synth_probs(spec.get());
+
+            std::vector<server_slot *> verifying;
+            for (auto & slot : slots) {
+                if (spec_verifies(slot)) {
+                    GGML_ASSERT(slot.spec_i_batch.size() == slot.spec_draft.size() + 1);
+                    verifying.push_back(&slot);
+                }
+            }
+
+            if (!verifying.empty()) {
+                llama_synchronize(ctx_tgt);
+                llama_get_logits_ith(ctx_tgt, verifying[0]->spec_i_batch[0]);
+
+                const auto sample = [&](int k) {
+                    server_slot & slot = *verifying[k];
+                    slot.spec_smpl_save.reset(common_sampler_clone(slot.smpl.get()));
+                    slot.spec_accepted = synth_probs.empty()
+                        ? common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft,
+                                                             /*grammar_first =*/ false, /*synchronize =*/ false)
+                        : server_sample_and_accept_synth(
+                                slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft,
+                                synth_probs, slot.spec_synth_rng, slot.spec_is_replay);
+                };
+
+                if (spec_sample_pool && synth_probs.empty()) {
+                    spec_sample_pool->run((int) verifying.size(), sample);
+                } else {
+                    for (int k = 0; k < (int) verifying.size(); ++k) {
+                        sample(k);
+                    }
+                }
+            }
+        }
+
         iterate(slots, [&](server_slot & slot) {
-            if (slot.state != SLOT_STATE_GENERATING || !slot.can_speculate() ||
-                    slot.spec_draft.empty() || slot.spec_i_batch.empty()) {
+            if (!spec_verifies(slot)) {
                 return;
             }
 
@@ -5487,15 +5635,9 @@ private:
 
             // verify and try to accept the draft
             {
-                common_sampler_ptr smpl_save(common_sampler_clone(slot.smpl.get()));
+                common_sampler_ptr smpl_save = std::move(slot.spec_smpl_save);
 
-                GGML_ASSERT(slot.spec_i_batch.size() == n_draft + 1);
-                const auto & synth_probs = common_speculative_get_synth_probs(spec.get());
-                auto accepted = synth_probs.empty()
-                    ? common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft)
-                    : server_sample_and_accept_synth(
-                            slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft,
-                            synth_probs, slot.spec_synth_rng, slot.spec_is_replay);
+                auto accepted = std::move(slot.spec_accepted);
                 slot.spec_i_batch.clear();
 
                 GGML_ASSERT(accepted.size() >= 1);

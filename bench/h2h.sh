@@ -3,18 +3,20 @@
 #   bench/h2h.sh ENGINE LANES MODE OUT_DIR LABEL
 #     ENGINE: lovelace | ninfer     LANES: slots/lanes (1..6)
 #     MODE:   sweep                 single-stream depth sweep (bench/depth_sweep.py)
+#   env BIN: lovelace build dir (default <repo>/engine/build-sm89/bin)
 #             replay:AGENTS:MINDEPTH:DURATION   multi-agent replay (bench/replay)
 set -euo pipefail
 ENGINE=$1 LANES=$2 MODE=$3 OUT=$(realpath -m "$4") LABEL=$5
 HERE=$(cd "$(dirname "$0")" && pwd)
+BIN=$(realpath "${BIN:-$HERE/../engine/build-sm89/bin}")
 mkdir -p "$OUT"
 exec "$HERE/../deploy/gpu-lock.sh" bash -c '
 set -uo pipefail
-ENGINE=$1 LANES=$2 MODE=$3 OUT=$4 LABEL=$5 HERE=$6
+ENGINE=$1 LANES=$2 MODE=$3 OUT=$4 LABEL=$5 HERE=$6 BIN=$7
 PORT=18300
 start_lovelace() {
   mkdir -p /tmp/h2h-sessions
-  docker run -d --name h2h --gpus all --network host -v "$HERE/../engine/build-sm89/bin:/e" -v "$HOME/models:/models:ro" \
+  docker run -d --name h2h --gpus all --network host --ulimit memlock=-1:-1 -v "$BIN:/e" -v "$HOME/models:/models:ro" \
     -v /tmp/h2h-sessions:/sessions lovelace-engine-runtime:cuda13.1 /e/llama-server \
     -m /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf -ngl 99 -np "$LANES" --kv-unified -c 327680 -ctk q5_0 -ctv q5_0 \
     --spec-type draft-mtp --spec-draft-n-max 3 -ctkd q5_0 -ctvd q5_0 -fa on -ub 1024 -b 2048 --jinja --reasoning-preserve \
@@ -53,4 +55,4 @@ case "$MODE" in
 esac
 docker logs h2h > "$OUT/$LABEL.server.log" 2>&1
 docker rm -f h2h >/dev/null
-' _ "$ENGINE" "$LANES" "$MODE" "$OUT" "$LABEL" "$HERE"
+' _ "$ENGINE" "$LANES" "$MODE" "$OUT" "$LABEL" "$HERE" "$BIN"

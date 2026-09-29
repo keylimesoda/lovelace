@@ -1,0 +1,5 @@
+{"prefill": 0, "target": 64000, "rec_depth": 63948, "session": "2026-09-27T08-18-54_01a0e1f2.jsonl", "prompt_tokens": 61500, "wall_s": 0.1}
+Importer error status: An unknown error occurred.
+Unable to retrieve the importer version: skipping importation of the QDSTRM file.
+{"capture_s": 2.0, "stream_events_in_capture": 209, "approx_aggregate_tps": 104.5}
+{"req": 0, "prompt_n": 4, "cache_n": 61496, "predicted_n": 256, "decode_tps": 96.72915116945545, "draft_n": 263, "draft_accepted": 166, "acceptance": 0.631}
