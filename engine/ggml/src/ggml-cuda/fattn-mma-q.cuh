@@ -20,9 +20,10 @@
 #define FATTN_MMA_Q_NTHREADS        (FATTN_MMA_Q_NWARPS*WARP_SIZE)
 #define FATTN_MMA_Q_NBATCH          64  // K/V cells per tile, 8 per warp for KQ
 #define FATTN_MMA_Q_MAX_TOKENS      8   // query tokens per tile
-#define FATTN_MMA_Q_MAX_CHUNK_TILES 128 // K/V tiles per chunk
+#define FATTN_MMA_Q_MAX_CHUNK_TILES 128 // K/V tiles per list of visible tiles, longer chunks are processed in segments
 #define FATTN_MMA_Q_SMEM_MAX        (99*1024)
 #define FATTN_MMA_Q_GATHER_CELLS    2048 // K/V cells per chunk when gathering visible cells, 8 per thread
+#define FATTN_MMA_Q_MAX_GATHER_BATCH 64  // largest number of query tokens for which visible cells are gathered
 
 static constexpr __host__ __device__ int fattn_mma_q_block_bytes(const ggml_type type) {
     return type == GGML_TYPE_Q4_0 ? sizeof(block_q4_0) :
@@ -623,40 +624,6 @@ static __global__ void flash_attn_ext_mma_q(
     const int    * idx_g  = gather ? gather_idx + gc*FATTN_MMA_Q_GATHER_CELLS : nullptr;
     const half   * mask_g = gather ? gather_mask + gc*ntok_tile*FATTN_MMA_Q_GATHER_CELLS : nullptr;
     const int      n_g    = gather ? gather_count[gc] : 0;
-    if (gather) {
-        // not needed, the tiles are dense
-    } else {
-    // List the K/V tiles of the chunk that are visible to at least one query of the tile:
-    const uint8_t * vis_c = vis ? vis + ((sequence % ne33)*gridDim.y + blockIdx.y)*int64_t(ntiles_kv) + kt_begin : nullptr;
-    if (warp == 0) {
-        int n = 0;
-        for (int it0 = 0; it0 < kt_num; it0 += WARP_SIZE) {
-            const int it = it0 + lane;
-            const bool visible = it < kt_num && (!vis_c || vis_c[it]);
-            const uint32_t ballot = __ballot_sync(0xFFFFFFFF, visible);
-            if (visible) {
-                tile_list[n + __popc(ballot & ((1u << lane) - 1))] = kt_begin + it;
-            }
-            n += __popc(ballot);
-        }
-        if (lane == 0) {
-            *tile_num = n;
-        }
-    }
-    __syncthreads();
-    }
-    const int nvis = gather ? (n_g + FATTN_MMA_Q_NBATCH - 1) / FATTN_MMA_Q_NBATCH : *tile_num;
-
-    if (nvis == 0 && nchunks > 1) {
-        // nothing visible, the merge skips this chunk
-        for (int r = tid; r < rows_valid; r += FATTN_MMA_Q_NTHREADS) {
-            const int t    = tok0 + r / gqa_ratio;
-            const int head = head_kv*gqa_ratio + r % gqa_ratio;
-            dst_meta[((int64_t(sequence)*ne01 + t)*ne02 + head)*nchunks + chunk] = make_float2(-INFINITY, 0.0f);
-        }
-        return;
-    }
-
     // Issues the loads of K (and the mask) or V for tile it into stage s, gather needs the cell indices idx_regs:
     int cell_cur = -1; // gather: cell of the row that this thread copies
     auto load_K = [&](const int s, const int it) {
@@ -678,27 +645,6 @@ static __global__ void flash_attn_ext_mma_q(
             fattn_mma_q_load_KV<D, type_V>(stage_V(s), V_h, nb21, tile_list[it]*FATTN_MMA_Q_NBATCH, ne11);
         }
     };
-
-    // Start loading the first K/V tiles, the load of Q overlaps with them:
-#pragma unroll
-    for (int s = 0; s < nstages; ++s) {
-        if (s < nvis) {
-            if constexpr (gather) {
-                cell_cur = fattn_mma_q_load_idx(idx_g, s*FATTN_MMA_Q_NBATCH, n_g);
-            }
-            load_K(s, s);
-        }
-        fattn_mma_q_cp_async_commit();
-        if (s < nvis) {
-            load_V(s, s);
-        }
-        fattn_mma_q_cp_async_commit();
-    }
-    // the cell indices of the next tile to load are fetched one iteration ahead:
-    int cell_next = -1;
-    if constexpr (gather) {
-        cell_next = fattn_mma_q_load_idx(idx_g, nstages*FATTN_MMA_Q_NBATCH, n_g);
-    }
 
     // Q is quantized to int8 per 32 values, each thread does 8 values, 4 threads a block:
     static_assert(D/8 <= WARP_SIZE, "bad D");
@@ -772,6 +718,64 @@ static __global__ void flash_attn_ext_mma_q(
             KQ_max[m][h] = -INFINITY;
             KQ_sum[m][h] = 0.0f;
         }
+    }
+
+    // A chunk longer than the tile list is processed in segments of FATTN_MMA_Q_MAX_CHUNK_TILES tiles:
+    for (int seg0 = 0; seg0 < (gather ? 1 : kt_num); seg0 += FATTN_MMA_Q_MAX_CHUNK_TILES) {
+    const int seg_begin = kt_begin + seg0;
+    const int seg_num   = min(FATTN_MMA_Q_MAX_CHUNK_TILES, kt_num - seg0);
+    if (!gather) {
+    // List the K/V tiles of the segment that are visible to at least one query of the tile:
+    const uint8_t * vis_c = vis ? vis + ((sequence % ne33)*gridDim.y + blockIdx.y)*int64_t(ntiles_kv) + seg_begin : nullptr;
+    if (warp == 0) {
+        int n = 0;
+        for (int it0 = 0; it0 < seg_num; it0 += WARP_SIZE) {
+            const int it = it0 + lane;
+            const bool visible = it < seg_num && (!vis_c || vis_c[it]);
+            const uint32_t ballot = __ballot_sync(0xFFFFFFFF, visible);
+            if (visible) {
+                tile_list[n + __popc(ballot & ((1u << lane) - 1))] = seg_begin + it;
+            }
+            n += __popc(ballot);
+        }
+        if (lane == 0) {
+            *tile_num = n;
+        }
+    }
+    __syncthreads();
+    }
+    const int nvis = gather ? (n_g + FATTN_MMA_Q_NBATCH - 1) / FATTN_MMA_Q_NBATCH : *tile_num;
+    __syncthreads(); // tile_num is rewritten by the next segment
+
+    if (nvis == 0 && nchunks > 1 && kt_num <= FATTN_MMA_Q_MAX_CHUNK_TILES) {
+        // nothing visible, the merge skips this chunk
+        for (int r = tid; r < rows_valid; r += FATTN_MMA_Q_NTHREADS) {
+            const int t    = tok0 + r / gqa_ratio;
+            const int head = head_kv*gqa_ratio + r % gqa_ratio;
+            dst_meta[((int64_t(sequence)*ne01 + t)*ne02 + head)*nchunks + chunk] = make_float2(-INFINITY, 0.0f);
+        }
+        return;
+    }
+
+    // Start loading the first K/V tiles, the load of Q overlaps with them:
+#pragma unroll
+    for (int s = 0; s < nstages; ++s) {
+        if (s < nvis) {
+            if constexpr (gather) {
+                cell_cur = fattn_mma_q_load_idx(idx_g, s*FATTN_MMA_Q_NBATCH, n_g);
+            }
+            load_K(s, s);
+        }
+        fattn_mma_q_cp_async_commit();
+        if (s < nvis) {
+            load_V(s, s);
+        }
+        fattn_mma_q_cp_async_commit();
+    }
+    // the cell indices of the next tile to load are fetched one iteration ahead:
+    int cell_next = -1;
+    if constexpr (gather) {
+        cell_next = fattn_mma_q_load_idx(idx_g, nstages*FATTN_MMA_Q_NBATCH, n_g);
     }
 
     for (int it = 0; it < nvis; ++it) {
@@ -975,6 +979,7 @@ static __global__ void flash_attn_ext_mma_q(
         fattn_mma_q_cp_async_commit();
     }
     fattn_mma_q_cp_async_wait<0>();
+    }
 
     // Sum up the partial KQ row sums of the quads and warps:
 #pragma unroll
@@ -1151,7 +1156,6 @@ static void ggml_cuda_flash_attn_ext_mma_q_launch(ggml_backend_cuda_context & ct
         const int nblocks_target = 2*nsm;
         chunk_tiles = (int64_t(ntiles_kv)*nunits + nblocks_target - 1) / nblocks_target;
         chunk_tiles = std::max(chunk_tiles, 16);
-        chunk_tiles = std::min(chunk_tiles, FATTN_MMA_Q_MAX_CHUNK_TILES);
         chunk_tiles = std::min(chunk_tiles, ntiles_kv);
         nchunks = (ntiles_kv + chunk_tiles - 1) / chunk_tiles;
     }
@@ -1222,8 +1226,9 @@ void ggml_cuda_flash_attn_ext_mma_q_case(ggml_backend_cuda_context & ctx, ggml_t
     const int ntok_tile = std::min<int64_t>({Q->ne[1], FATTN_MMA_Q_MAX_TOKENS, 16*ncols_tiles_max/gqa_ratio});
     const int nrows     = ntok_tile*gqa_ratio;
 
-    // several token tiles usually belong to different sequences of a unified KV cache, gather their visible cells:
-    const bool gather = dst->src[3] && Q->ne[1] > ntok_tile;
+    // Several token tiles of a verify batch usually belong to different sequences of a unified KV cache, gather their
+    // visible cells. Large batches (prefill) skip masked K/V tiles instead: the gather lists would scale with the batch.
+    const bool gather = dst->src[3] && Q->ne[1] > ntok_tile && Q->ne[1] <= FATTN_MMA_Q_MAX_GATHER_BATCH;
     if (gather) {
         ggml_cuda_flash_attn_ext_mma_q_switch_ncols_tiles<D, type_K, type_V, ncols_tiles_max, true>(ctx, dst, ntok_tile, nrows);
     } else {

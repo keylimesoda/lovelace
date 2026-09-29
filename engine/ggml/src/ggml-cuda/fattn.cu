@@ -597,8 +597,7 @@ static bool ggml_cuda_fattn_mma_q_applies(const int cc, const ggml_tensor * dst)
     if (((uintptr_t) Q->data) % 16 != 0 || Q->nb[1] % 16 != 0 || Q->nb[2] % 16 != 0 || Q->nb[3] % 16 != 0) {
         return false;
     }
-    // for large batches the f16 MMA kernel is faster in spite of the conversion of K/V to f16:
-    return Q->ne[1] <= 64;
+    return true;
 }
 
 // Best FlashAttention kernel for a specific GPU:
