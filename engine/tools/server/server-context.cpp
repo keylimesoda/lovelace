@@ -319,9 +319,13 @@ struct server_slot {
     const char *                   obs_wait_reason = "none"; // why the task waited for admission
     int32_t                        obs_n_unparked  = 0;      // tokens restored from the prompt cache at launch
     const char *                   obs_session_tier = nullptr; // where the session was at admission (gpu/ram/disk/new)
+    // phases of a session request after its admission (ms from admission, -1 = n/a), see server_obs_record
     size_t                         obs_restore_bytes   = 0;
-    double                         obs_restore_ms      = 0.0; // device time of the restore copies
-    double                         obs_restore_wait_ms = 0.0; // time the request waited for them after admission
+    double                         obs_restore_ms      = 0.0;  // device time of the restore copies
+    double                         obs_restore_ready_ms = -1.0; // the restore copies completed (0 = before admission)
+    double                         obs_park_ms         = 0.0;  // host time parking other sessions at admission
+    double                         obs_restore_issue_ms = 0.0; // host time issuing the restore
+    double                         obs_prompt_start_ms = -1.0; // the first batch with the prompt was queued
     bool                           obs_prefetch_hit    = false;
     int64_t                        obs_t_admit_us      = 0;
 
@@ -351,12 +355,14 @@ struct server_slot {
     size_t                xfer_bytes   = 0;
     int32_t               xfer_tokens  = 0;
 
+    // a transfer the sequence must not be decoded or modified during; a session restore does not count once the
+    // compute streams wait for its copies (the cells are only read by later graphs)
     bool xfer_pending() const {
         if (!xfer_in.done() || (prompt_cache && prompt_cache->saving(id))) {
             return true;
         }
         server_session * s = session();
-        return s && !sessions->idle(*s);
+        return s && !(sessions->sync_done(*s) && (s->restore_ordered || sessions->restore_done(*s)));
     }
 
     void xfer_wait() const {
@@ -474,7 +480,10 @@ struct server_slot {
         obs_session_tier    = nullptr;
         obs_restore_bytes   = 0;
         obs_restore_ms      = 0.0;
-        obs_restore_wait_ms = 0.0;
+        obs_restore_ready_ms = -1.0;
+        obs_park_ms          = 0.0;
+        obs_restore_issue_ms = 0.0;
+        obs_prompt_start_ms  = -1.0;
         obs_prefetch_hit    = false;
         obs_t_admit_us      = 0;
         n_accepted_per_pos.clear();
@@ -2187,8 +2196,13 @@ private:
         if (slot.xfer == server_slot::XFER_NONE) {
             return true;
         }
-        if (!wait && slot.xfer_pending()) {
-            return false;
+        if (!wait) {
+            // an ordered restore does not hold the slot back, but it is accounted only once its copies are done
+            server_session * s = slot.session();
+            const bool busy = slot.xfer == server_slot::XFER_UNPARK && s ? !sessions->restore_done(*s) : slot.xfer_pending();
+            if (busy) {
+                return false;
+            }
         }
 
         const int64_t t_wait = ggml_time_us();
@@ -2199,9 +2213,9 @@ private:
             t_us = (int64_t) (sess->last_restore_ms * 1e3);
             if (slot.is_processing()) {
                 // the request was admitted before the restore completed
-                slot.obs_restore_bytes   = sess->last_restore_bytes;
-                slot.obs_restore_ms      = sess->last_restore_ms;
-                slot.obs_restore_wait_ms = std::max<int64_t>(0, ggml_time_us() - slot.obs_t_admit_us) / 1e3;
+                slot.obs_restore_bytes    = sess->last_restore_bytes;
+                slot.obs_restore_ms       = sess->last_restore_ms;
+                slot.obs_restore_ready_ms = std::max<int64_t>(0, sess->last_restore_end_us - slot.obs_t_admit_us) / 1e3;
             }
         } else if (slot.xfer == server_slot::XFER_SYNC) {
             if (sess) {
@@ -2661,6 +2675,8 @@ private:
             return SCHED_WAIT_KV;
         }
 
+        const int64_t t_admit = ggml_time_us();
+
         // parking a session is free: its mirror is current
         for (int id : plan.victims) {
             sched_park(slots[id]);
@@ -2677,7 +2693,8 @@ private:
             sess = &sessions->create(e.session_id);
         }
 
-        slot.obs_t_admit_us   = ggml_time_us();
+        slot.obs_t_admit_us   = t_admit;
+        slot.obs_park_ms      = (ggml_time_us() - t_admit) / 1e3;
         slot.obs_session_tier = e.session_tier;
 
         if (resident) {
@@ -2689,13 +2706,16 @@ private:
                 slot.obs_prefetch_hit = true;
                 slot.obs_n_unparked   = slot.prompt.n_tokens();
                 if (slot.xfer != server_slot::XFER_UNPARK) {
-                    slot.obs_restore_bytes = sess->last_restore_bytes;
-                    slot.obs_restore_ms    = sess->last_restore_ms;
+                    // accounted already: the copies completed before the admission
+                    slot.obs_restore_bytes    = sess->last_restore_bytes;
+                    slot.obs_restore_ms       = sess->last_restore_ms;
+                    slot.obs_restore_ready_ms = 0.0;
                 }
             }
         } else if (sess->n_kv > 0) {
             session_restore(slot, *sess, /* prefetch */ false);
-            slot.obs_n_unparked = slot.prompt.n_tokens();
+            slot.obs_n_unparked       = slot.prompt.n_tokens();
+            slot.obs_restore_issue_ms = slot.xfer_us_host / 1e3;
         }
         sess->id_slot   = slot.id;
         slot.session_id = sess->id;
@@ -2711,8 +2731,9 @@ private:
         return SCHED_ADMITTED;
     }
 
-    // restore the session of the queue head into an empty idle slot while the head waits, if the pool has room for its
-    // cells without parking anybody: the request then starts without waiting for the copies
+    // restore the session of the queue head while the head waits (for KV cells to grow into, or a slot), so that its
+    // request starts without waiting for the copies: into an idle slot, empty or least recently used, parking idle
+    // sessions that are not queued themselves if the cells are needed (parks are free)
     void sched_prefetch() {
         if (!sessions || sched_queue.empty()) {
             return;
@@ -2723,12 +2744,19 @@ private:
             return;
         }
 
+        auto queued = [&](const server_slot & slot) {
+            return slot.session_id != 0 &&
+                std::find(sched_wanted.begin(), sched_wanted.end(), slot.session_id) != sched_wanted.end();
+        };
+
         server_slot * target = nullptr;
         for (auto & slot : slots) {
-            if (slot.is_processing() || slot.xfer != server_slot::XFER_NONE || slot.prompt.n_tokens() > 0) {
+            if (slot.is_processing() || slot.xfer != server_slot::XFER_NONE || queued(slot)) {
                 continue;
             }
-            if (target == nullptr || slot.t_last_used < target->t_last_used) {
+            const bool empty = slot.prompt.n_tokens() == 0;
+            const bool empty_t = target && target->prompt.n_tokens() == 0;
+            if (target == nullptr || (empty && !empty_t) || (empty == empty_t && slot.t_last_used < target->t_last_used)) {
                 target = &slot;
             }
         }
@@ -2736,14 +2764,25 @@ private:
             return;
         }
 
+        // the sessions of queued requests are not parked for it
         sched_sync();
+        for (size_t i = 0; i < slots.size(); i++) {
+            if (queued(slots[i])) {
+                kv_budget.slots[i].active = true;
+            }
+        }
         const auto plan = kv_budget.plan_commit(target->id, s->n_kv, /* use_headroom */ true);
-        if (!plan.fits || !plan.victims.empty()) {
+        if (!plan.fits) {
             return;
         }
 
+        for (int id : plan.victims) {
+            sched_park(slots[id]);
+        }
         if (target->session_id != 0) {
             session_park(*target);
+        } else if (target->prompt.n_tokens() > 0) {
+            sched_park(*target);
         }
         session_restore(*target, *s, /* prefetch */ true);
     }
@@ -4223,6 +4262,8 @@ private:
             sched_poll_xfers(/* wait */ false);
             sched_sessions_poll();
             sched_admit();
+            // the head of the queue that still waits may be restored meanwhile
+            sched_prefetch();
         }
 
         // check if all slots are idle
@@ -4635,6 +4676,9 @@ private:
                     // TODO: maybe move branch to outside of this loop in the future
                     if (slot.state == SLOT_STATE_STARTED) {
                         slot.stats.update_prompt_start();
+                        if (slot.obs_t_admit_us > 0) {
+                            slot.obs_prompt_start_ms = (ggml_time_us() - slot.obs_t_admit_us) / 1e3;
+                        }
 
                         slot.state = SLOT_STATE_PROCESSING_PROMPT;
 
@@ -6179,7 +6223,10 @@ private:
         rec.session_tier        = slot.obs_session_tier;
         rec.restore_bytes       = slot.obs_restore_bytes;
         rec.restore_ms          = slot.obs_restore_ms;
-        rec.restore_wait_ms     = slot.obs_restore_wait_ms;
+        rec.park_ms             = slot.obs_park_ms;
+        rec.restore_issue_ms    = slot.obs_restore_issue_ms;
+        rec.restore_ready_ms    = slot.obs_restore_ready_ms;
+        rec.prompt_start_ms     = slot.obs_prompt_start_ms;
         rec.prefetch_hit        = slot.obs_prefetch_hit;
         rec.t_prefill_ms        = st.t_prompt_ms();
         rec.t_decode_ms         = st.t_gen_ms();

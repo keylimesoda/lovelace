@@ -177,7 +177,11 @@ struct server_obs_record {
     const char * session_tier    = nullptr;
     size_t       restore_bytes   = 0;     // bytes restored from its mirror for the request
     double       restore_ms      = 0.0;   // device time of those copies
-    double       restore_wait_ms = 0.0;   // time the request waited for them after admission (0 = prefetched)
+    // phases after the admission, ms from it (-1 = n/a)
+    double       park_ms          = 0.0;  // host time parking other sessions
+    double       restore_issue_ms = 0.0;  // host time issuing the restore
+    double       restore_ready_ms = -1.0; // the restore copies completed (0 = before the admission)
+    double       prompt_start_ms  = -1.0; // the first batch with prompt tokens was queued
     bool         prefetch_hit    = false; // restored while the request was queued
 
     // done

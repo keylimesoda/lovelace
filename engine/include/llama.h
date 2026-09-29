@@ -1045,6 +1045,13 @@ extern "C" {
     // (excludes waiting for earlier work); -1 while not done
     LLAMA_API int64_t llama_state_xfer_t_us(llama_state_xfer_t xfer);
 
+    // ggml_time_us() at which the copies were seen complete, -1 while not done
+    LLAMA_API int64_t llama_state_xfer_t_end_us(llama_state_xfer_t xfer);
+
+    // the context's later graphs run after the copies of the transfer (the device waits, not the host): a restored
+    // sequence may be decoded right away. The copies that run in order with the compute stream need no ordering.
+    LLAMA_API void llama_state_xfer_order(llama_state_xfer_t xfer);
+
     // waits for the transfer, then frees the handle
     LLAMA_API void llama_state_xfer_free(llama_state_xfer_t xfer);
 

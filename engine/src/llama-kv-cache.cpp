@@ -2643,7 +2643,11 @@ bool llama_kv_cache::state_read_meta_delta(llama_io_read_i & io, uint32_t strm, 
         ubatch.seq_id[i]   = &dest_seq_id;
     }
 
-    sinfo = find_slot(ubatch, false);
+    // contiguous cells if there are any: one copy per layer instead of one per run of free cells
+    sinfo = find_slot(ubatch, true);
+    if (sinfo.empty()) {
+        sinfo = find_slot(ubatch, false);
+    }
     if (sinfo.empty()) {
         LLAMA_LOG_ERROR("%s: failed to find %u available cells in kv cache\n", __func__, n_keep);
         return false;
