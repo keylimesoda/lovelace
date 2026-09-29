@@ -7,6 +7,7 @@
 #             replay:AGENTS:MINDEPTH:DURATION   multi-agent replay (bench/replay)
 #   env SERVER_ARGS: extra lovelace server args (deploy/draft-vocab is mounted at /draft-vocab)
 #   env: WARMUP=1 runs every agent's first contact before the timed replay window (replay.py --warmup)
+#   env CTX: lovelace unified KV cells (default 327680)
 set -euo pipefail
 ENGINE=$1 LANES=$2 MODE=$3 OUT=$(realpath -m "$4") LABEL=$5
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -20,7 +21,7 @@ start_lovelace() {
   mkdir -p /tmp/h2h-sessions
   docker run -d --name h2h --gpus all --network host --ulimit memlock=-1:-1 -v "$BIN:/e" -v "$HOME/models:/models:ro" \
     -v /tmp/h2h-sessions:/sessions -v "$HERE/../deploy/draft-vocab:/draft-vocab:ro" lovelace-engine-runtime:cuda13.1 /e/llama-server \
-    -m /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf -ngl 99 -np "$LANES" --kv-unified -c 327680 -ctk q5_0 -ctv q5_0 \
+    -m /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf -ngl 99 -np "$LANES" --kv-unified -c "${CTX:-327680}" -ctk q5_0 -ctv q5_0 \
     --spec-type draft-mtp --spec-draft-n-max 3 -ctkd q5_0 -ctvd q5_0 -fa on -ub 1024 -b 2048 --jinja --reasoning-preserve \
     --session-ram 30720 --session-dir /sessions -ctxcp 8 --kv-budget --prefill-chunk-gen 1024 \
     --alias qwen3.8-27b --telemetry --metrics --host 127.0.0.1 --port $PORT ${SERVER_ARGS:-} >/dev/null
