@@ -1506,12 +1506,9 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
     // For the stream-k kernel it is possible to run it with tiling by setting the number of CUDA blocks equal to the number of tiles.
     // This is worthwhile if the efficiency of tiling is high and skipping the fixup kernel is more important.
     // Configs that target more than one resident block per SM get as many stream-k blocks as can be resident.
-    // But only with at least 2 K iterations per block, else the partial tiles and fixups outweigh the latency hiding:
-    // this also caps the grid of small matrices (e.g. 48 x 5120, one tile of 20 K iterations), which would otherwise
-    // get one block per SM, mostly without work, and a fixup over all of their partial tiles.
+    // But only with at least 2 K iterations per block, else the partial tiles and fixups outweigh the latency hiding.
     const int64_t niters_k   = int64_t(ntx) * nty * ntzw * (args.ncols_x / config.K_vram);
-    const int     nblocks_sk = std::min<int64_t>(niters_k >= int64_t(2) * nsm * config.occupancy ? nsm * config.occupancy : nsm,
-                                                 std::max<int64_t>(1, niters_k / 2));
+    const int     nblocks_sk = niters_k >= int64_t(2) * nsm * config.occupancy ? nsm * config.occupancy : nsm;
     const int ntiles_dst = ntx * nty * ntzw;
     const int tiles_nwaves = (ntiles_dst + nblocks_sk - 1) / nblocks_sk;
     const int tiles_efficiency_percent = 100 * ntiles_dst / (nblocks_sk*tiles_nwaves);
