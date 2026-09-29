@@ -11,6 +11,8 @@ add_library(${TARGET} STATIC
     server-task.h
     server-session-store.cpp
     server-session-store.h
+    server-sessions.cpp
+    server-sessions.h
     server-queue.cpp
     server-queue.h
     server-common.cpp

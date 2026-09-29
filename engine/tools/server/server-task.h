@@ -11,7 +11,6 @@
 // TODO: prevent including the whole server-common.h as we only use server_tokens
 #include "server-common.h"
 
-#include "server-session-store.h"
 
 enum server_task_type {
     SERVER_TASK_TYPE_COMPLETION,
@@ -576,9 +575,6 @@ struct server_prompt {
     server_tokens tokens;
 
     std::list<common_prompt_checkpoint> checkpoints;
-    uint64_t session_id = 0;
-    size_t n_synced_tokens = 0;
-    size_t n_synced_tokens_dft = 0;
 
     void clear() {
         tokens.clear();
@@ -593,58 +589,34 @@ struct server_prompt {
         return server_prompt {
             tokens.clone(),
             checkpoints,
-            session_id,
-            n_synced_tokens,
-            n_synced_tokens_dft,
         };
     }
 };
 
-struct server_prompt_kv_delta {
+// the sequence state of a prompt cache entry, see common_state_buf
+struct server_prompt_data {
     common_state_buf main;
     common_state_buf drft;
-    llama_pos pos_min = 0;
-    llama_pos pos_min_dft = 0;
-
-    size_t size() const { return main.size() + drft.size(); }
-    bool done() const { return main.done() && drft.done(); }
-    void wait() const { main.wait(); drft.wait(); }
-    int64_t t_us() const { return std::max<int64_t>(0, main.t_us()) + std::max<int64_t>(0, drft.t_us()); }
-};
-
-// the sequence state and append-only deltas of a session mirror
-struct server_prompt_data {
-    common_state_buf main;          // initial full state
-    common_state_buf drft;
-    std::vector<server_prompt_kv_delta> deltas; // appended attention KV cells
-    common_state_buf recurrent;     // latest recurrent state (partial-only)
-    common_state_buf recurrent_dft;
 
     size_t size() const {
-        size_t result = main.size() + drft.size() + recurrent.size() + recurrent_dft.size();
-        for (const auto & delta : deltas) result += delta.size();
-        return result;
+        return main.size() + drft.size();
     }
 
+    // the transfers into or out of the buffers are complete
     bool done() const {
-        if (!main.done() || !drft.done() || !recurrent.done() || !recurrent_dft.done()) return false;
-        for (const auto & delta : deltas) if (!delta.done()) return false;
-        return true;
+        return main.done() && drft.done();
     }
 
     void wait() const {
-        main.wait(); drft.wait(); recurrent.wait(); recurrent_dft.wait();
-        for (const auto & delta : deltas) delta.wait();
+        main.wait();
+        drft.wait();
     }
 
+    // device time of the last transfers in microseconds
     int64_t t_us() const {
-        int64_t result = std::max<int64_t>(0, main.t_us()) + std::max<int64_t>(0, drft.t_us()) +
-                std::max<int64_t>(0, recurrent.t_us()) + std::max<int64_t>(0, recurrent_dft.t_us());
-        for (const auto & delta : deltas) result += delta.t_us();
-        return result;
+        return std::max<int64_t>(0, main.t_us()) + std::max<int64_t>(0, drft.t_us());
     }
 };
-
 
 struct server_prompt_cache_state {
     server_prompt prompt;
@@ -652,12 +624,9 @@ struct server_prompt_cache_state {
 
     // slot whose sequence is still being copied into the entry (-1 = none), the slot must not modify it until then
     int id_slot_save = -1;
-    uint64_t last_sync_seconds = 0;
-    int id_slot_restore = -1;
-    size_t size_in_flight = 0;
 
     size_t size() const {
-        size_t res = data.size() + size_in_flight;
+        size_t res = data.size();
 
         for (const auto & ckpt : prompt.checkpoints) {
             res += ckpt.size();
@@ -680,8 +649,6 @@ struct server_prompt_cache {
     std::list<server_prompt_cache_state> states;
 
     common_state_arena * arena = nullptr;
-    server_session_index * sessions_index = nullptr;
-    server_session_tiers * disk_tiers = nullptr;
 
     // in bytes, 0 = no limit
     size_t limit_size = 0;
@@ -706,12 +673,11 @@ struct server_prompt_cache {
     // microseconds (-1 if none is left, e.g. evicted meanwhile)
     int64_t finish_saving(int id_slot);
 
-    bool make_room(size_t n_chunks, uint64_t protected_session = 0);
-    size_t sync_session(server_prompt & prompt, llama_context * ctx_tgt, llama_context * ctx_dft, int id_slot, bool take_checkpoints);
+    // evicts the oldest entries until the arena has n_chunks free chunks, false if it still has fewer
+    bool make_room(size_t n_chunks);
 
     // the entry load() would restore for tokens_new, given the slot currently holds `prompt`; nullptr = keep `prompt`
     const server_prompt_cache_state * find(const server_prompt & prompt, const server_tokens & tokens_new) const;
-    server_prompt_cache_state * find_session(uint64_t session_id, const server_tokens & tokens_new);
 
     // removes an entry returned by find() from the cache
     server_prompt_cache_state take(const server_prompt_cache_state * state);
@@ -721,21 +687,12 @@ struct server_prompt_cache {
     // n_bytes: state bytes restored; on failure the sequence is in an unspecified state and the caller must clear it
     static bool restore(server_prompt_cache_state & state, server_prompt & prompt, server_prompt_data & data,
             llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot, size_t & n_bytes);
-    bool restore_session(server_prompt_cache_state & state, server_prompt & prompt, server_prompt_data & data,
-            llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot, size_t & n_bytes);
-    bool restoring(int id_slot) const;
-    void wait_restoring(int id_slot) const;
-    void finish_restoring(int id_slot, server_prompt_data && data);
-    bool has_session(uint64_t session_id) const;
-    uint64_t protected_session_id = 0;
 
     // find() + take() + restore() + wait; keeps `prompt` if no entry is better
     // n_bytes: state bytes restored into the context, 0 if the slot kept its prompt
     bool load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot, size_t & n_bytes);
 
     void update();
-    uint64_t load_disk_index(uint64_t now_seconds);
-    void erase_session(uint64_t session_id);
 };
 
 // used exclusively by router mode

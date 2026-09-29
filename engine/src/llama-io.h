@@ -50,6 +50,9 @@ public:
     virtual void read(void * dst, size_t size) = 0;
     virtual void read_tensor(ggml_tensor * tensor, size_t offset, size_t size) = 0;
 
+    // advance past size bytes without applying them (e.g. cells a restore leaves out)
+    virtual void skip(size_t size);
+
     // drop tensor data that has been read but not yet applied (e.g. when a restore fails)
     virtual void discard() {}
 

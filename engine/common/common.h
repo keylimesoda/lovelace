@@ -638,7 +638,6 @@ struct common_params {
     std::string session_dir           = "~/.local/state/lovelace/sessions";             // NVMe tier
     int32_t     session_disk_max_gib   = 0;                                              // 0 = unlimited
     int32_t     session_ttl_sec        = 86400;                                          // 0 = disable expiration
-    bool        shared_prefix          = true;                                          // share common prefix cells in VRAM
 
     // KV budget scheduling (unified KV only): admission by cell reservation, parking of idle sessions
     bool    kv_budget           = true;  // admit tasks by KV reservation, park idle slots instead of failing
@@ -1257,17 +1256,14 @@ struct common_state_buf {
     // returns false if the heap allocation fails
     bool alloc(common_state_arena * arena, size_t n);
     void clear();
-    std::vector<uint8_t> copy_to_vector() const;
-    bool assign_from_vector(common_state_arena * arena, const std::vector<uint8_t> & data);
-    void copy_to(uint8_t * dst, size_t size) const;
-    bool assign_from(common_state_arena * arena, const uint8_t * src, size_t size);
+
+    // the memory of the bytes, in order (valid after wait())
+    std::vector<llama_state_chunk> views() const;
 
     // start saving / restoring a sequence (after alloc() / on a filled buffer), false on failure
     // flags as in llama_state_seq_get_data_ext, plus LLAMA_STATE_SEQ_FLAGS_ORDERED
     bool get_async(llama_context * ctx, llama_seq_id seq_id, llama_state_seq_flags flags);
     bool set_async(llama_context * ctx, llama_seq_id seq_id, llama_state_seq_flags flags) const;
-    bool get_delta_async(llama_context * ctx, llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags);
-    bool set_delta_async(llama_context * ctx, llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags) const;
 
     // the pending transfer is complete (true without one); the device time of the last transfer in microseconds
     bool    done() const;
@@ -1284,8 +1280,6 @@ private:
 
     mutable llama_state_xfer_t xfer      = nullptr;
     mutable int64_t            xfer_t_us = -1;
-
-    std::vector<llama_state_chunk> views() const;
 };
 
 struct common_prompt_checkpoint {

@@ -11,10 +11,6 @@
 #include "server-common.h"
 
 #include <sstream>
-#include <cstring>
-#include <ctime>
-#include <limits>
-#include <stdexcept>
 
 //
 // task_params
@@ -1689,340 +1685,8 @@ json server_task_result_apply_lora::to_json() {
     return json {{ "success", true }};
 }
 
-static constexpr uint32_t SERVER_SESSION_BLOB_MAGIC = 0x4c535331;
-static constexpr uint32_t SERVER_SESSION_BLOB_VERSION = 3;
-
-template <typename T>
-static void server_session_blob_write(std::vector<uint8_t> & blob, size_t & offset, const T & value) {
-    memcpy(blob.data() + offset, &value, sizeof(T));
-    offset += sizeof(T);
-}
-
-static void server_session_blob_write_bytes(std::vector<uint8_t> & blob, size_t & offset, const void * data, size_t size) {
-    if (size != 0) {
-        memcpy(blob.data() + offset, data, size);
-        offset += size;
-    }
-}
-
-template <typename T>
-static T server_session_blob_read(const std::vector<uint8_t> & blob, size_t & offset) {
-    if (sizeof(T) > blob.size() - offset) {
-        throw std::runtime_error("truncated session snapshot");
-    }
-    T value;
-    memcpy(&value, blob.data() + offset, sizeof(T));
-    offset += sizeof(T);
-    return value;
-}
-
-static const uint8_t * server_session_blob_read_bytes(const std::vector<uint8_t> & blob, size_t & offset, size_t size) {
-    if (size > blob.size() - offset) {
-        throw std::runtime_error("truncated session snapshot payload");
-    }
-    const uint8_t * result = blob.data() + offset;
-    offset += size;
-    return result;
-}
-
-static size_t server_session_blob_add_size(size_t total, size_t value) {
-    if (value > std::numeric_limits<size_t>::max() - total) {
-        throw std::runtime_error("session snapshot size overflow");
-    }
-    return total + value;
-}
-
-static std::vector<uint8_t> server_session_blob_encode(const server_prompt_cache_state & state) {
-    const std::vector<char> packed = state.prompt.tokens.serialize();
-    size_t total = sizeof(uint32_t) * 2 + sizeof(uint64_t) * 10;
-    total = server_session_blob_add_size(total, packed.size());
-    total = server_session_blob_add_size(total, state.data.main.size());
-    total = server_session_blob_add_size(total, state.data.drft.size());
-    total = server_session_blob_add_size(total, state.data.recurrent.size());
-    total = server_session_blob_add_size(total, state.data.recurrent_dft.size());
-    for (const auto & checkpoint : state.prompt.checkpoints) {
-        total = server_session_blob_add_size(total, sizeof(int64_t) + sizeof(int32_t) + sizeof(llama_pos) * 2 + sizeof(uint64_t) * 3);
-        total = server_session_blob_add_size(total, checkpoint.data_tgt.size());
-        total = server_session_blob_add_size(total, checkpoint.data_dft.size());
-        total = server_session_blob_add_size(total, checkpoint.data_spec.size());
-    }
-    for (const auto & delta : state.data.deltas) {
-        total = server_session_blob_add_size(total, sizeof(llama_pos) * 2 + sizeof(uint64_t) * 2);
-        total = server_session_blob_add_size(total, delta.main.size());
-        total = server_session_blob_add_size(total, delta.drft.size());
-    }
-
-    std::vector<uint8_t> blob(total);
-    size_t offset = 0;
-    const uint64_t session_id = state.prompt.session_id;
-    const uint64_t tokens_size = packed.size();
-    const uint64_t main_size = state.data.main.size();
-    const uint64_t draft_size = state.data.drft.size();
-    const uint64_t recurrent_size = state.data.recurrent.size();
-    const uint64_t recurrent_dft_size = state.data.recurrent_dft.size();
-    const uint64_t n_checkpoints = state.prompt.checkpoints.size();
-    const uint64_t n_deltas = state.data.deltas.size();
-    const uint64_t n_synced_tokens = state.prompt.n_synced_tokens;
-    const uint64_t n_synced_tokens_dft = state.prompt.n_synced_tokens_dft;
-    server_session_blob_write(blob, offset, SERVER_SESSION_BLOB_MAGIC);
-    server_session_blob_write(blob, offset, SERVER_SESSION_BLOB_VERSION);
-    server_session_blob_write(blob, offset, session_id);
-    server_session_blob_write(blob, offset, tokens_size);
-    server_session_blob_write(blob, offset, main_size);
-    server_session_blob_write(blob, offset, draft_size);
-    server_session_blob_write(blob, offset, recurrent_size);
-    server_session_blob_write(blob, offset, recurrent_dft_size);
-    server_session_blob_write(blob, offset, n_checkpoints);
-    server_session_blob_write(blob, offset, n_deltas);
-    server_session_blob_write(blob, offset, n_synced_tokens);
-    server_session_blob_write(blob, offset, n_synced_tokens_dft);
-    server_session_blob_write_bytes(blob, offset, packed.data(), packed.size());
-    state.data.main.copy_to(blob.data() + offset, state.data.main.size());
-    offset += state.data.main.size();
-    state.data.drft.copy_to(blob.data() + offset, state.data.drft.size());
-    offset += state.data.drft.size();
-    state.data.recurrent.copy_to(blob.data() + offset, state.data.recurrent.size());
-    offset += state.data.recurrent.size();
-    state.data.recurrent_dft.copy_to(blob.data() + offset, state.data.recurrent_dft.size());
-    offset += state.data.recurrent_dft.size();
-
-    for (const auto & checkpoint : state.prompt.checkpoints) {
-        const uint64_t tgt_size = checkpoint.data_tgt.size();
-        const uint64_t dft_size = checkpoint.data_dft.size();
-        const uint64_t spec_size = checkpoint.data_spec.size();
-        server_session_blob_write(blob, offset, checkpoint.n_tokens);
-        server_session_blob_write(blob, offset, static_cast<int32_t>(checkpoint.id_task));
-        server_session_blob_write(blob, offset, checkpoint.pos_min);
-        server_session_blob_write(blob, offset, checkpoint.pos_max);
-        server_session_blob_write(blob, offset, tgt_size);
-        server_session_blob_write(blob, offset, dft_size);
-        server_session_blob_write(blob, offset, spec_size);
-        checkpoint.data_tgt.copy_to(blob.data() + offset, checkpoint.data_tgt.size());
-        offset += checkpoint.data_tgt.size();
-        checkpoint.data_dft.copy_to(blob.data() + offset, checkpoint.data_dft.size());
-        offset += checkpoint.data_dft.size();
-        server_session_blob_write_bytes(blob, offset, checkpoint.data_spec.data(), checkpoint.data_spec.size());
-    }
-    for (const auto & delta : state.data.deltas) {
-        const uint64_t main_delta_size = delta.main.size();
-        const uint64_t draft_delta_size = delta.drft.size();
-        server_session_blob_write(blob, offset, delta.pos_min);
-        server_session_blob_write(blob, offset, delta.pos_min_dft);
-        server_session_blob_write(blob, offset, main_delta_size);
-        server_session_blob_write(blob, offset, draft_delta_size);
-        delta.main.copy_to(blob.data() + offset, delta.main.size());
-        offset += delta.main.size();
-        delta.drft.copy_to(blob.data() + offset, delta.drft.size());
-        offset += delta.drft.size();
-    }
-    if (offset != blob.size()) {
-        throw std::runtime_error("session snapshot size calculation mismatch");
-    }
-    return blob;
-}
-
-static server_prompt_cache_state server_session_blob_decode(const std::vector<uint8_t> & blob, common_state_arena * arena) {
-    size_t offset = 0;
-    const uint32_t magic = server_session_blob_read<uint32_t>(blob, offset);
-    const uint32_t version = server_session_blob_read<uint32_t>(blob, offset);
-    if (magic != SERVER_SESSION_BLOB_MAGIC || version != SERVER_SESSION_BLOB_VERSION) {
-        throw std::runtime_error("unsupported session snapshot format");
-    }
-    server_prompt_cache_state state;
-    state.prompt.session_id = server_session_blob_read<uint64_t>(blob, offset);
-    const uint64_t tokens_size = server_session_blob_read<uint64_t>(blob, offset);
-    const uint64_t main_size = server_session_blob_read<uint64_t>(blob, offset);
-    const uint64_t draft_size = server_session_blob_read<uint64_t>(blob, offset);
-    const uint64_t recurrent_size = server_session_blob_read<uint64_t>(blob, offset);
-    const uint64_t recurrent_dft_size = server_session_blob_read<uint64_t>(blob, offset);
-    const uint64_t n_checkpoints = server_session_blob_read<uint64_t>(blob, offset);
-    const uint64_t n_deltas = server_session_blob_read<uint64_t>(blob, offset);
-    const uint64_t n_synced_tokens = server_session_blob_read<uint64_t>(blob, offset);
-    const uint64_t n_synced_tokens_dft = server_session_blob_read<uint64_t>(blob, offset);
-    const uint64_t max_checkpoints = blob.size() / (sizeof(int64_t) + sizeof(int32_t) + sizeof(llama_pos) * 2 + sizeof(uint64_t) * 3);
-    const uint64_t max_deltas = blob.size() / (sizeof(llama_pos) * 2 + sizeof(uint64_t) * 2);
-    if (tokens_size > std::numeric_limits<size_t>::max() || tokens_size % sizeof(llama_token) != 0 ||
-            main_size > std::numeric_limits<size_t>::max() || draft_size > std::numeric_limits<size_t>::max() ||
-            recurrent_size > std::numeric_limits<size_t>::max() || recurrent_dft_size > std::numeric_limits<size_t>::max() ||
-            n_checkpoints > max_checkpoints || n_deltas > max_deltas ||
-            n_synced_tokens > std::numeric_limits<size_t>::max() || n_synced_tokens_dft > std::numeric_limits<size_t>::max()) {
-        throw std::runtime_error("invalid session snapshot sizes");
-    }
-    const auto * packed_bytes = server_session_blob_read_bytes(blob, offset, static_cast<size_t>(tokens_size));
-    llama_tokens packed(static_cast<size_t>(tokens_size) / sizeof(llama_token));
-    if (!packed.empty()) memcpy(packed.data(), packed_bytes, static_cast<size_t>(tokens_size));
-    state.prompt.tokens = server_tokens::deserialize(packed, false);
-    state.prompt.n_synced_tokens = static_cast<size_t>(n_synced_tokens);
-    state.prompt.n_synced_tokens_dft = static_cast<size_t>(n_synced_tokens_dft);
-    const auto * main_data = server_session_blob_read_bytes(blob, offset, static_cast<size_t>(main_size));
-    const auto * draft_data = server_session_blob_read_bytes(blob, offset, static_cast<size_t>(draft_size));
-    const auto * recurrent_data = server_session_blob_read_bytes(blob, offset, static_cast<size_t>(recurrent_size));
-    const auto * recurrent_dft_data = server_session_blob_read_bytes(blob, offset, static_cast<size_t>(recurrent_dft_size));
-    if (!state.data.main.assign_from(arena, main_data, static_cast<size_t>(main_size)) ||
-            !state.data.drft.assign_from(arena, draft_data, static_cast<size_t>(draft_size)) ||
-            !state.data.recurrent.assign_from(arena, recurrent_data, static_cast<size_t>(recurrent_size)) ||
-            !state.data.recurrent_dft.assign_from(arena, recurrent_dft_data, static_cast<size_t>(recurrent_dft_size))) {
-        throw std::bad_alloc();
-    }
-    for (uint64_t i = 0; i < n_checkpoints; ++i) {
-        common_prompt_checkpoint checkpoint{};
-        checkpoint.n_tokens = server_session_blob_read<int64_t>(blob, offset);
-        checkpoint.id_task = server_session_blob_read<int32_t>(blob, offset);
-        checkpoint.pos_min = server_session_blob_read<llama_pos>(blob, offset);
-        checkpoint.pos_max = server_session_blob_read<llama_pos>(blob, offset);
-        const uint64_t tgt_size = server_session_blob_read<uint64_t>(blob, offset);
-        const uint64_t dft_size = server_session_blob_read<uint64_t>(blob, offset);
-        const uint64_t spec_size = server_session_blob_read<uint64_t>(blob, offset);
-        if (tgt_size > std::numeric_limits<size_t>::max() || dft_size > std::numeric_limits<size_t>::max() ||
-                spec_size > std::numeric_limits<size_t>::max()) {
-            throw std::runtime_error("invalid session checkpoint size");
-        }
-        const auto * tgt_data = server_session_blob_read_bytes(blob, offset, static_cast<size_t>(tgt_size));
-        const auto * dft_data = server_session_blob_read_bytes(blob, offset, static_cast<size_t>(dft_size));
-        const auto * spec_data = server_session_blob_read_bytes(blob, offset, static_cast<size_t>(spec_size));
-        if (!checkpoint.data_tgt.assign_from(arena, tgt_data, static_cast<size_t>(tgt_size)) ||
-                !checkpoint.data_dft.assign_from(arena, dft_data, static_cast<size_t>(dft_size))) {
-            throw std::bad_alloc();
-        }
-        checkpoint.data_spec.assign(spec_data, spec_data + static_cast<size_t>(spec_size));
-        state.prompt.checkpoints.push_back(std::move(checkpoint));
-    }
-    for (uint64_t i = 0; i < n_deltas; ++i) {
-        server_prompt_kv_delta delta;
-        delta.pos_min = server_session_blob_read<llama_pos>(blob, offset);
-        delta.pos_min_dft = server_session_blob_read<llama_pos>(blob, offset);
-        const uint64_t main_delta_size = server_session_blob_read<uint64_t>(blob, offset);
-        const uint64_t draft_delta_size = server_session_blob_read<uint64_t>(blob, offset);
-        if (main_delta_size > std::numeric_limits<size_t>::max() || draft_delta_size > std::numeric_limits<size_t>::max()) {
-            throw std::runtime_error("invalid KV delta size");
-        }
-        const auto * main_delta = server_session_blob_read_bytes(blob, offset, static_cast<size_t>(main_delta_size));
-        const auto * draft_delta = server_session_blob_read_bytes(blob, offset, static_cast<size_t>(draft_delta_size));
-        if (!delta.main.assign_from(arena, main_delta, static_cast<size_t>(main_delta_size)) ||
-                !delta.drft.assign_from(arena, draft_delta, static_cast<size_t>(draft_delta_size))) {
-            throw std::bad_alloc();
-        }
-        state.data.deltas.push_back(std::move(delta));
-    }
-    if (offset != blob.size()) throw std::runtime_error("trailing data in session snapshot");
-    state.id_slot_save = -1;
-    state.id_slot_restore = -1;
-    state.size_in_flight = 0;
-    return state;
-}
-
-static size_t server_session_blob_chunks(const std::vector<uint8_t> & blob, common_state_arena * arena) {
-    if (arena == nullptr) return 0;
-    size_t offset = 0;
-    if (server_session_blob_read<uint32_t>(blob, offset) != SERVER_SESSION_BLOB_MAGIC ||
-            server_session_blob_read<uint32_t>(blob, offset) != SERVER_SESSION_BLOB_VERSION) {
-        throw std::runtime_error("unsupported session snapshot format");
-    }
-    (void) server_session_blob_read<uint64_t>(blob, offset);
-    const uint64_t tokens_size = server_session_blob_read<uint64_t>(blob, offset);
-    const uint64_t main_size = server_session_blob_read<uint64_t>(blob, offset);
-    const uint64_t draft_size = server_session_blob_read<uint64_t>(blob, offset);
-    const uint64_t recurrent_size = server_session_blob_read<uint64_t>(blob, offset);
-    const uint64_t recurrent_dft_size = server_session_blob_read<uint64_t>(blob, offset);
-    const uint64_t n_checkpoints = server_session_blob_read<uint64_t>(blob, offset);
-    const uint64_t n_deltas = server_session_blob_read<uint64_t>(blob, offset);
-    (void) server_session_blob_read<uint64_t>(blob, offset);
-    (void) server_session_blob_read<uint64_t>(blob, offset);
-    if (tokens_size > std::numeric_limits<size_t>::max() || main_size > std::numeric_limits<size_t>::max() ||
-            draft_size > std::numeric_limits<size_t>::max() || recurrent_size > std::numeric_limits<size_t>::max() ||
-            recurrent_dft_size > std::numeric_limits<size_t>::max() ||
-            n_checkpoints > blob.size() / (sizeof(int64_t) + sizeof(int32_t) + sizeof(llama_pos) * 2 + sizeof(uint64_t) * 3) ||
-            n_deltas > blob.size() / (sizeof(llama_pos) * 2 + sizeof(uint64_t) * 2)) {
-        throw std::runtime_error("invalid session snapshot sizes");
-    }
-    (void) server_session_blob_read_bytes(blob, offset, static_cast<size_t>(tokens_size));
-    size_t chunks = arena->n_chunks(static_cast<size_t>(main_size)) + arena->n_chunks(static_cast<size_t>(draft_size)) +
-            arena->n_chunks(static_cast<size_t>(recurrent_size)) + arena->n_chunks(static_cast<size_t>(recurrent_dft_size));
-    (void) server_session_blob_read_bytes(blob, offset, static_cast<size_t>(main_size));
-    (void) server_session_blob_read_bytes(blob, offset, static_cast<size_t>(draft_size));
-    (void) server_session_blob_read_bytes(blob, offset, static_cast<size_t>(recurrent_size));
-    (void) server_session_blob_read_bytes(blob, offset, static_cast<size_t>(recurrent_dft_size));
-    for (uint64_t i = 0; i < n_checkpoints; ++i) {
-        (void) server_session_blob_read<int64_t>(blob, offset);
-        (void) server_session_blob_read<int32_t>(blob, offset);
-        (void) server_session_blob_read<llama_pos>(blob, offset);
-        (void) server_session_blob_read<llama_pos>(blob, offset);
-        const uint64_t tgt_size = server_session_blob_read<uint64_t>(blob, offset);
-        const uint64_t dft_size = server_session_blob_read<uint64_t>(blob, offset);
-        const uint64_t spec_size = server_session_blob_read<uint64_t>(blob, offset);
-        if (tgt_size > std::numeric_limits<size_t>::max() || dft_size > std::numeric_limits<size_t>::max() ||
-                spec_size > std::numeric_limits<size_t>::max()) {
-            throw std::runtime_error("invalid session checkpoint size");
-        }
-        chunks = server_session_blob_add_size(chunks, arena->n_chunks(static_cast<size_t>(tgt_size)));
-        chunks = server_session_blob_add_size(chunks, arena->n_chunks(static_cast<size_t>(dft_size)));
-        (void) server_session_blob_read_bytes(blob, offset, static_cast<size_t>(tgt_size));
-        (void) server_session_blob_read_bytes(blob, offset, static_cast<size_t>(dft_size));
-        (void) server_session_blob_read_bytes(blob, offset, static_cast<size_t>(spec_size));
-    }
-    for (uint64_t i = 0; i < n_deltas; ++i) {
-        (void) server_session_blob_read<llama_pos>(blob, offset);
-        (void) server_session_blob_read<llama_pos>(blob, offset);
-        const uint64_t main_delta_size = server_session_blob_read<uint64_t>(blob, offset);
-        const uint64_t draft_delta_size = server_session_blob_read<uint64_t>(blob, offset);
-        if (main_delta_size > std::numeric_limits<size_t>::max() || draft_delta_size > std::numeric_limits<size_t>::max()) {
-            throw std::runtime_error("invalid KV delta size");
-        }
-        chunks = server_session_blob_add_size(chunks, arena->n_chunks(static_cast<size_t>(main_delta_size)));
-        chunks = server_session_blob_add_size(chunks, arena->n_chunks(static_cast<size_t>(draft_delta_size)));
-        (void) server_session_blob_read_bytes(blob, offset, static_cast<size_t>(main_delta_size));
-        (void) server_session_blob_read_bytes(blob, offset, static_cast<size_t>(draft_delta_size));
-    }
-    if (offset != blob.size()) throw std::runtime_error("trailing data in session snapshot");
-    return chunks;
-}
-
-static uint64_t server_session_now_seconds() {
-    const std::time_t now = std::time(nullptr);
-    return now > 0 ? static_cast<uint64_t>(now) : 0;
-}
-static size_t server_session_synced_position(llama_context * ctx, llama_seq_id seq_id) {
-    if (ctx == nullptr) {
-        return 0;
-    }
-    const llama_pos pos_max = llama_memory_seq_pos_max(llama_get_memory(ctx), seq_id);
-    return pos_max >= 0 ? static_cast<size_t>(pos_max) + 1 : 0;
-}
-
-static bool server_prompt_cache_evict(server_prompt_cache & cache, std::list<server_prompt_cache_state>::iterator it) {
-    if (it == cache.states.end() || it->id_slot_restore != -1) {
-        return false;
-    }
-    auto & victim = *it;
-    if (victim.prompt.session_id != 0 && cache.disk_tiers != nullptr) {
-        try {
-            auto blob = server_session_blob_encode(victim);
-            std::vector<server_session_tiers::id_type> dropped;
-            cache.disk_tiers->put(victim.prompt.session_id, std::move(blob), server_session_now_seconds(), &dropped);
-            for (uint64_t id : dropped) {
-                SRV_ERR("session %llu deleted: session disk budget exceeded\n", static_cast<unsigned long long>(id));
-            }
-        } catch (const std::exception & error) {
-            SRV_ERR("failed to persist session %llu: %s\n",
-                    static_cast<unsigned long long>(victim.prompt.session_id), error.what());
-            return false;
-        }
-    }
-    cache.states.erase(it);
-    return true;
-}
-
-static bool server_prompt_cache_evict_front(server_prompt_cache & cache) {
-    const auto it = std::find_if(cache.states.begin(), cache.states.end(), [&](const server_prompt_cache_state & state) {
-        return state.id_slot_restore == -1 &&
-                (cache.protected_session_id == 0 || state.prompt.session_id != cache.protected_session_id);
-    });
-    return server_prompt_cache_evict(cache, it);
-}
-
 //
 // server_prompt_cache
-//
 //
 size_t server_prompt_cache::size() const {
     size_t res = 0;
@@ -2049,8 +1713,7 @@ server_prompt_cache_state * server_prompt_cache::save(server_prompt & prompt, ll
     for (auto it = states.begin(); it != states.end(); ++it) {
         const int cur_lcp_len = it->prompt.tokens.get_common_prefix(prompt.tokens);
 
-        if (cur_lcp_len == (int) prompt.tokens.size() &&
-                (prompt.session_id == 0 || it->prompt.session_id == prompt.session_id)) {
+        if (cur_lcp_len == (int) prompt.tokens.size()) {
             SRV_TRC("%s", " - prompt is already in the cache, skipping\n");
             return nullptr;
         }
@@ -2082,8 +1745,7 @@ server_prompt_cache_state * server_prompt_cache::save(server_prompt & prompt, ll
     for (auto it = states.begin(); it != states.end();) {
         const int len = it->prompt.tokens.get_common_prefix(prompt.tokens);
 
-        if (len == (int) it->prompt.tokens.size() &&
-                (prompt.session_id == 0 || it->prompt.session_id == prompt.session_id)) {
+        if (len == (int) it->prompt.tokens.size()) {
             SRV_TRC(" - removing obsolete cached prompt with length %d\n", len);
 
             it = states.erase(it);
@@ -2095,11 +1757,10 @@ server_prompt_cache_state * server_prompt_cache::save(server_prompt & prompt, ll
     if (limit_size > 0) {
         // make room before allocating the new buffers to avoid breaching the limit
         while (!states.empty() && size() + state_size_new > limit_size) {
-            SRV_WRN(" - making room for session cache entry, demoting oldest state (size = %.3f MiB)\n",
+            SRV_WRN(" - making room for prompt cache entry, removing oldest entry (size = %.3f MiB)\n",
                     states.front().size() / (1024.0 * 1024.0));
-            if (!server_prompt_cache_evict_front(*this)) {
-                break;
-            }
+
+            states.pop_front();
         }
     }
 
@@ -2133,9 +1794,6 @@ server_prompt_cache_state * server_prompt_cache::save(server_prompt & prompt, ll
         /*.prompt =*/ {
             /*.tokens      =*/ prompt.tokens.clone(),
             /*.checkpoints =*/ take_checkpoints ? std::move(prompt.checkpoints) : prompt.checkpoints,
-            /*.session_id      =*/ prompt.session_id,
-            /*.n_synced_tokens    =*/ server_session_synced_position(ctx_tgt, id_slot),
-            /*.n_synced_tokens_dft =*/ server_session_synced_position(ctx_dft, id_slot),
         },
         /*.data         =*/ std::move(data),
         /*.id_slot_save =*/ id_slot,
@@ -2143,163 +1801,6 @@ server_prompt_cache_state * server_prompt_cache::save(server_prompt & prompt, ll
 
     return &states.back();
 }
-size_t server_prompt_cache::sync_session(server_prompt & prompt, llama_context * ctx_tgt, llama_context * ctx_dft, int id_slot, bool take_checkpoints) {
-    const uint64_t session_id = prompt.session_id;
-    if (session_id == 0) {
-        return 0;
-    }
-
-    server_prompt_cache_state * current = nullptr;
-    for (auto & state : states) {
-        if (state.prompt.session_id == session_id) {
-            current = &state;
-            break;
-        }
-    }
-    if (current == nullptr && disk_tiers != nullptr && disk_tiers->contains(session_id)) {
-        current = const_cast<server_prompt_cache_state *>(find_session(session_id, prompt.tokens));
-    }
-
-    const size_t current_tokens = prompt.tokens.size();
-    const size_t current_pos = server_session_synced_position(ctx_tgt, id_slot);
-    const size_t current_pos_dft = server_session_synced_position(ctx_dft, id_slot);
-    if (current == nullptr || (current->prompt.n_synced_tokens == 0 && current->prompt.n_synced_tokens_dft == 0 &&
-            (current_pos != 0 || current_pos_dft != 0))) {
-        prompt.n_synced_tokens = current_pos;
-        prompt.n_synced_tokens_dft = current_pos_dft;
-        auto * state = save(prompt, ctx_tgt, ctx_dft, id_slot, take_checkpoints);
-        if (state != nullptr) {
-            prompt.n_synced_tokens = state->prompt.n_synced_tokens;
-            prompt.n_synced_tokens_dft = state->prompt.n_synced_tokens_dft;
-            return state->data.size();
-        }
-        return 0;
-    }
-
-    const size_t synced_tokens = current->prompt.n_synced_tokens;
-    const size_t synced_tokens_dft = current->prompt.n_synced_tokens_dft;
-    if (current->id_slot_save != -1 || current->id_slot_restore != -1) {
-        return 0;
-    }
-    const size_t common = current->prompt.tokens.get_common_prefix(prompt.tokens);
-    if (current_pos < synced_tokens || current_pos_dft < synced_tokens_dft || common < std::min(synced_tokens, current_tokens)) {
-        erase_session(session_id);
-        prompt.n_synced_tokens = 0;
-        prompt.n_synced_tokens_dft = 0;
-        auto * state = save(prompt, ctx_tgt, ctx_dft, id_slot, take_checkpoints);
-        if (state != nullptr) {
-            prompt.n_synced_tokens = state->prompt.n_synced_tokens;
-            prompt.n_synced_tokens_dft = state->prompt.n_synced_tokens_dft;
-            return state->data.size();
-        }
-        return 0;
-    }
-
-    const llama_pos pos_min = static_cast<llama_pos>(synced_tokens);
-    const llama_pos pos_min_dft = static_cast<llama_pos>(synced_tokens_dft);
-    const auto flags_kv = static_cast<llama_state_seq_flags>(LLAMA_STATE_SEQ_FLAGS_KV_ONLY);
-    const size_t size_kv = llama_state_seq_get_delta_size_ext(ctx_tgt, id_slot, pos_min, flags_kv);
-    const size_t size_dft = ctx_dft ? llama_state_seq_get_delta_size_ext(ctx_dft, id_slot, pos_min_dft, flags_kv) : 0;
-    const size_t size_recurrent = llama_state_seq_get_size_ext(ctx_tgt, id_slot, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-    const size_t size_recurrent_dft = ctx_dft ? llama_state_seq_get_size_ext(ctx_dft, id_slot, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) : 0;
-    if (size_kv == 0 || (ctx_dft != nullptr && size_dft == 0)) {
-        SRV_ERR("session %llu delta API is unavailable; rebasing mirror\n", static_cast<unsigned long long>(session_id));
-        erase_session(session_id);
-        prompt.n_synced_tokens = 0;
-        prompt.n_synced_tokens_dft = 0;
-        auto * state = save(prompt, ctx_tgt, ctx_dft, id_slot, take_checkpoints);
-        if (state != nullptr) {
-            prompt.n_synced_tokens = state->prompt.n_synced_tokens;
-            prompt.n_synced_tokens_dft = state->prompt.n_synced_tokens_dft;
-            return state->data.size();
-        }
-        return 0;
-    }
-
-
-    size_t chunks_needed = 0;
-    if (arena != nullptr) {
-        chunks_needed = arena->n_chunks(size_kv) + arena->n_chunks(size_dft) +
-                arena->n_chunks(current->data.recurrent.size() == size_recurrent ? 0 : size_recurrent) +
-                arena->n_chunks(current->data.recurrent_dft.size() == size_recurrent_dft ? 0 : size_recurrent_dft);
-        const int64_t last_checkpoint = current->prompt.checkpoints.empty() ? 0 : current->prompt.checkpoints.back().n_tokens;
-        for (const auto & checkpoint : prompt.checkpoints) {
-            if (checkpoint.n_tokens > last_checkpoint) {
-                chunks_needed += arena->n_chunks(checkpoint.data_tgt.size()) + arena->n_chunks(checkpoint.data_dft.size());
-            }
-        }
-        make_room(chunks_needed, session_id);
-    }
-
-    try {
-        server_prompt_kv_delta delta;
-        delta.pos_min = pos_min;
-        delta.pos_min_dft = pos_min_dft;
-        if (!delta.main.alloc(arena, size_kv) || (ctx_dft && !delta.drft.alloc(arena, size_dft))) {
-            throw std::bad_alloc();
-        }
-        if (!delta.main.get_delta_async(ctx_tgt, id_slot, pos_min, flags_kv) ||
-                (ctx_dft && !delta.drft.get_delta_async(ctx_dft, id_slot, pos_min_dft, flags_kv))) {
-            throw std::runtime_error("failed to start KV delta transfer");
-        }
-
-        common_state_buf recurrent = std::move(current->data.recurrent);
-        common_state_buf recurrent_dft = std::move(current->data.recurrent_dft);
-        const auto rec_flags = static_cast<llama_state_seq_flags>(LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ORDERED);
-        if ((recurrent.size() != size_recurrent && !recurrent.alloc(arena, size_recurrent)) ||
-                !recurrent.get_async(ctx_tgt, id_slot, rec_flags) ||
-                (ctx_dft && ((recurrent_dft.size() != size_recurrent_dft && !recurrent_dft.alloc(arena, size_recurrent_dft)) ||
-                        !recurrent_dft.get_async(ctx_dft, id_slot, rec_flags)))) {
-            throw std::runtime_error("failed to start recurrent mirror transfer");
-        }
-
-        server_tokens new_tokens = prompt.tokens.clone();
-        const int64_t last_checkpoint = current->prompt.checkpoints.empty() ? 0 : current->prompt.checkpoints.back().n_tokens;
-        std::list<common_prompt_checkpoint> checkpoints;
-        for (const auto & checkpoint : prompt.checkpoints) {
-            if (checkpoint.n_tokens > last_checkpoint) {
-                checkpoints.push_back(checkpoint);
-            }
-        }
-
-        const size_t bytes = delta.size() + size_recurrent + size_recurrent_dft +
-                [&]() {
-                    size_t result = 0;
-                    for (const auto & checkpoint : checkpoints) result += checkpoint.size();
-                    return result;
-                }();
-        current->data.deltas.push_back(std::move(delta));
-        current->data.recurrent = std::move(recurrent);
-        current->data.recurrent_dft = std::move(recurrent_dft);
-        current->prompt.checkpoints.splice(current->prompt.checkpoints.end(), checkpoints);
-        current->prompt.tokens = std::move(new_tokens);
-        current->prompt.n_synced_tokens = current_pos;
-        current->prompt.n_synced_tokens_dft = current_pos_dft;
-        current->id_slot_save = id_slot;
-        current->last_sync_seconds = 0;
-        prompt.n_synced_tokens = current_pos;
-        prompt.n_synced_tokens_dft = current_pos_dft;
-        const auto it = std::find_if(states.begin(), states.end(), [&](const server_prompt_cache_state & state) {
-            return state.prompt.session_id == session_id;
-        });
-        if (it != states.end()) states.splice(states.end(), states, it);
-        return bytes;
-    } catch (const std::exception & error) {
-        SRV_ERR("session %llu append sync failed: %s; rebasing full mirror\n",
-                static_cast<unsigned long long>(session_id), error.what());
-        erase_session(session_id);
-        prompt.n_synced_tokens = 0;
-        prompt.n_synced_tokens_dft = 0;
-        auto * state = save(prompt, ctx_tgt, ctx_dft, id_slot, take_checkpoints);
-        if (state != nullptr) {
-            prompt.n_synced_tokens = state->prompt.n_synced_tokens;
-            prompt.n_synced_tokens_dft = state->prompt.n_synced_tokens_dft;
-            return state->data.size();
-        }
-        return 0;
-    }
-}
-
 
 bool server_prompt_cache::saving(int id_slot) const {
     for (const auto & state : states) {
@@ -2324,32 +1825,21 @@ int64_t server_prompt_cache::finish_saving(int id_slot) {
         if (state.id_slot_save == id_slot) {
             state.data.wait();
             state.id_slot_save = -1;
-            state.last_sync_seconds = server_session_now_seconds();
             res = state.data.t_us();
         }
     }
     return res;
 }
 
-bool server_prompt_cache::make_room(size_t n_chunks, uint64_t protected_session) {
+bool server_prompt_cache::make_room(size_t n_chunks) {
     GGML_ASSERT(arena);
-    if (protected_session == 0) {
-        protected_session = protected_session_id;
+
+    while (!states.empty() && arena->n_free() < n_chunks) {
+        SRV_WRN(" - making room in the host arena, removing oldest entry (size = %.3f MiB)\n", states.front().size() / (1024.0 * 1024.0));
+
+        states.pop_front();
     }
 
-    while (arena->n_free() < n_chunks) {
-        const auto victim = std::find_if(states.begin(), states.end(), [&](const server_prompt_cache_state & state) {
-            return state.id_slot_restore == -1 && (protected_session == 0 || state.prompt.session_id != protected_session);
-        });
-        if (victim == states.end()) {
-            break;
-        }
-        SRV_WRN(" - making room in the session arena, demoting session %llu (size = %.3f MiB)\n",
-                static_cast<unsigned long long>(victim->prompt.session_id), victim->size() / (1024.0 * 1024.0));
-        if (!server_prompt_cache_evict(*this, victim)) {
-            break;
-        }
-    }
     return arena->n_free() >= n_chunks;
 }
 
@@ -2365,9 +1855,6 @@ const server_prompt_cache_state * server_prompt_cache::find(const server_prompt 
 
     // find the most similar cached prompt, that would also preserve the most context
     for (const auto & state : states) {
-        if (state.id_slot_restore != -1) {
-            continue;
-        }
         const int lcp_cur = state.prompt.tokens.get_common_prefix(tokens_new);
 
         const float f_keep_cur = float(lcp_cur) / state.prompt.tokens.size();
@@ -2394,46 +1881,6 @@ const server_prompt_cache_state * server_prompt_cache::find(const server_prompt 
 
     return best;
 }
-server_prompt_cache_state * server_prompt_cache::find_session(uint64_t session_id, const server_tokens & tokens_new) {
-    server_prompt_cache_state * best = nullptr;
-    size_t best_lcp = 0;
-    for (auto & state : states) {
-        if (state.prompt.session_id != session_id || state.id_slot_restore != -1) {
-            continue;
-        }
-        const size_t lcp = state.prompt.tokens.get_common_prefix(tokens_new);
-        if (lcp > best_lcp) {
-            best = &state;
-            best_lcp = lcp;
-        }
-    }
-    if (best != nullptr) {
-        const auto it = std::find_if(states.begin(), states.end(), [&](server_prompt_cache_state & state) { return &state == best; });
-        if (it != states.end()) states.splice(states.end(), states, it);
-        return best;
-    }
-    if (disk_tiers == nullptr || !disk_tiers->contains(session_id)) {
-        return nullptr;
-    }
-    try {
-        const auto blob = disk_tiers->read_snapshot(session_id, server_session_now_seconds());
-        const size_t chunks = server_session_blob_chunks(blob, arena);
-        if (arena != nullptr && !make_room(chunks, session_id)) {
-            return nullptr;
-        }
-        auto state = server_session_blob_decode(blob, arena);
-        if (state.prompt.session_id != session_id) {
-            throw std::runtime_error("session snapshot identity mismatch");
-        }
-        states.push_back(std::move(state));
-        return &states.back();
-    } catch (const std::exception & error) {
-        SRV_ERR("failed to restore session %llu from disk: %s\n",
-                static_cast<unsigned long long>(session_id), error.what());
-        return nullptr;
-    }
-}
-
 
 server_prompt_cache_state server_prompt_cache::take(const server_prompt_cache_state * state) {
     auto it = std::find_if(states.begin(), states.end(), [&](const server_prompt_cache_state & s) { return &s == state; });
@@ -2474,91 +1921,6 @@ bool server_prompt_cache::restore(server_prompt_cache_state & state, server_prom
 
     return true;
 }
-bool server_prompt_cache::restore_session(server_prompt_cache_state & state, server_prompt & prompt, server_prompt_data & data,
-        llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot, size_t & n_bytes) {
-    n_bytes = 0;
-    if (state.id_slot_restore != -1) {
-        return false;
-    }
-    server_prompt restored_prompt;
-    try {
-        restored_prompt = state.prompt.clone();
-    } catch (const std::exception & error) {
-        SRV_ERR("failed to clone prompt checkpoints for session restore: %s\n", error.what());
-        return false;
-    }
-
-    auto fail_restore = [&]() {
-        state.data.wait();
-        return false;
-    };
-    if (!state.data.main.empty()) {
-        if (!state.data.main.set_async(ctx_tgt, id_slot, LLAMA_STATE_SEQ_FLAGS_NONE)) return fail_restore();
-        n_bytes += state.data.main.size();
-    }
-    if (!state.data.drft.empty()) {
-        if (ctx_dft == nullptr || !state.data.drft.set_async(ctx_dft, id_slot, LLAMA_STATE_SEQ_FLAGS_NONE)) return fail_restore();
-        n_bytes += state.data.drft.size();
-    }
-    for (const auto & delta : state.data.deltas) {
-        if (!delta.main.empty()) {
-            if (!delta.main.set_delta_async(ctx_tgt, id_slot, delta.pos_min, LLAMA_STATE_SEQ_FLAGS_KV_ONLY)) return fail_restore();
-            n_bytes += delta.main.size();
-        }
-        if (!delta.drft.empty()) {
-            if (ctx_dft == nullptr || !delta.drft.set_delta_async(ctx_dft, id_slot, delta.pos_min_dft, LLAMA_STATE_SEQ_FLAGS_KV_ONLY)) return fail_restore();
-            n_bytes += delta.drft.size();
-        }
-    }
-    const auto rec_flags = static_cast<llama_state_seq_flags>(LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ORDERED);
-    if (!state.data.recurrent.empty()) {
-        if (!state.data.recurrent.set_async(ctx_tgt, id_slot, rec_flags)) return fail_restore();
-        n_bytes += state.data.recurrent.size();
-    }
-    if (!state.data.recurrent_dft.empty()) {
-        if (ctx_dft == nullptr || !state.data.recurrent_dft.set_async(ctx_dft, id_slot, rec_flags)) return fail_restore();
-        n_bytes += state.data.recurrent_dft.size();
-    }
-
-    state.id_slot_restore = id_slot;
-    state.size_in_flight = state.data.size();
-    data = std::move(state.data);
-    prompt = std::move(restored_prompt);
-    return true;
-}
-
-bool server_prompt_cache::restoring(int id_slot) const {
-    return std::any_of(states.begin(), states.end(), [id_slot](const server_prompt_cache_state & state) {
-        return state.id_slot_restore == id_slot;
-    });
-}
-
-void server_prompt_cache::wait_restoring(int id_slot) const {
-    GGML_UNUSED(id_slot); // the destination buffer is owned and waited by server_slot::xfer_in
-}
-
-void server_prompt_cache::finish_restoring(int id_slot, server_prompt_data && data) {
-    const auto it = std::find_if(states.begin(), states.end(), [id_slot](const server_prompt_cache_state & state) {
-        return state.id_slot_restore == id_slot;
-    });
-    if (it == states.end()) {
-        return;
-    }
-    data.wait();
-    it->data = std::move(data);
-    it->size_in_flight = 0;
-    it->id_slot_restore = -1;
-}
-
-bool server_prompt_cache::has_session(uint64_t session_id) const {
-    if (std::any_of(states.begin(), states.end(), [session_id](const server_prompt_cache_state & state) {
-            return state.prompt.session_id == session_id;
-        })) {
-        return true;
-    }
-    return disk_tiers != nullptr && disk_tiers->contains(session_id);
-}
-
 
 bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot, size_t & n_bytes) {
     n_bytes = 0;
@@ -2580,13 +1942,11 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
 void server_prompt_cache::update() {
     if (limit_size > 0) {
         while (!states.empty() && size() > limit_size) {
-            SRV_WRN(" - cache size limit reached, demoting oldest state (size = %.3f MiB)\n",
-                    states.front().size() / (1024.0 * 1024.0));
-            if (!server_prompt_cache_evict_front(*this)) {
-                break;
-            }
-    }
+            SRV_WRN(" - cache size limit reached, removing oldest entry (size = %.3f MiB)\n", states.front().size() / (1024.0 * 1024.0));
+
+            states.pop_front();
         }
+    }
 
     // average size per token
     const float size_per_token = std::max<float>(1.0f, float(size()) / (std::max<size_t>(1, n_tokens())));
@@ -2596,11 +1956,10 @@ void server_prompt_cache::update() {
 
     if (limit_tokens > 0) {
         while (!states.empty() && n_tokens() > limit_tokens_cur) {
-            SRV_WRN(" - cache token limit (%zu, est: %zu) reached, demoting oldest state (size = %.3f MiB)\n",
+            SRV_WRN(" - cache token limit (%zu, est: %zu) reached, removing oldest entry (size = %.3f MiB)\n",
                     limit_tokens, limit_tokens_cur, states.front().size() / (1024.0 * 1024.0));
-            if (!server_prompt_cache_evict_front(*this)) {
-                break;
-            }
+
+            states.pop_front();
         }
     }
 
@@ -2610,61 +1969,5 @@ void server_prompt_cache::update() {
     for (const auto & state : states) {
         SRV_TRC("   - prompt %p: %7d tokens, checkpoints: %2zu, %9.3f MiB\n",
                 (const void *)&state, state.prompt.n_tokens(), state.prompt.checkpoints.size(), state.size() / (1024.0 * 1024.0));
-    }
-}
-uint64_t server_prompt_cache::load_disk_index(uint64_t now_seconds) {
-    if (disk_tiers == nullptr || sessions_index == nullptr) {
-        return 1;
-    }
-    for (uint64_t id : disk_tiers->expire(now_seconds)) {
-        SRV_ERR("session %llu deleted: inactivity TTL expired\n", static_cast<unsigned long long>(id));
-    }
-
-    uint64_t max_id = 0;
-    for (uint64_t id : disk_tiers->ids()) {
-        try {
-            const auto header = disk_tiers->read_prefix(id, sizeof(uint32_t) * 2 + sizeof(uint64_t) * 10);
-            size_t offset = 0;
-            if (server_session_blob_read<uint32_t>(header, offset) != SERVER_SESSION_BLOB_MAGIC ||
-                    server_session_blob_read<uint32_t>(header, offset) != SERVER_SESSION_BLOB_VERSION) {
-                throw std::runtime_error("unsupported snapshot format");
-            }
-            const uint64_t saved_id = server_session_blob_read<uint64_t>(header, offset);
-            const uint64_t tokens_size = server_session_blob_read<uint64_t>(header, offset);
-            for (int i = 0; i < 8; ++i) {
-                (void) server_session_blob_read<uint64_t>(header, offset);
-            }
-            if (saved_id != id || tokens_size > std::numeric_limits<size_t>::max() ||
-                    tokens_size % sizeof(llama_token) != 0 || tokens_size > std::numeric_limits<size_t>::max() - header.size()) {
-                throw std::runtime_error("invalid snapshot identity or token size");
-            }
-            const auto token_blob = disk_tiers->read_prefix(id, header.size() + static_cast<size_t>(tokens_size));
-            if (token_blob.size() != header.size() + static_cast<size_t>(tokens_size)) {
-                throw std::runtime_error("truncated token metadata");
-            }
-            const uint8_t * packed_data = token_blob.data() + header.size();
-            llama_tokens packed(static_cast<size_t>(tokens_size) / sizeof(llama_token));
-            if (!packed.empty()) {
-                memcpy(packed.data(), packed_data, static_cast<size_t>(tokens_size));
-            }
-            const auto tokens = server_tokens::deserialize(packed, false);
-            sessions_index->update(id, tokens.get_text_tokens(), now_seconds);
-            max_id = std::max(max_id, id);
-        } catch (const std::exception & error) {
-            SRV_ERR("failed to index session %llu: %s\n", static_cast<unsigned long long>(id), error.what());
-        }
-    }
-    return max_id == std::numeric_limits<uint64_t>::max() ? 1 : max_id + 1;
-}
-void server_prompt_cache::erase_session(uint64_t session_id) {
-    for (auto it = states.begin(); it != states.end();) {
-        if (it->prompt.session_id == session_id) {
-            it = states.erase(it);
-        } else {
-            ++it;
-        }
-    }
-    if (disk_tiers != nullptr) {
-        disk_tiers->erase(session_id);
     }
 }

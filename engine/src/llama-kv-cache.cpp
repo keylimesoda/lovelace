@@ -2053,35 +2053,51 @@ ggml_cgraph * llama_kv_cache::build_graph_shift(llm_graph_result * res, llama_co
 }
 
 void llama_kv_cache::state_write(llama_io_write_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) const {
+    // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
     if (other) {
         return;
     }
-    state_write_delta(io, seq_id, std::numeric_limits<llama_pos>::min(), flags);
+
+    // the partial state is what a truncation cannot restore: the SWA-masked cells; full attention has none
+    const bool no_partial = (flags & LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) && swa_type == LLAMA_SWA_TYPE_NONE;
+
+    state_write_cells(io, seq_id, no_partial ? std::numeric_limits<llama_pos>::max() : std::numeric_limits<llama_pos>::min());
 }
 
-void llama_kv_cache::state_write_delta(llama_io_write_i & io, llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags) const {
-    // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
+void llama_kv_cache::state_write_delta(llama_io_write_i & io, llama_seq_id seq_id, llama_pos pos_min) const {
     if (other) {
-        throw std::runtime_error("append-only state deltas are unsupported by a shared KV cache");
+        throw std::runtime_error("KV deltas are unsupported by a cache that shares another one's cells");
     }
+    GGML_ASSERT(seq_id >= 0 && (size_t) seq_id < seq_to_stream.size());
 
-    GGML_UNUSED(flags);
+    state_write_cells(io, seq_id, pos_min);
+}
 
+void llama_kv_cache::state_write_cells(llama_io_write_i & io, llama_seq_id seq_id, llama_pos pos_min) const {
     io.write(&n_stream, sizeof(n_stream));
 
     for (uint32_t s = 0; s < n_stream; ++s) {
         cell_ranges_t cr { s, {} };
+
         uint32_t cell_count = 0;
+
         const auto & cells = v_cells[s];
+
+        // Count the number of cells with the specified seq_id
+        // Find all the ranges of cells with this seq id (or all, when -1)
         uint32_t cell_range_begin = cells.size();
 
         for (uint32_t i = 0; i < cells.size(); ++i) {
-            bool add_cell = !cells.is_empty(i) && (seq_id == -1 || cells.seq_has(i, seq_id));
-            if (add_cell) {
-                add_cell = cells.pos_get(i) >= pos_min;
-            }
+            bool add_cell = true;
+
+            add_cell = add_cell && !cells.is_empty(i);
+            add_cell = add_cell && (seq_id == -1 || cells.seq_has(i, seq_id));
+            add_cell = add_cell && cells.pos_get(i) >= pos_min;
+
+            // check the cell is not SWA-masked
             if (add_cell && seq_id != -1) {
                 const bool is_masked = llama_hparams::is_masked_swa(n_swa, swa_type, cells.pos_get(i), cells.seq_pos_max(seq_id));
+
                 add_cell = !is_masked;
             }
 
@@ -2090,9 +2106,11 @@ void llama_kv_cache::state_write_delta(llama_io_write_i & io, llama_seq_id seq_i
                 if (cell_range_begin == cells.size()) {
                     cell_range_begin = i;
                 }
-            } else if (cell_range_begin != cells.size()) {
-                cr.data.emplace_back(cell_range_begin, i);
-                cell_range_begin = cells.size();
+            } else {
+                if (cell_range_begin != cells.size()) {
+                    cr.data.emplace_back(cell_range_begin, i);
+                    cell_range_begin = cells.size();
+                }
             }
         }
 
@@ -2100,6 +2118,7 @@ void llama_kv_cache::state_write_delta(llama_io_write_i & io, llama_seq_id seq_i
             cr.data.emplace_back(cell_range_begin, cells.size());
         }
 
+        // DEBUG CHECK: Sum of cell counts in ranges should equal the total cell count
         uint32_t cell_count_check = 0;
         for (const auto & range : cr.data) {
             cell_count_check += range.second - range.first;
@@ -2107,9 +2126,12 @@ void llama_kv_cache::state_write_delta(llama_io_write_i & io, llama_seq_id seq_i
         GGML_ASSERT(cell_count == cell_count_check);
 
         io.write(&cell_count, sizeof(cell_count));
+
+        // skip empty streams
         if (cell_count == 0) {
             continue;
         }
+
         state_write_meta(io, cr, seq_id);
         state_write_data(io, cr);
     }
@@ -2118,11 +2140,49 @@ void llama_kv_cache::state_write_delta(llama_io_write_i & io, llama_seq_id seq_i
 void llama_kv_cache::state_read(llama_io_read_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) {
     state_read_sinfo(io, seq_id, flags, nullptr, nullptr);
 }
-void llama_kv_cache::state_read_delta(llama_io_read_i & io, llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags) {
+
+void llama_kv_cache::state_read_delta(llama_io_read_i & io, llama_seq_id seq_id, llama_pos pos_min, llama_pos pos_end) {
     if (other) {
-        throw std::runtime_error("append-only state deltas are unsupported by a shared KV cache");
+        throw std::runtime_error("KV deltas are unsupported by a cache that shares another one's cells");
     }
-    state_read_sinfo(io, seq_id, flags, nullptr, nullptr, true, pos_min);
+    GGML_ASSERT(seq_id >= 0 && (size_t) seq_id < seq_to_stream.size());
+
+    uint32_t n_stream_cur;
+    io.read(&n_stream_cur, sizeof(n_stream_cur));
+    if (n_stream_cur != n_stream) {
+        throw std::runtime_error("n_stream mismatch");
+    }
+
+    const uint32_t strm = seq_to_stream[seq_id];
+
+    // appending only: cells in the way would be data the mirror no longer agrees with
+    if (v_cells[strm].seq_pos_max(seq_id) >= pos_min) {
+        throw std::runtime_error("the sequence holds cells at the positions of the KV delta");
+    }
+
+    std::vector<uint8_t> keep;
+
+    for (uint32_t s = 0; s < n_stream; ++s) {
+        uint32_t cell_count;
+        io.read(&cell_count, sizeof(cell_count));
+        if (cell_count == 0) {
+            continue;
+        }
+
+        slot_info sinfo;
+
+        bool res = state_read_meta_delta(io, strm, cell_count, sinfo, seq_id, pos_min, pos_end, keep);
+        try {
+            res = res && state_read_data(io, strm, cell_count, sinfo, &keep);
+        } catch (...) {
+            res = false;
+        }
+
+        if (!res) {
+            state_clear(seq_id, strm, sinfo, pos_min);
+            throw std::runtime_error("failed to restore a KV delta");
+        }
+    }
 }
 
 void llama_kv_cache::state_read_sinfo(
@@ -2130,9 +2190,7 @@ void llama_kv_cache::state_read_sinfo(
            llama_seq_id   seq_id,
   llama_state_seq_flags   flags,
       slot_info_vec_t *   sinfos_out,
-const slot_info_vec_t *   sinfos_in,
-                 bool     append_only,
-             llama_pos     pos_min) {
+const slot_info_vec_t *   sinfos_in) {
     // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
     if (other) {
         return;
@@ -2142,7 +2200,6 @@ const slot_info_vec_t *   sinfos_in,
 
     // TODO: fix incosistent handling of `seq_id < 0` and `seq_id == -1` in the codebase [TAG_LLAMA_SEQ_ID_NEG]
     GGML_ASSERT(seq_id == -1 || (seq_id >= 0 && (size_t) seq_id < seq_to_stream.size()));
-    GGML_ASSERT(!append_only || seq_id >= 0);
 
     if (sinfos_out) {
         sinfos_out->assign(n_stream, slot_info{});
@@ -2181,7 +2238,7 @@ const slot_info_vec_t *   sinfos_in,
         slot_info sinfo;
 
         bool res = true;
-        res = res && state_read_meta(io, strm, cell_count, sinfo, seq_id, sinfos_in ? &(*sinfos_in)[s] : nullptr, append_only, pos_min);
+        res = res && state_read_meta(io, strm, cell_count, sinfo, seq_id, sinfos_in ? &(*sinfos_in)[s] : nullptr);
 
         try {
             res = res && state_read_data(io, strm, cell_count, sinfo);
@@ -2190,7 +2247,7 @@ const slot_info_vec_t *   sinfos_in,
         }
 
         if (!res) {
-            state_clear(seq_id, strm, sinfo, append_only);
+            state_clear(seq_id, strm, sinfo);
             throw std::runtime_error("failed to restore kv cache");
         }
 
@@ -2335,7 +2392,7 @@ void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t
     }
 }
 
-bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32_t cell_count, slot_info & sinfo, llama_seq_id dest_seq_id, const slot_info * sinfo_in, bool append_only, llama_pos pos_min) {
+bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32_t cell_count, slot_info & sinfo, llama_seq_id dest_seq_id, const slot_info * sinfo_in) {
     auto & cells = v_cells[strm];
     auto & head  = v_heads[strm];
 
@@ -2346,9 +2403,7 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
             return false;
         }
 
-        if (!append_only) {
-            seq_rm(dest_seq_id, -1, -1);
-        }
+        seq_rm(dest_seq_id, -1, -1);
 
         llama_batch_allocr balloc(hparams.n_pos_per_embd());
 
@@ -2368,10 +2423,6 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
 
             io.read(&pos,      sizeof(pos));
             io.read(&n_seq_id, sizeof(n_seq_id));
-            if (append_only && pos < pos_min) {
-                LLAMA_LOG_ERROR("%s: KV delta cell position %d is below pos_min %d\n", __func__, pos, pos_min);
-                return false;
-            }
 
             if (n_seq_id != 1) {
                 LLAMA_LOG_ERROR("%s: invalid seq_id-agnostic kv cell\n", __func__);
@@ -2419,8 +2470,8 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
             sinfo.s1 = strm;
             sinfo.strm[0] = strm;
 
-            // The selected cells must be free in either replacement or append-only restore.
-            // Anything else in the way is a cache that had already drifted, which restore must not hide.
+            // seq_rm above freed exactly the cells this sequence held
+            // anything else in the way is a cache that had already drifted, which this restore must not hide
             for (uint32_t i = 0; i < cell_count; ++i) {
                 const uint32_t idx = sinfo.idxs[0][i];
 
@@ -2519,7 +2570,97 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
     return true;
 }
 
-bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32_t cell_count, const slot_info & sinfo) {
+bool llama_kv_cache::state_read_meta_delta(llama_io_read_i & io, uint32_t strm, uint32_t cell_count, slot_info & sinfo,
+        llama_seq_id dest_seq_id, llama_pos pos_min, llama_pos pos_end, std::vector<uint8_t> & keep) {
+    auto & cells = v_cells[strm];
+
+    if (cell_count > cells.size()) {
+        LLAMA_LOG_ERROR("%s: not enough cells in kv cache\n", __func__);
+        return false;
+    }
+
+    const bool has_ext = has_cell_ext();
+
+    std::vector<llama_pos>         pos;
+    std::vector<llama_kv_cell_ext> exts;
+    pos.reserve(cell_count);
+    if (has_ext) {
+        exts.reserve(cell_count);
+    }
+    keep.assign(cell_count, 0);
+
+    for (uint32_t i = 0; i < cell_count; ++i) {
+        llama_pos p;
+        uint32_t  n_seq_id;
+        io.read(&p,        sizeof(p));
+        io.read(&n_seq_id, sizeof(n_seq_id));
+        if (n_seq_id != 1) {
+            LLAMA_LOG_ERROR("%s: invalid seq_id-agnostic kv cell\n", __func__);
+            return false;
+        }
+        llama_kv_cell_ext ext {};
+        if (has_ext) {
+            io.read(&ext, sizeof(ext));
+        }
+        llama_seq_id seq_id;
+        io.read(&seq_id, sizeof(seq_id));
+
+        if (p < pos_min) {
+            LLAMA_LOG_ERROR("%s: KV delta cell at position %d is below its start %d\n", __func__, p, pos_min);
+            return false;
+        }
+        if (p < pos_end) {
+            keep[i] = 1;
+            pos.push_back(p);
+            if (has_ext) {
+                exts.push_back(ext);
+            }
+        }
+    }
+
+    const uint32_t n_keep = pos.size();
+    if (n_keep == 0) {
+        sinfo = {};
+        return true;
+    }
+
+    llama_batch_allocr balloc(hparams.n_pos_per_embd());
+
+    llama_ubatch ubatch = balloc.ubatch_reserve(n_keep, 1);
+
+    ubatch.seq_id_unq[0] = dest_seq_id;
+
+    for (uint32_t i = 0; i < n_keep; ++i) {
+        if (has_ext) {
+            if (hparams.n_pos_per_embd() > 1) {
+                ubatch.pos[i + ubatch.n_tokens]   = exts[i].y;
+                ubatch.pos[i + ubatch.n_tokens*2] = exts[i].x;
+            }
+            ubatch.token[i] = exts[i].tok;
+        }
+        ubatch.pos[i]      = pos[i];
+        ubatch.n_seq_id[i] = 1;
+        ubatch.seq_id[i]   = &dest_seq_id;
+    }
+
+    sinfo = find_slot(ubatch, false);
+    if (sinfo.empty()) {
+        LLAMA_LOG_ERROR("%s: failed to find %u available cells in kv cache\n", __func__, n_keep);
+        return false;
+    }
+
+    apply_ubatch(sinfo, ubatch);
+
+    for (uint32_t i = 0; i < (uint32_t) exts.size(); ++i) {
+        cells.ext_set(sinfo.idxs[0][i], exts[i]);
+    }
+
+    GGML_ASSERT(sinfo.n_stream() == 1 && sinfo.idxs[0].size() == n_keep);
+
+    return true;
+}
+
+bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32_t cell_count, const slot_info & sinfo, const std::vector<uint8_t> * keep) {
     auto & cells = v_cells[strm];
 
     // the cells were allocated for this sequence only, the copies may overlap with graphs of other sequences
@@ -2528,20 +2669,39 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
     // batch the scatter reads per contiguous run of destination indices
     // from inclusive, to exclusive - same convention as cell_ranges_t
     // contiguous cells yield a single run covering the whole block
-    struct cell_run { uint32_t from; uint32_t to; };
+    // skip: to - from cells of the blob that are left out
+    struct cell_run { uint32_t from; uint32_t to; bool skip; };
     std::vector<cell_run> runs;
-    if (cell_count > 0) {
-        const auto & idxs = sinfo.idxs[0];
-        uint32_t i0 = 0;
-        while (i0 < cell_count) {
-            uint32_t i1 = i0 + 1;
-            while (i1 < cell_count && idxs[i1] == idxs[i1 - 1] + 1) {
-                ++i1;
+    {
+        uint32_t j = 0; // next destination index of sinfo
+        for (uint32_t i = 0; i < cell_count; ++i) {
+            if (keep && !(*keep)[i]) {
+                if (!runs.empty() && runs.back().skip) {
+                    runs.back().to++;
+                } else {
+                    runs.push_back({0, 1, true});
+                }
+                continue;
             }
-            runs.push_back({idxs[i0], idxs[i1 - 1] + 1});
-            i0 = i1;
+            const uint32_t idx = sinfo.idxs[0][j++];
+            if (!runs.empty() && !runs.back().skip && runs.back().to == idx) {
+                runs.back().to++;
+            } else {
+                runs.push_back({idx, idx + 1, false});
+            }
         }
+        GGML_ASSERT(j == (sinfo.empty() ? 0 : sinfo.idxs[0].size()));
     }
+
+    // a run of rows of size_row, the rows of cell i at offset + i*size_row of the tensor
+    auto read_run = [&io](ggml_tensor * t, const cell_run & r, size_t size_row, size_t offset) {
+        const size_t n = (size_t) (r.to - r.from) * size_row;
+        if (r.skip) {
+            io.skip(n);
+        } else {
+            io.read_tensor(t, offset + (size_t) r.from * size_row, n);
+        }
+    };
 
     uint32_t v_trans;
     uint32_t n_layer;
@@ -2591,7 +2751,7 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
         }
 
         for (const auto & r : runs) {
-            io.read_tensor(k, (size_t) r.from * k_size_row, (size_t) (r.to - r.from) * k_size_row);
+            read_run(k, r, k_size_row, 0);
         }
     }
 
@@ -2625,7 +2785,7 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
             }
 
             for (const auto & r : runs) {
-                io.read_tensor(v, (size_t) r.from * v_size_row, (size_t) (r.to - r.from) * v_size_row);
+                read_run(v, r, v_size_row, 0);
             }
         }
     } else {
@@ -2668,8 +2828,7 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
 
             for (uint32_t j = 0; j < n_embd_v_gqa; ++j) {
                 for (const auto & r : runs) {
-                    const size_t dst_offset = ((size_t) r.from + j * cells.size()) * v_size_el;
-                    io.read_tensor(v, dst_offset, (size_t) (r.to - r.from) * v_size_el);
+                    read_run(v, r, v_size_el, (size_t) j * cells.size() * v_size_el);
                 }
             }
         }
@@ -2707,30 +2866,20 @@ void llama_kv_cache::state_clear(llama_seq_id seq_id) {
 }
 
 // the cleared ranges mirror the write pattern of state_read_data() - keep both in sync
-void llama_kv_cache::state_clear(llama_seq_id seq_id, uint32_t strm, const slot_info & sinfo, bool append_only) {
+void llama_kv_cache::state_clear(llama_seq_id seq_id, uint32_t strm, const slot_info & sinfo, llama_pos p0) {
     if (seq_id == -1) {
         clear(true);
         return;
     }
 
-    auto & cells = v_cells[strm];
-    if (append_only) {
-        if (!sinfo.empty()) {
-            for (uint32_t idx : sinfo.idxs[0]) {
-                if (idx < cells.size() && cells.seq_has(idx, seq_id)) {
-                    cells.seq_rm(idx, seq_id);
-                }
-            }
-        }
-    } else {
-        seq_rm(seq_id, -1, -1);
-    }
+    seq_rm(seq_id, p0, -1);
 
     // zero the K/V data of the failed restore attempt - the attention can still read the data of free cells
     if (sinfo.empty() || sinfo.size() == 0) {
         return;
     }
 
+    const auto & cells = v_cells[strm];
 
     const uint32_t cell_count = sinfo.size();
 

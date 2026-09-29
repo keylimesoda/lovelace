@@ -2366,7 +2366,8 @@ bool common_state_buf::alloc(common_state_arena * arena, size_t n) {
         return true;
     }
 
-    if (arena && arena->take(arena->n_chunks(n), chunks)) {
+    // a state of a few bytes (e.g. the empty partial state of a full-attention cache) would waste a whole chunk
+    if (arena && n >= 4096 && arena->take(arena->n_chunks(n), chunks)) {
         this->arena = arena;
     } else {
         try {
@@ -2407,41 +2408,6 @@ std::vector<llama_state_chunk> common_state_buf::views() const {
     }
     return res;
 }
-void common_state_buf::copy_to(uint8_t * dst, size_t size) const {
-    wait();
-    if (size != n_bytes) {
-        throw std::invalid_argument("state buffer copy size mismatch");
-    }
-    auto src = views();
-    size_t offset = 0;
-    for (const auto & chunk : src) {
-        memcpy(dst + offset, chunk.data, chunk.size);
-        offset += chunk.size;
-    }
-}
-
-bool common_state_buf::assign_from(common_state_arena * arena, const uint8_t * src, size_t size) {
-    if (!alloc(arena, size)) {
-        return false;
-    }
-    auto dst = views();
-    size_t offset = 0;
-    for (const auto & chunk : dst) {
-        memcpy(chunk.data, src + offset, chunk.size);
-        offset += chunk.size;
-    }
-    return true;
-}
-
-std::vector<uint8_t> common_state_buf::copy_to_vector() const {
-    std::vector<uint8_t> result(n_bytes);
-    copy_to(result.data(), result.size());
-    return result;
-}
-
-bool common_state_buf::assign_from_vector(common_state_arena * arena, const std::vector<uint8_t> & data) {
-    return assign_from(arena, data.data(), data.size());
-}
 
 bool common_state_buf::get_async(llama_context * ctx, llama_seq_id seq_id, llama_state_seq_flags flags) {
     wait();
@@ -2458,19 +2424,6 @@ bool common_state_buf::set_async(llama_context * ctx, llama_seq_id seq_id, llama
     const auto v = views();
     const size_t n = llama_state_seq_set_data_async(ctx, v.data(), v.size(), n_bytes, seq_id, flags, &xfer);
 
-    return n == n_bytes;
-}
-bool common_state_buf::get_delta_async(llama_context * ctx, llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags) {
-    wait();
-    const auto v = views();
-    const size_t n = llama_state_seq_get_delta_data_async(ctx, v.data(), v.size(), seq_id, pos_min, flags, &xfer);
-    return n == n_bytes;
-}
-
-bool common_state_buf::set_delta_async(llama_context * ctx, llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags) const {
-    wait();
-    const auto v = views();
-    const size_t n = llama_state_seq_set_delta_data_async(ctx, v.data(), v.size(), n_bytes, seq_id, pos_min, flags, &xfer);
     return n == n_bytes;
 }
 

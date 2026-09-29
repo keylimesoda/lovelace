@@ -932,7 +932,7 @@ extern "C" {
 // decoded right after the call (e.g. a checkpoint of a sequence that keeps processing its prompt)
 #define LLAMA_STATE_SEQ_FLAGS_ORDERED 4
 
-// Append-only attention-KV delta payloads, used with llama_state_seq_get/set_delta_data_async.
+// Attention-KV-only payloads of llama_state_seq_get/set_delta_data_async (see there)
 #define LLAMA_STATE_SEQ_FLAGS_KV_ONLY 8
 
     typedef uint32_t llama_state_seq_flags;
@@ -1000,31 +1000,38 @@ extern "C" {
            llama_state_seq_flags   flags,
               llama_state_xfer_t * xfer);
 
-    // Delta transfer APIs require KV_ONLY and follow the chunk and transfer-handle rules above.
-    // They serialize only attention KV cells at positions >= pos_min; recurrent state is maintained separately.
+    // Append-only attention KV deltas, for a host mirror of a sequence that grows by appending cells. They require
+    // LLAMA_STATE_SEQ_FLAGS_KV_ONLY (the recurrent state is transferred with LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) and
+    // follow the chunk and transfer-handle rules above.
+
+    // size of the attention KV cells of seq_id at positions >= pos_min
     LLAMA_API size_t llama_state_seq_get_delta_size_ext(
             struct llama_context * ctx,
                     llama_seq_id   seq_id,
-                      llama_pos   pos_min,
+                       llama_pos   pos_min,
            llama_state_seq_flags   flags);
 
+    // start copying the attention KV cells of seq_id at positions >= pos_min to the chunks
     LLAMA_API size_t llama_state_seq_get_delta_data_async(
             struct llama_context * ctx,
      const llama_state_chunk     * chunks,
                           size_t   n_chunks,
                     llama_seq_id   seq_id,
-                      llama_pos   pos_min,
+                       llama_pos   pos_min,
            llama_state_seq_flags   flags,
               llama_state_xfer_t * xfer);
 
-    // Apply a KV delta to an existing sequence without clearing its earlier cells; pos_min must match the serialized header.
+    // start appending the cells of a delta saved with pos_min to dest_seq_id; cells at positions >= pos_end are left
+    // out (a mirror truncated by a rollback). dest_seq_id must hold no attention cell at a position >= pos_min.
+    // Returns the bytes read, 0 on failure (the cells of this delta are then freed, earlier ones are kept).
     LLAMA_API size_t llama_state_seq_set_delta_data_async(
             struct llama_context * ctx,
      const llama_state_chunk     * chunks,
                           size_t   n_chunks,
                           size_t   size,
                     llama_seq_id   dest_seq_id,
-                      llama_pos   pos_min,
+                       llama_pos   pos_min,
+                       llama_pos   pos_end,
            llama_state_seq_flags   flags,
               llama_state_xfer_t * xfer);
 

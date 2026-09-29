@@ -1767,16 +1767,6 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_SESSION_TTL").set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
-        {"--shared-prefix"}, "on|off",
-        string_format("keep the common session prefix shared in VRAM (default: %s)", params.shared_prefix ? "on" : "off"),
-        [](common_params & params, const std::string & value) {
-            if (value != "on" && value != "off") {
-                throw std::invalid_argument("shared-prefix must be 'on' or 'off'");
-            }
-            params.shared_prefix = value == "on";
-        }
-    ).set_env("LLAMA_ARG_SHARED_PREFIX").set_examples({LLAMA_EXAMPLE_SERVER}));
-    add_opt(common_arg(
         {"-kvu", "--kv-unified"},
         {"-no-kvu", "--no-kv-unified"},
         "use single unified KV buffer shared across all sequences (default: enabled if number of slots is auto)",

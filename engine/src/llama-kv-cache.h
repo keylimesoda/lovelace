@@ -148,10 +148,12 @@ public:
 
     // state write/load
 
+    // with LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY, a cache without SWA writes no cells: truncating it never needs a state
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
-    void state_write_delta(llama_io_write_i & io, llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags) const override;
-    void state_read_delta(llama_io_read_i & io, llama_seq_id seq_id, llama_pos pos_min, llama_state_seq_flags flags) override;
+
+    void state_write_delta(llama_io_write_i & io, llama_seq_id seq_id, llama_pos pos_min) const override;
+    void state_read_delta (llama_io_read_i  & io, llama_seq_id seq_id, llama_pos pos_min, llama_pos pos_end) override;
 
     //
     // llama_kv_cache specific API
@@ -179,9 +181,7 @@ public:
                llama_seq_id   seq_id,
       llama_state_seq_flags   flags,
           slot_info_vec_t *   sinfos_out,
-    const slot_info_vec_t *   sinfos_in,
-                     bool     append_only = false,
-                 llama_pos     pos_min = 0);
+    const slot_info_vec_t *   sinfos_in);
 
     // undo a state_read() of seq_id (-1 for the whole cache) that another memory module failed to complete
     void state_clear(llama_seq_id seq_id);
@@ -346,14 +346,21 @@ private:
         std::vector<std::pair<uint32_t, uint32_t>> data; // ranges, from inclusive, to exclusive
     };
 
+    // the cells of seq_id (-1: all) at positions >= pos_min
+    void state_write_cells(llama_io_write_i & io, llama_seq_id seq_id, llama_pos pos_min) const;
     void state_write_meta(llama_io_write_i & io, const cell_ranges_t & cr, llama_seq_id seq_id = -1) const;
     void state_write_data(llama_io_write_i & io, const cell_ranges_t & cr) const;
 
     // sinfo_in, when set, replaces the find_slot call: the cells are given by the caller
-    bool state_read_meta(llama_io_read_i & io, uint32_t strm, uint32_t cell_count, slot_info & sinfo, llama_seq_id dest_seq_id = -1, const slot_info * sinfo_in = nullptr, bool append_only = false, llama_pos pos_min = 0);
-    bool state_read_data(llama_io_read_i & io, uint32_t strm, uint32_t cell_count, const slot_info & sinfo);
+    bool state_read_meta(llama_io_read_i & io, uint32_t strm, uint32_t cell_count,       slot_info & sinfo, llama_seq_id dest_seq_id = -1, const slot_info * sinfo_in = nullptr);
+    // the cells of a delta at positions < pos_end are placed for dest_seq_id and flagged in keep, the rest is left out
+    bool state_read_meta_delta(llama_io_read_i & io, uint32_t strm, uint32_t cell_count, slot_info & sinfo, llama_seq_id dest_seq_id,
+            llama_pos pos_min, llama_pos pos_end, std::vector<uint8_t> & keep);
+    // keep: cells of the blob to apply (in order, onto sinfo), the others are skipped; nullptr = all
+    bool state_read_data(llama_io_read_i & io, uint32_t strm, uint32_t cell_count, const slot_info & sinfo, const std::vector<uint8_t> * keep = nullptr);
 
-    void state_clear(llama_seq_id seq_id, uint32_t strm, const slot_info & sinfo, bool append_only = false);
+    // frees the cells of seq_id at positions >= p0 and zeroes the data of sinfo
+    void state_clear(llama_seq_id seq_id, uint32_t strm, const slot_info & sinfo, llama_pos p0 = -1);
 };
 
 class llama_kv_cache_context : public llama_memory_context_i {

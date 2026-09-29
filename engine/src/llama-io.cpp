@@ -18,3 +18,12 @@ void llama_io_read_i::read_string(std::string & str) {
 
     str.assign(buf.data(), str_size);
 }
+
+void llama_io_read_i::skip(size_t size) {
+    uint8_t buf[4096];
+    while (size > 0) {
+        const size_t n = size < sizeof(buf) ? size : sizeof(buf);
+        read(buf, n);
+        size -= n;
+    }
+}
