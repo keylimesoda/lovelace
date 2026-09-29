@@ -130,21 +130,15 @@ class Run:
     stop: asyncio.Event = field(default_factory=asyncio.Event)
     records: list[dict] = field(default_factory=list)
     started_at: str = ""
-    # --warmup: the agents still running their first contact; the timed window (t0) starts when the last one is done
+    # --warmup: session name -> the turn of its first contact, run before the timed window
+    warmed: dict[str, int] = field(default_factory=dict)
     warm_out: object = None
-    warm_pending: set[int] = field(default_factory=set)
-    warm_done: asyncio.Event = field(default_factory=asyncio.Event)
-    warm_records: list[dict] = field(default_factory=list)
+    warm_records: list[dict] | None = None
     warm_wall_s: float | None = None
-
-    def warming(self) -> bool:
-        return self.warm_out is not None and not self.warm_done.is_set()
 
     def may_issue(self) -> bool:
         if self.stop.is_set():
             return False
-        if self.warming():
-            return True
         a = self.args
         if a.duration is not None and time.monotonic() - self.t0 >= a.duration:
             self.stop.set()
@@ -158,18 +152,6 @@ class Run:
         self.records.append(rec)
         self.out.write(dumps(rec) + b"\n")
         self.out.flush()
-
-    def write_warm(self, rec: dict) -> None:
-        self.warm_records.append(rec)
-        self.warm_out.write(dumps(rec) + b"\n")
-        self.warm_out.flush()
-
-    def warm_finished(self, idx: int) -> None:
-        """Agent idx is done with its first contact; the last one starts the timed window."""
-        self.warm_pending.discard(idx)
-        if not self.warm_pending and not self.warm_done.is_set():
-            self.t0 = time.monotonic()
-            self.warm_done.set()
 
 
 def max_tokens_for(turn: dict, spec: str) -> int:
@@ -312,61 +294,83 @@ async def sleep_or_stop(run: Run, seconds: float) -> None:
         pass
 
 
-async def agent(run: Run, idx: int) -> None:
-    # --warmup: this agent's first contact runs before the timed window, the agents start together
-    try:
-        await agent_turns(run, idx, run.warming())
-    finally:
-        if run.warm_out is not None:
-            run.warm_finished(idx)  # also when the agent ends early
+def turn_meta(a: argparse.Namespace, idx: int, sess: dict, turn: dict, think: float, body: bytes) -> dict:
+    return {
+        "agent": idx,
+        "session": sess["name"],
+        "turn": turn["turn"],
+        "n_messages": turn["n_messages"],
+        "est_prompt_tokens": turn["est_prompt_tokens"],
+        "rec_prompt_tokens": turn.get("rec_prompt_tokens"),
+        "rec_output_tokens": turn.get("rec_output_tokens"),
+        "max_tokens": max_tokens_for(turn, a.output_tokens),
+        "think_s": round(think, 3),
+        "body_bytes": len(body),
+    }
 
 
-async def agent_turns(run: Run, idx: int, warm: bool) -> None:
+def first_contact(a: argparse.Namespace, sess: dict) -> dict | None:
+    """The turn an agent starts a session with: the first one at least --start-turn-min-depth deep."""
+    for turn in iter_turns(a.corpus / sess["file"]):
+        if a.max_depth and depth_of(turn) > a.max_depth:
+            return None
+        if depth_of(turn) >= a.start_turn_min_depth:
+            return turn
+    return None
+
+
+async def warmup(run: Run, sessions: list[dict]) -> None:
+    """--warmup: the first contact of every session the agents may use, --agents at a time, before the timed window."""
     a = run.args
-    if not warm:
-        await sleep_or_stop(run, idx * a.stagger)
+    todo = list(sessions)
+
+    async def worker(idx: int) -> None:
+        while todo:
+            sess = todo.pop(0)
+            turn = first_contact(a, sess)
+            if turn is None:
+                continue
+            body = dumps(build_body(run, turn))
+            res = await send(run, body, a.warmup_timeout)
+            rec = {**turn_meta(a, idx, sess, turn, 0.0, body), **res, "warmup": True}
+            run.warm_records.append(rec)
+            run.warm_out.write(dumps(rec) + b"\n")
+            run.warm_out.flush()
+            print("warm-up " + fmt_line(rec), flush=True)
+            if res["status"] == "ok":
+                run.warmed[sess["name"]] = turn["turn"]
+
+    await asyncio.gather(*(worker(i) for i in range(a.agents)))
+
+
+async def agent(run: Run, idx: int) -> None:
+    a = run.args
+    await sleep_or_stop(run, idx * a.stagger)
     while run.may_issue():
         sess = run.pool.acquire()
+        # a session warmed up continues after its first contact
+        warmed = run.warmed.get(sess["name"])
         try:
             started = False
             for turn in iter_turns(a.corpus / sess["file"]):
                 if a.max_depth and depth_of(turn) > a.max_depth:
                     break
-                if not started:
+                if warmed is not None and turn["turn"] <= warmed:
+                    continue
+                if not started and warmed is None:
                     if depth_of(turn) < a.start_turn_min_depth:
                         continue
                     started = True
                     think = 0.0
                 else:
+                    started = True
                     think = min((turn.get("gap_s") or 0.0) * a.think_scale, a.max_think)
                     await sleep_or_stop(run, think)
                 if not run.may_issue():
                     return
-                body = dumps(build_body(run, turn))
-                meta = {
-                    "agent": idx,
-                    "session": sess["name"],
-                    "turn": turn["turn"],
-                    "n_messages": turn["n_messages"],
-                    "est_prompt_tokens": turn["est_prompt_tokens"],
-                    "rec_prompt_tokens": turn.get("rec_prompt_tokens"),
-                    "rec_output_tokens": turn.get("rec_output_tokens"),
-                    "max_tokens": max_tokens_for(turn, a.output_tokens),
-                    "think_s": round(think, 3),
-                    "body_bytes": len(body),
-                }
-                if warm:
-                    res = await send(run, body, a.warmup_timeout)
-                    rec = {**meta, **res, "warmup": True}
-                    run.write_warm(rec)
-                    print("warm-up " + fmt_line(rec), flush=True)
-                    if res["status"] == "cancelled":
-                        return
-                    warm = False
-                    run.warm_finished(idx)
-                    await run.warm_done.wait()
-                    continue
                 run.issued += 1
+                body = dumps(build_body(run, turn))
+                meta = turn_meta(a, idx, sess, turn, think, body)
                 res = await send(run, body)
                 rec = {**meta, **res}
                 run.write(rec)
@@ -532,14 +536,15 @@ async def amain(args: argparse.Namespace) -> int:
                 flush=True,
             )
             if warm_out is not None:
+                # every session the agents may use has its first contact now; the timed window starts after
                 run.warm_out = warm_out
-                run.warm_pending = set(range(args.agents))
-            tasks = [asyncio.create_task(agent(run, i)) for i in range(args.agents)]
-            if warm_out is not None:
+                run.warm_records = []
                 t_warm = time.monotonic()
-                await run.warm_done.wait()
+                await warmup(run, deep)
                 run.warm_wall_s = time.monotonic() - t_warm
-                print(f"warm-up done in {run.warm_wall_s:.1f} s, timed window starts", flush=True)
+                print(f"warm-up done in {run.warm_wall_s:.1f} s ({len(run.warmed)} sessions), timed window starts", flush=True)
+                run.t0 = time.monotonic()
+            tasks = [asyncio.create_task(agent(run, i)) for i in range(args.agents)]
             if args.duration is not None:
                 asyncio.get_running_loop().call_later(args.duration, run.stop.set)
             if args.duration is not None and args.no_drain:
