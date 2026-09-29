@@ -67,3 +67,26 @@ conversion, the mask size (host build and upload) and the mask pre-pass.
   cells spans them.
 - Not duplicated: the GPU-built KQ mask (feat/step-costs 0c727e790) is not needed for this case (the window makes
   the host mask the same size as alone); it still helps mixed ubatches.
+
+Gates (build 896206c36 vs main 76f8ee574):
+
+- `bench/op_gates.sh gates-ops.txt <bin> FLASH_ATTN_EXT`: test-backend-ops FLASH_ATTN_EXT 4052/4052 passed (no ggml op
+  is touched), test-gdn-replay `all ReplaySSM checks passed`.
+- `bench/greedy_gate.sh` (six sessions of ~20k in one unified cache, so each later session sits above the earlier
+  ones and gets a window with kv_lo > 0): **sequential 6/6 identical with MTP on (greedy-mtp) and off
+  (greedy-nospec)**. Concurrent mode: 2/6 identical in both; every divergence is at a near-tie (baseline top-1/top-2
+  margin 0.016-0.15 where reported) and concurrent batching is not deterministic between runs on main either (the
+  earlier main gates in bench/results/greedy report 0-1/6, the same ' a'/' the' tie at token 3).
+
+## 3. After
+
+Same script and prompts (`after/*.drive.out`, `after/*.table.txt`):
+
+| run | main tok/s | main ms/ubatch | window tok/s | window ms/ubatch |
+|---|---|---|---|---|
+| alone | 1743 | 557.2 | 1743 | 557.2 |
+| resident (147,684 other cells) | 960 | 1012.0 | **1741** | **558.2** |
+
+With the other session resident the prefill is now within 0.2% of alone (target: within 10%). Per ubatch the resident
+run matches alone class by class: FA kernel 179.4 vs 178.7 ms, H2D 300 vs 299 MiB (12.5 ms), conversion 6.6 ms,
+host gap 20.7 ms.
