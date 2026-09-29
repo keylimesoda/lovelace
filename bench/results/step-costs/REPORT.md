@@ -74,8 +74,9 @@ per request, on every capture, so the draft (MTP) context's mask is not implicat
   The target's verification uses the full head: outputs stay exact; only acceptance can change.
 - Token sets: `bench/draft_vocab.py` → `deploy/draft-vocab/`. Ranked by frequency in the agents' rendered assistant
   turns + 0.25 x frequency in tool results/user messages. 28 sessions, 2.06 M output tokens, 23,287 distinct.
-  `qwen3.8-27b.txt` (16k): corpus coverage 99.41%, leave-one-session-out 96.85%; `qwen3.8-27b-32k.txt` (32,768
-  rows, i.e. every token the agents emitted plus the most frequent read ones): 100% / 99.02%.
+  16k rows (`--n 16384`; the `vocab/v16` runs used it as `qwen3.8-27b.txt`): corpus coverage 99.41%,
+  leave-one-session-out 96.85%. 32k rows (now `qwen3.8-27b.txt`, the default `--n`; `qwen3.8-27b-32k.txt` in the
+  `vocab/v32` runs; every token the agents emitted plus the most frequent read ones): 100% / 99.02%.
 - Held-out sets (`draft_vocab.py --exclude`, the six sessions step_drive uses at 50k): `heldout6-16k.txt`,
   `heldout6-32k.txt` (30,235 rows: all tokens of the other 22 sessions), built from 22 sessions without them;
   coverage of the six sessions' outputs 95.44% / 98.10%. The held-out drives use only those six sessions
@@ -125,13 +126,42 @@ between holds. Full step minus the measured draft saving (3 x 0.96 ms) gives 46.
 
 **Decision:** 16k fails the held-out criterion (-1.21 points > 0.5) despite the larger speedup; **32k passes**
 (held-out +0.11 points, summed decode +3.9% over three depths, -2.9 ms of GPU time per 6-sequence step, -2.8 ms
-single-stream). Recommend `--spec-draft-vocab /draft-vocab/qwen3.8-27b-32k.txt`. Its greedy gate (MTP on, base vs
-`step-head-bin` + 32k) is in `greedy/vocab32k-mtp/`; the production profile flag waits for it.
+single-stream). Greedy gate with the 32k set (`greedy/vocab32k-mtp/`, main vs `step-head-bin` +
+`--spec-draft-vocab`): **sequential 6/6 identical**, draft counters equal (519/724 on both); concurrent 1/6, the
+same flips as the mask gate. Enabled: `deploy/draft-vocab/qwen3.8-27b.txt` is the 32k set, `serve.Dockerfile`
+copies it to /opt/lovelace/draft-vocab/ and all three deploy profiles pass `--spec-draft-vocab` (serve image not
+rebuilt here; production stays stopped).
+
+## Item 0: target graph-launch gap (1.67 -> 2.19 ms after the restore-latency merge) — not a regression
+
+`CPU_SAMPLE=1 BIN=../step-base-bin bench/step_profile.sh bench/results/step-costs/cpu-main six=$D`, then
+`bench/gap_samples.py` (new: the decode thread's CUDA runtime calls and CPU samples between the last GPU activity
+and each target decode's first kernel) and `bench/step_table.py --gaps` (new: host gap split by the GPU work on
+either side). Same window on every capture at hand (6 x 50k):
+
+| capture | build | window, ms | cudaGraphLaunch, ms | cudaGraphExecUpdate, ms/step |
+|---|---|---:|---:|---:|
+| step-profile/v6 | pre-rebase branch | 1.894 | 1.380 | 0.145 |
+| step-profile/final | rebased on restore-latency | 2.297 | 1.559 | 0.239 |
+| accept/base | main 4b6187d5d | 2.155 | 1.358 | 0.238 |
+| cpu-main | main 4b6187d5d, CPU sampling | **1.756** | 1.266 | 0.156 |
+| accept/mask | GPU mask | 1.998 | 1.358 | 0.141 |
+
+The window is the driver's `cudaGraphLaunch` of the 1,974-node target graph (same node count in v6, final and
+main); 30% of the decode thread's samples in it are `pthread_mutex_unlock` inside `cuGraphLaunch`. Main spans
+1.76-2.16 ms across two captures, as wide as the v6 -> final difference, and its low end is below v6: run-to-run
+driver/host variance, not a code regression. The rest: every ~6 steps a graph is re-captured and updated as n_kv
+crosses its 256-cell padding (`cudaGraphExecUpdate` ~0.95 ms each, 0.14-0.24 ms/step amortized). Levers, if
+wanted: fewer target-graph nodes (fusion), or a coarser n_kv padding to update less often; not pursued here.
+
+## Merge note
+
+feat/resident-cost 896206c36 adds a per-ubatch window `kv_lo` (K/V views and the host mask read cells kv_lo + j,
+reuse key checks `kq_mask->op_params[0] == kv_lo`); merged together, `llama_kv_mask_set_keys()` must read cells
+kv_lo + j as well and the reuse key must carry kv_lo on the keys tensor. Whoever merges second resolves it.
 
 ## Not done
 
-- Item 0 (from Main): target graph-launch gap regression after the restore-latency merge (1.67 -> 2.19 ms): not
-  investigated; a `CPU_SAMPLE=1` step profile of main is the next step.
 - Item 3 (MMQ at 24 rows): not started. Note for it: with 24 columns, ntiles_x is 1 for any mmq_x >= 24, so mmq_x
   changes keep the stream-k K partition (bitwise identical); mmq_y or grid changes do not.
-- 6-agent replay vs main: not run.
+- 6-agent replay vs main (GPU mask + 32k draft vocab): not run.

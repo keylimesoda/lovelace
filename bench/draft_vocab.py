@@ -10,7 +10,9 @@ text is tokenized with the served model's vocabulary (llama-tokenize, vocab only
 Regenerate (from bench/replay, after re-extracting the corpus or changing the model):
   uv run python ../draft_vocab.py --bin ../../engine/build-sm89/bin \
       --model /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf --out ../../deploy/draft-vocab/qwen3.8-27b.txt
-The server uses it with --spec-draft-vocab <file> (MTP only).
+The server uses it with --spec-draft-vocab <file> (MTP only; the deploy profiles do). 32768 rows (the default --n):
+on sessions left out of the set, 16384 rows cost 1.2 points of draft acceptance and 32768 rows none
+(bench/results/step-costs/REPORT.md).
 
 Prints the corpus coverage of the chosen set and an estimate for unseen traffic (leave one session out: each
 session's outputs against the set built from the other sessions).
@@ -122,7 +124,7 @@ def main():
     ap.add_argument("--bin", required=True, help="engine bin dir with llama-tokenize")
     ap.add_argument("--model", required=True, help="model path inside the container (~/models is /models)")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--n", type=int, default=16384)
+    ap.add_argument("--n", type=int, default=32768)
     ap.add_argument("--input-weight", type=float, default=0.25)
     ap.add_argument("--exclude", default="", help="comma-separated session files (or name prefixes) kept out of the set")
     a = ap.parse_args()
