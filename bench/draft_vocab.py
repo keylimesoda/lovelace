@@ -14,6 +14,11 @@ The server uses it with --spec-draft-vocab <file> (MTP only).
 
 Prints the corpus coverage of the chosen set and an estimate for unseen traffic (leave one session out: each
 session's outputs against the set built from the other sessions).
+
+--exclude S1,S2,... leaves those sessions (file names or name prefixes) out of the set and reports the set's
+coverage of their outputs (held_out_coverage): replaying them (bench/step_drive.py) then measures acceptance on
+traffic the set never saw, e.g. the six 50k sessions step_drive picks:
+  --exclude 2026-09-27T08-42-53,2026-09-27T08-18-54,2026-09-25T07-15-46,2026-09-26T02-32-58,2026-09-26T09-54-32,2026-09-27T09-11-19
 """
 
 import argparse
@@ -119,9 +124,16 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--n", type=int, default=16384)
     ap.add_argument("--input-weight", type=float, default=0.25)
+    ap.add_argument("--exclude", default="", help="comma-separated session files (or name prefixes) kept out of the set")
     a = ap.parse_args()
 
-    files = sorted((CORPUS_DIR / "sessions").glob("*.jsonl"))
+    all_files = sorted((CORPUS_DIR / "sessions").glob("*.jsonl"))
+    excl = [p for p in a.exclude.split(",") if p]
+    held = [f for f in all_files if any(f.name.startswith(p) for p in excl)]
+    missing = [p for p in excl if not any(f.name.startswith(p) for f in held)]
+    if missing:
+        sys.exit(f"--exclude: no session matches {missing}")
+    files = [f for f in all_files if f not in held]
     per_session = [Counter(tokenize(a.bin, a.model, session_outputs(f))) for f in files]
     per_session_in = [Counter(tokenize(a.bin, a.model, session_inputs(f))) for f in files]
     counts = sum(per_session, Counter())
@@ -144,6 +156,11 @@ def main():
         "coverage": round(coverage(counts, ids), 5),
         "leave_one_session_out_coverage": round(hit / sum(counts.values()), 5),
     }
+    if held:
+        held_counts = Counter(tokenize(a.bin, a.model, [m for f in held for m in session_outputs(f)]))
+        stats["excluded"] = [f.name for f in held]
+        stats["held_out_output_tokens"] = sum(held_counts.values())
+        stats["held_out_coverage"] = round(coverage(held_counts, ids), 5)
     print(json.dumps(stats))
 
     out = Path(a.out)
