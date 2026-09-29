@@ -19,14 +19,14 @@ faster for multi-user**. Benchmarks must be cheap, deterministic scripts; spend 
 
 | # | Criterion | How it is measured (script) | Status |
 |---|---|---|---|
-| A1 | Quality >= previous setup | eval/kld against the same Q8_0 reference: lovelace (GPU-5 + q5_0 KV) vs ninfer artifact + rk4v4-e8 | pending (ninfer scorer being written) |
+| A1 | Quality >= previous setup | eval/kld against the same Q8_0 reference: lovelace (GPU-5 + q5_0 KV) vs ninfer artifact + rk4v4-e8 | **PASS**: KL 0.0171 vs 0.0282, top-1 95.67% vs 94.50% (docs/quality-kld.md) |
 | A2 | Quality vs BF16 | Q8_0 used as the proxy reference (KL of Q8_0 vs BF16 not measured) | proxy only |
 | B1 | Single-stream speed >= previous | bench/h2h.sh ENGINE 1 sweep (bench/depth_sweep.py, 8k-200k) | running |
-| B2 | Multi-agent aggregate >= previous | bench/h2h.sh ENGINE N replay:6:60000:1200 on both engines | running (ninfer 3 and 6 lanes) |
+| B2 | Multi-agent aggregate >= previous | bench/h2h.sh ENGINE N replay:6:60000:1200 on both engines | ninfer 3 lanes: 41.0 t/s, TTFT p90 159 s; ninfer 6 lanes can't start at >= 163k context; lovelace same-day run pending |
 | C1 | >= 170k (target 262k) context per agent, never lost | session-store replays (bench/results/session-store) | met: 0 errors, 0 sessions lost at ~150k x 6 |
 | C2 | 4-6 agents without stalls or errors | bench/results/main-327k, session-store | met: 0 errors; TTFT p90 41 s at real depth |
 | D1 | DFlash2 considered | bake-off: acceptance 0.27 vs MTP 0.55 on agent traffic | done (MTP chosen) |
-| D2 | Exotic KV considered | KLD of q4/q5/q8 mixes done; E8 comes from A1; KVarN not measured | partial |
+| D2 | Exotic KV considered | KLD of q4/q5/q8 mixes; ninfer E8 measured in A1 (adds 0.0055 KL vs q5_0's 0.0008); KVarN not measured | done: q5_0 kept |
 | D3 | SM89 kernels | llama-bench tables (bench/results/main-gate) | done |
 | E1 | Observability without perf cost | overhead A/B < 0.5% | done |
 
