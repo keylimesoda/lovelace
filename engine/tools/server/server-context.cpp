@@ -5587,7 +5587,7 @@ private:
 
         // sample the verified rows of all slots first, in parallel: each slot has its own sampler and reads its own
         // output rows; the context is synchronized (and its outputs reordered) once, here, before the workers start
-        {
+        if (spec) {
             const auto & synth_probs = common_speculative_get_synth_probs(spec.get());
 
             std::vector<server_slot *> verifying;
