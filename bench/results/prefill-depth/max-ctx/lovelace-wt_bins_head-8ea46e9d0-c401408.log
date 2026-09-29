@@ -1,0 +1,32 @@
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.1.2
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+0.00.049.551 I srv  llama_server: initializing ...
+0.00.049.562 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.049.795 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.051.963 I srv    load_model: loading model '/models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf'
+0.00.617.427 W common_fit_params: failed to fit params to free device memory: n_gpu_layers already set by user to 99, abort
+0.01.773.346 W llama_context: n_ctx_seq (401408) > n_ctx_train (262144) -- possible training context overflow
+0.01.920.165 I cmn          init: llama threadpool init, n_threads = 16
+0.01.968.811 I common_speculative_init_result: creating MTP draft context against the target model '/models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf'
+0.01.968.845 W llama_context: n_ctx_seq (401408) > n_ctx_train (262144) -- possible training context overflow
+0.01.974.004 E ggml_backend_cuda_buffer_type_alloc_buffer: allocating 32.61 MiB on device 0: cudaMalloc failed: out of memory
+0.01.974.011 E ggml_gallocr_reserve_n_impl: failed to allocate CUDA0 buffer of size 34194944
+0.01.974.011 E graph_reserve: failed to allocate compute buffers
+0.01.974.742 E llama_init_from_model: failed to initialize the context: failed to allocate compute pp buffers
+0.01.974.747 E common_speculative_init_result: failed to create MTP context
+0.01.974.764 E srv    load_model: failed to create MTP context
+0.01.974.773 I srv    operator(): operator(): cleaning up before exit...
+0.01.977.215 E srv  llama_server: exiting due to model loading error

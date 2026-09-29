@@ -220,6 +220,26 @@ static void init_tensor_kq_mask_sparse(ggml_tensor * tensor, int64_t n_kv_max) {
     ggml_backend_tensor_set(tensor, data_f16.data(), 0, data_f16.size()*sizeof(ggml_fp16_t));
 }
 
+// Causal KQ mask of a prompt batch at the end of the KV cells (like a prefill ubatch): token t sees cells 0...ne0-n_tokens+t.
+static void init_tensor_kq_mask_causal(ggml_tensor * tensor, int64_t n_tokens) {
+    GGML_ASSERT(tensor->type == GGML_TYPE_F16);
+    GGML_ASSERT(n_tokens <= tensor->ne[0] && tensor->ne[1] >= n_tokens);
+
+    const int64_t ne0 = tensor->ne[0];
+    std::vector<float> data_f32(ggml_nelements(tensor), -INFINITY);
+    std::vector<ggml_fp16_t> data_f16(ggml_nelements(tensor));
+    for (int64_t i3 = 0; i3 < tensor->ne[3]; ++i3) {
+        for (int64_t i2 = 0; i2 < tensor->ne[2]; ++i2) {
+            for (int64_t t = 0; t < n_tokens; ++t) {
+                float * row = data_f32.data() + ((i3*tensor->ne[2] + i2)*tensor->ne[1] + t)*ne0;
+                std::fill(row, row + ne0 - n_tokens + t + 1, 0.0f);
+            }
+        }
+    }
+    ggml_fp32_to_fp16_row(data_f32.data(), data_f16.data(), data_f16.size());
+    ggml_backend_tensor_set(tensor, data_f16.data(), 0, data_f16.size()*sizeof(ggml_fp16_t));
+}
+
 // KQ mask of a unified KV cache shared by n_seq sequences: the tokens are grouped by sequence and each token sees only
 // the cells of its own sequence. Cells are handed out like a unified cache fills up: long prefill runs of random
 // sequences first, then short decode runs that interleave the sequences.
@@ -8114,9 +8134,11 @@ struct test_flash_attn_ext : public test_case {
     const bool v_is_view_of_k;
     const int64_t n_kv_max;
     const int64_t n_seq; // > 1: mask of a unified KV cache shared by n_seq sequences
+    const bool causal;   // causal mask of a prompt batch at the end of the KV cells (prefill)
 
     std::string vars() override {
-        return VARS_TO_STR18(hsk, hsv, nh, nr23, kv, nb, mask, sinks, max_bias, logit_softcap, prec, type_K, type_V, permute, kv_view, v_is_view_of_k, n_kv_max, n_seq);
+        return VARS_TO_STR18(hsk, hsv, nh, nr23, kv, nb, mask, sinks, max_bias, logit_softcap, prec, type_K, type_V, permute, kv_view, v_is_view_of_k, n_kv_max, n_seq)
+            + (causal ? ",causal=1" : "");
     }
 
     double max_nmse_err() override {
@@ -8133,9 +8155,10 @@ struct test_flash_attn_ext : public test_case {
     test_flash_attn_ext(int64_t hsk = 128, int64_t hsv = 128, int64_t nh = 32, std::array<int64_t, 2> nr23 = {1, 1}, int64_t kv = 96, int64_t nb = 8,
                         bool mask = true, bool sinks = false, float max_bias = 0.0f, float logit_softcap = 0.0f, ggml_prec prec = GGML_PREC_F32,
                         ggml_type type_K = GGML_TYPE_F16, ggml_type type_V = GGML_TYPE_F16, std::array<int32_t, 4> permute = {0, 1, 2, 3},
-                        bool kv_view = true, bool v_is_view_of_k = false, int64_t n_kv_max = 0, int64_t n_seq = 1)
+                        bool kv_view = true, bool v_is_view_of_k = false, int64_t n_kv_max = 0, int64_t n_seq = 1, bool causal = false)
         : hsk(hsk), hsv(hsv), nh(nh), nr23(nr23), kv(kv), nb(nb), mask(mask), sinks(sinks), max_bias(max_bias), logit_softcap(logit_softcap), prec(prec),
-          type_K(type_K), type_V(type_V), permute(permute), kv_view(kv_view), v_is_view_of_k(v_is_view_of_k), n_kv_max(n_kv_max), n_seq(n_seq) {}
+          type_K(type_K), type_V(type_V), permute(permute), kv_view(kv_view), v_is_view_of_k(v_is_view_of_k), n_kv_max(n_kv_max), n_seq(n_seq),
+          causal(causal) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
         const int64_t hsk_padded = GGML_PAD(hsk, ggml_blck_size(type_K));
@@ -8208,7 +8231,9 @@ struct test_flash_attn_ext : public test_case {
                 // make the sink values more noticeable in order to trigger a test failure when the implementation is wrong
                 init_tensor_uniform(t, -10.0f, 10.0f);
             } else if (strcmp(t->name, "m") == 0) {
-                if (n_kv_max > 0) {
+                if (causal) {
+                    init_tensor_kq_mask_causal(t, nb);
+                } else if (n_kv_max > 0) {
                     init_tensor_kq_mask_sparse(t, n_kv_max);
                 } else if (n_seq > 1) {
                     init_tensor_kq_mask_unified(t, nb, n_seq);
@@ -11252,6 +11277,27 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 24576, 24, true, false, 0, 0, GGML_PREC_F32, types_KV.first, types_KV.second,
             {0, 1, 2, 3}, true, false, 0, 6));
     }
+    // quantized KV with large batches (prefill kernel: 128 (token, head) rows per block, split into chunks at depth)
+    for (ggml_type type_KV : {GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_Q8_0}) {
+        for (int64_t nb : {65, 200}) {
+            test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 1000, nb, true, false, 0, 0, GGML_PREC_F32, type_KV, type_KV));
+        }
+        test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 1000, 100, false, false, 0, 0, GGML_PREC_F32, type_KV, type_KV));
+        test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 4133, 512, true, true, 0, 0, GGML_PREC_F32, type_KV, type_KV));
+        test_cases.emplace_back(new test_flash_attn_ext(128, 128, 2, {8, 2}, 2048, 100, true, false, 0, 0, GGML_PREC_F32, type_KV, type_KV));
+        test_cases.emplace_back(new test_flash_attn_ext( 64,  64, 4, {4, 1}, 512, 96, true, true, 0, 0, GGML_PREC_F32, type_KV, type_KV));
+        test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 8192, 120, true, false, 0, 0, GGML_PREC_F32, type_KV, type_KV,
+            {0, 1, 2, 3}, true, false, 0, 6));
+    }
+    for (std::pair<ggml_type, ggml_type> types_KV : std::vector<std::pair<ggml_type, ggml_type>>{
+            {GGML_TYPE_Q8_0, GGML_TYPE_Q5_0}, {GGML_TYPE_Q5_1, GGML_TYPE_Q4_1}, {GGML_TYPE_Q4_0, GGML_TYPE_Q8_0}}) {
+        test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 1000, 200, true, false, 0, 0, GGML_PREC_F32, types_KV.first, types_KV.second));
+    }
+    // causal prompt batches at the end of the KV cells (most K/V tiles need no mask)
+    for (ggml_type type_KV : {GGML_TYPE_Q5_0, GGML_TYPE_Q8_0, GGML_TYPE_Q4_1}) {
+        test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 3000, 512, true, false, 0, 0, GGML_PREC_F32, type_KV, type_KV,
+            {0, 1, 2, 3}, true, false, 0, 1, true));
+    }
 
     // MLA shape: the V cache is a sub-view of the K cache, with quantized KV
     test_cases.emplace_back(new test_flash_attn_ext(576, 512, 1, {8, 1},  113,   1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, {0, 1, 2, 3}, true, true));
@@ -11818,6 +11864,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
                         types_KV.first, types_KV.second, {0, 1, 2, 3}, true, false, 0, n_seq));
                 }
             }
+        }
+    }
+
+    // Qwen3.8-27B prefill: one 1024 token ubatch (causal mask) at several KV depths
+    for (std::pair<ggml_type, ggml_type> types_KV : std::vector<std::pair<ggml_type, ggml_type>>{
+            {GGML_TYPE_F16, GGML_TYPE_F16}, {GGML_TYPE_Q5_0, GGML_TYPE_Q5_0}, {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0}}) {
+        for (int64_t kv : {4096, 32768, 131072}) {
+            test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, kv, 1024, true, false, 0, 0, GGML_PREC_F32,
+                types_KV.first, types_KV.second, {0, 1, 2, 3}, true, false, 0, 1, true));
         }
     }
 

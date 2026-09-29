@@ -1,4 +1,4 @@
-# FlashAttention for quantized KV at decode and verify batch sizes
+# FlashAttention for quantized KV (decode, verify and prefill)
 
 `engine/ggml/src/ggml-cuda/fattn-mma-q.cuh` is a CUDA FlashAttention kernel for quantized K/V (q4_0, q4_1, q5_0,
 q5_1, q8_0, K and V types independent) and up to 64 query tokens: decode, speculative verify (MTP n=3 gives
@@ -36,12 +36,35 @@ In a unified KV cache every query also went over all cells of all sequences.
 - Tokens are tiled 8 at a time, so with n_q in {1, 2, 4, 8} tokens per sequence no sequence spans two tiles
   (its cells are read once). Two sequences in one tile cost compute on masked rows, not bandwidth.
 
+## Prefill (more than 64 query tokens)
+
+`flash_attn_ext_mma_q_pf` takes the large batches, which before went to the f16 MMA kernel after converting all of
+K/V to f16 (a pool buffer of n_kv x 4 KB at 4 KV heads x D 256, and every cell of a unified cache was attended,
+including the cells of other sequences):
+
+- **128 (token, head) rows per block** (21 tokens x 6 heads for GQA 6), 16 warps. Two warps share 16 rows: each
+  computes int8 KQ for half of the 32 cells of a tile, they exchange row maxima and P (f16) through shared memory
+  with a named barrier per pair, and each computes VKQ for half of the dimensions. The f32 accumulators are D/4
+  registers per thread, so the kernel runs at 128 registers with 16 warps per SM.
+- **K/V are unpacked once per block and tile**: the raw rows of a 32-cell tile are copied with cp.async one tile
+  ahead, then K becomes an int8 tile plus float scales (B operand of `mma.m16n8k32` via `ldmatrix`), V an f16 tile
+  (B operand of `mma.m16n8k16` via `ldmatrix.trans`, f16 accumulation within the 32-cell tile, f32 across tiles).
+- KQ is in log2 units (log2(e) folded into the Q scale before quantizing), so the softmax uses `ex2` directly.
+- **Masked tiles**: the visibility pre-pass marks each 64-cell tile per token tile as invisible (skipped),
+  masked (mask values applied) or zero-mask (no mask read). In a causal prefill only the diagonal tiles read the
+  mask; in a unified cache the other sequences' cells are skipped.
+- **Chunks**: the cells are split so that the waves of blocks (one per SM) are full (at most 16 chunks of at least
+  2048 cells); the partial results are merged by `flash_attn_ext_mma_q_combine`.
+
+Measured: bench/results/prefill-depth/REPORT.md.
+
 Dispatch (`ggml_cuda_fattn_mma_q_applies`): NVIDIA, cc >= 8.0, quantized K and V with a compiled instance
 (`GGML_CUDA_FA_QUANTS`), no ALiBi, no logit softcap, GQA ratio up to what fits into shared memory,
-K/V/Q strides aligned, and at most 64 query tokens. Otherwise the previous kernels are used unchanged.
+K/V/Q strides aligned; any number of query tokens (more than 64: the prefill kernel).
 
 ## Numerics
 
-Q is quantized to 8 bit per 32 values for KQ, the same as the vector kernel does for quantized K. P and V are f16.
-`test-backend-ops -o FLASH_ATTN_EXT` passes (all 4027 cases, plus the new cases for GQA 6/8/16, mixed K/V types,
-sinks, and unified KV masks).
+Q is quantized to 8 bit per 32 values for KQ, the same as the vector kernel does for quantized K. P and V are f16
+(VKQ accumulated in f16 within a K/V tile, f32 across tiles). `test-backend-ops -o FLASH_ATTN_EXT` passes (all cases,
+plus the cases for GQA 6/8/16, mixed K/V types, sinks, unified KV masks, and prefill batches with causal masks).
+The KL divergence against the Q8_0 reference (eval/kld) is in the prefill report.

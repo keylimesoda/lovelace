@@ -1,0 +1,98 @@
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.1.2
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+model has unused tensor blk.64.attn_norm.weight (size = 20480 bytes) -- ignoring
+model has unused tensor blk.64.post_attention_norm.weight (size = 20480 bytes) -- ignoring
+model has unused tensor blk.64.attn_q.weight (size = 24084480 bytes) -- ignoring
+model has unused tensor blk.64.attn_k.weight (size = 2785280 bytes) -- ignoring
+model has unused tensor blk.64.attn_v.weight (size = 3604480 bytes) -- ignoring
+model has unused tensor blk.64.attn_output.weight (size = 16711680 bytes) -- ignoring
+model has unused tensor blk.64.attn_q_norm.weight (size = 1024 bytes) -- ignoring
+model has unused tensor blk.64.attn_k_norm.weight (size = 1024 bytes) -- ignoring
+model has unused tensor blk.64.ffn_gate.weight (size = 34119680 bytes) -- ignoring
+model has unused tensor blk.64.ffn_down.weight (size = 34119680 bytes) -- ignoring
+model has unused tensor blk.64.ffn_up.weight (size = 34119680 bytes) -- ignoring
+model has unused tensor blk.64.nextn.eh_proj.weight (size = 27852800 bytes) -- ignoring
+model has unused tensor blk.64.nextn.enorm.weight (size = 20480 bytes) -- ignoring
+model has unused tensor blk.64.nextn.hnorm.weight (size = 20480 bytes) -- ignoring
+model has unused tensor blk.64.nextn.shared_head_norm.weight (size = 20480 bytes) -- ignoring
+load_tensors:        CUDA0 model buffer size = 11653.07 MiB
+load_tensors:    CUDA_Host model buffer size =   644.14 MiB
+llama_context:  CUDA_Host  output buffer size =     0.95 MiB
+llama_kv_cache:      CUDA0 KV buffer size =  3734.50 MiB
+llama_memory_recurrent:      CUDA0 RS buffer size =   149.62 MiB
+sched_reserve:      CUDA0 compute buffer size =  1215.33 MiB
+sched_reserve:  CUDA_Host compute buffer size =   759.34 MiB
+compare: 24 of 24 base windows, n_ctx 173824, base topk 64 (/home/ric/models/ref/Qwen3.8-27B-Q8_0.gguf)
+[1/24] 32k/2026-09-27T08-15-02_01a0e1ee/t16: depth 30968, scored 500, 12.2s (2574 tok/s)
+[2/24] 32k/2026-09-27T05-25-31_01a0e153/t7: depth 31272, scored 203, 11.8s (2667 tok/s)
+[3/24] 32k/2026-09-27T08-18-54_01a0e1f2/t16: depth 31959, scored 276, 12.3s (2631 tok/s)
+[4/24] 32k/2026-09-26T09-54-32_01a0dd23/t19: depth 32222, scored 1024, 13.9s (2384 tok/s)
+[5/24] 32k/2026-09-26T04-24-42_01a0dbf5/t11: depth 33088, scored 1024, 14.3s (2378 tok/s)
+[6/24] 32k/2026-09-25T06-50-05_01a0d754/t10: depth 33140, scored 94, 12.7s (2612 tok/s)
+[7/24] 64k/2026-09-26T09-53-08_01a0dd22/t371: depth 60235, scored 551, 25.7s (2366 tok/s)
+[8/24] 64k/2026-09-26T04-24-42_01a0dbf5/t18: depth 60551, scored 698, 25.7s (2385 tok/s)
+[9/24] 64k/2026-09-27T08-42-53_01a0e208/t144: depth 62148, scored 614, 26.3s (2390 tok/s)
+[10/24] 64k/2026-09-26T09-53-08_01a0dd22__priorart-puretype/t26: depth 62226, scored 1024, 27.0s (2342 tok/s)
+[11/24] 64k/2026-09-26T09-53-08_01a0dd22__priorart-rejhon/t18: depth 64713, scored 481, 27.3s (2392 tok/s)
+[12/24] 64k/2026-09-25T07-15-46_01a0d76b/t42: depth 67620, scored 962, 29.6s (2320 tok/s)
+[13/24] 128k/2026-09-26T02-34-37_01a0db90/t63: depth 120804, scored 214, 58.3s (2075 tok/s)
+[14/24] 128k/2026-09-25T07-15-46_01a0d76b/t79: depth 125940, scored 125, 60.7s (2078 tok/s)
+[15/24] 128k/2026-09-25T05-26-18_01a0d707/t50: depth 127481, scored 1024, 63.7s (2017 tok/s)
+[16/24] 128k/2026-09-25T05-41-06_01a0d714/t105: depth 127732, scored 327, 63.3s (2025 tok/s)
+[17/24] 128k/2026-09-26T02-50-53_01a0db9f/t46: depth 128655, scored 1024, 64.8s (2003 tok/s)
+[18/24] 128k/2026-09-26T09-53-08_01a0dd22/t66: depth 131753, scored 110, 64.4s (2048 tok/s)
+[19/24] 170k/2026-09-26T02-34-37_01a0db90/t94: depth 162708, scored 248, 85.8s (1900 tok/s)
+[20/24] 170k/2026-09-25T07-15-46_01a0d76b/t115: depth 164966, scored 453, 88.1s (1877 tok/s)
+[21/24] 170k/2026-09-26T09-53-08_01a0dd22__priorart-panel-layout/t82: depth 165269, scored 211, 89.0s (1858 tok/s)
+[22/24] 170k/2026-09-26T04-24-42_01a0dbf5/t93: depth 168003, scored 129, 90.0s (1868 tok/s)
+[23/24] 170k/2026-09-26T09-53-08_01a0dd22/t293: depth 168845, scored 340, 90.6s (1868 tok/s)
+[24/24] 170k/2026-09-26T02-50-53_01a0db9f/t73: depth 173121, scored 468, 94.1s (1844 tok/s)
+compare: wrote results/wq-iq4xs-q5_0-pf-v6.json.part
+
+/home/ric/models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf  vs base /home/ric/models/ref/Qwen3.8-27B-Q8_0.gguf  (ctk q5_0, ctv q5_0, 1151s)
+
+window                                                           pos   KL mean    KL med    KL p99  KL p99.9  top1 %  NLL ref    NLL q      dNLL   p_tail
+32k/2026-09-27T08-15-02_01a0e1ee/t16                             500   0.01031   0.00198    0.0949    0.1778   97.00   0.4766   0.4755  -0.00111  0.00039
+32k/2026-09-27T05-25-31_01a0e153/t7                              203   0.01391   0.00032    0.1308    0.2059   94.58   0.4351   0.4379  +0.00281  0.00028
+32k/2026-09-27T08-18-54_01a0e1f2/t16                             276   0.01098   0.00065    0.0966    0.1897   97.46   0.3349   0.3458  +0.01082  0.00021
+32k/2026-09-26T09-54-32_01a0dd23/t19                            1024   0.01942   0.00518    0.1576    0.5137   95.31   0.6183   0.6236  +0.00533  0.00080
+32k/2026-09-26T04-24-42_01a0dbf5/t11                            1024   0.02674   0.00375    0.2577    1.1321   94.14   0.6598   0.6860  +0.02626  0.00232
+32k/2026-09-25T06-50-05_01a0d754/t10                              94   0.01031   0.00002    0.1449    0.2792  100.00   0.2973   0.2967  -0.00065  0.00038
+64k/2026-09-26T09-53-08_01a0dd22/t371                            551   0.01566   0.00292    0.1306    0.2348   92.20   0.6314   0.6455  +0.01410  0.00078
+64k/2026-09-26T04-24-42_01a0dbf5/t18                             698   0.00681   0.00005    0.1031    0.1242   97.85   0.2510   0.2534  +0.00246  0.00101
+64k/2026-09-27T08-42-53_01a0e208/t144                            614   0.01072   0.00001    0.1867    0.2844   97.39   0.2238   0.2288  +0.00500  0.00027
+64k/2026-09-26T09-53-08_01a0dd22__priorart-puretype/t26         1024   0.01906   0.00058    0.1989    0.8727   97.07   0.3726   0.3765  +0.00391  0.00063
+64k/2026-09-26T09-53-08_01a0dd22__priorart-rejhon/t18            481   0.01096   0.00004    0.1303    0.5067   96.67   0.2284   0.2228  -0.00562  0.00054
+64k/2026-09-25T07-15-46_01a0d76b/t42                             962   0.01909   0.00212    0.1924    0.3039   94.39   0.4893   0.4997  +0.01042  0.00071
+128k/2026-09-26T02-34-37_01a0db90/t63                            214   0.01212   0.00001    0.1476    0.2068   95.79   0.2971   0.3198  +0.02271  0.00044
+128k/2026-09-25T07-15-46_01a0d76b/t79                            125   0.00774   0.00001    0.1042    0.1225   98.40   0.3015   0.2939  -0.00767  0.00021
+128k/2026-09-25T05-26-18_01a0d707/t50                           1024   0.02876   0.00385    0.2870    1.3252   93.85   0.4862   0.5131  +0.02684  0.00062
+128k/2026-09-25T05-41-06_01a0d714/t105                           327   0.01586   0.00275    0.1015    0.1289   95.41   0.4769   0.4980  +0.02113  0.00062
+128k/2026-09-26T02-50-53_01a0db9f/t46                           1024   0.02381   0.00980    0.1631    0.2889   93.55   0.7270   0.7452  +0.01820  0.00077
+128k/2026-09-26T09-53-08_01a0dd22/t66                            110   0.01201   0.00019    0.1316    0.1566   96.36   0.2823   0.2783  -0.00403  0.00033
+170k/2026-09-26T02-34-37_01a0db90/t94                            248   0.01172   0.00002    0.1473    0.3021   98.39   0.2163   0.2143  -0.00204  0.00014
+170k/2026-09-25T07-15-46_01a0d76b/t115                           453   0.01155   0.00086    0.1172    0.3290   97.57   0.4015   0.3974  -0.00402  0.00027
+170k/2026-09-26T09-53-08_01a0dd22__priorart-panel-layout/t82     211   0.00364   0.00000    0.0541    0.1741   99.05   0.1060   0.1023  -0.00370  0.00006
+170k/2026-09-26T04-24-42_01a0dbf5/t93                            129   0.00828   0.00003    0.0902    0.1615   97.67   0.4176   0.4271  +0.00950  0.00068
+170k/2026-09-26T09-53-08_01a0dd22/t293                           340   0.01139   0.00037    0.1458    0.2564   96.76   0.4005   0.3945  -0.00594  0.00010
+170k/2026-09-26T02-50-53_01a0db9f/t73                            468   0.01818   0.00192    0.1483    0.4478   95.30   0.5732   0.5824  +0.00925  0.00150
+
+bucket       pos   KL mean    KL med    KL p99  KL p99.9  top1 %  NLL ref    NLL q      dNLL   p_tail
+32k         3121   0.01898   0.00299    0.1850    0.5571   95.48   0.5626   0.5739  +0.01131  0.00113
+64k         4330   0.01458   0.00024    0.1682    0.4118   95.98   0.3747   0.3803  +0.00552  0.00067
+128k        2824   0.02263   0.00387    0.1992    0.5697   94.37   0.5420   0.5620  +0.02000  0.00063
+170k        1849   0.01209   0.00016    0.1400    0.3169   97.13   0.3873   0.3875  +0.00023  0.00054
+overall    12124   0.01721   0.00111    0.1784    0.5110   95.65   0.4640   0.4735  +0.00958  0.00076

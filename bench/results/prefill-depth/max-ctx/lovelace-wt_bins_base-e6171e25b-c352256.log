@@ -1,0 +1,31 @@
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.1.2
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+0.00.066.697 I srv  llama_server: initializing ...
+0.00.066.711 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.066.958 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.069.309 I srv    load_model: loading model '/models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf'
+0.00.648.297 W common_fit_params: failed to fit params to free device memory: n_gpu_layers already set by user to 99, abort
+0.01.817.130 W llama_context: n_ctx_seq (352256) > n_ctx_train (262144) -- possible training context overflow
+0.01.948.228 I cmn          init: llama threadpool init, n_threads = 16
+0.01.995.395 I common_speculative_init_result: creating MTP draft context against the target model '/models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf'
+0.01.995.460 W llama_context: n_ctx_seq (352256) > n_ctx_train (262144) -- possible training context overflow
+0.01.998.334 E ggml_backend_cuda_buffer_type_alloc_buffer: allocating 473.00 MiB on device 0: cudaMalloc failed: out of memory
+0.01.998.337 E alloc_tensor_range: failed to allocate CUDA0 buffer of size 495976448
+0.01.998.692 E llama_init_from_model: failed to initialize the context: failed to allocate buffer for kv cache
+0.01.998.695 E common_speculative_init_result: failed to create MTP context
+0.01.998.706 E srv    load_model: failed to create MTP context
+0.01.998.711 I srv    operator(): operator(): cleaning up before exit...
+0.01.999.423 E srv  llama_server: exiting due to model loading error
