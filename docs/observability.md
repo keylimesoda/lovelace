@@ -65,8 +65,11 @@ VramBudget (from ggml backend memory breakdown, captured once after model load):
 ```
 request: RequestInfo
 queue_wait_ms: number              // arrival at HTTP handler -> slot launch
-wait_reason: "none" | "slot" | "kv"   // KV budget: first reason the request waited for admission (no idle slot / no KV cells)
+wait_reason: "none" | "slot" | "session" | "kv" | "disk" | "lane"   // KV budget: first reason the request waited for admission
+                                   // (no idle slot / another request of its session runs / no KV cells / its mirror is read back
+                                   //  from disk / a deep cold prefill waits for the prefill lane)
 n_unparked_tokens: number          // tokens of a parked session restored from host memory at launch (0 = none)
+sched: SchedInfo | null            // KV budget queue (scheduling v2); null for a task that did not go through it
 ```
 RequestInfo:
 ```
@@ -74,6 +77,13 @@ RequestInfo:
   task_type: "completion" | "infill" | "embedding" | "rerank",
   endpoint: "native" | "oai_chat" | "oai_cmpl" | "oai_resp" | "oai_asr" | "oai_embd" | "anthropic",
   stream: boolean, n_prompt_tokens: number, n_predict: number /* -1 unlimited */, n_ctx_slot: number }
+```
+SchedInfo:
+```
+{ queue_wait_ms: number, wait_reason: string,   // as above
+  n_uncached: number,     // prompt tokens neither the session's cells nor its mirror held at admission (the queue order key)
+  lane: boolean,          // admitted into the prefill lane (n_uncached > --sched-lane-tokens)
+  aged: boolean }         // admitted as overdue: waited --sched-age-bound or longer
 ```
 
 ### request_done  (emitted when the slot is released: finished, cancelled, or failed mid-flight)
@@ -88,9 +98,10 @@ result: {
   n_completion_tokens: number,    // generated tokens committed
   n_ctx_used: number,             // slot sequence length at release
   n_unparked_tokens: number,      // as in request_start
-  wait_reason: "none" | "slot" | "kv",
+  wait_reason: "none" | "slot" | "session" | "kv" | "disk" | "lane",
   error: string | null
 }
+sched: SchedInfo | null
 timings_ms: {
   queue_wait: number,
   prefill: number,                // slot prompt processing wall time
@@ -177,6 +188,19 @@ scheduler: {
     enabled: boolean, queue_waiting: number, slots_preempted: number,
     gen_reserve: number, headroom: number, prefill_chunk_gen: number,   // --kv-budget-gen, --kv-budget-headroom, --prefill-chunk-gen
     timeslice: number,                                                  // --kv-timeslice seconds, 0 = run to completion
+    scheduler: {                                                        // scheduling v2 (docs/design/session-store.md)
+      age_bound_s: number, lane_tokens: number,                         // --sched-age-bound, --sched-lane-tokens
+      queue: [{ id_task, session_id, n_tokens, n_uncached, lane: boolean, wait_s, overdue: boolean,
+                wait_reason: string /* first */, wait_now: string /* at the last admission attempt */ }],   // admission order
+      next_session: number,         // session of the next request in line waiting for cells or a slot (prefetched), 0 = none
+      max_wait_s: number,           // the longest queue wait seen: admitted requests and the oldest waiting one (starvation check)
+      max_wait_admitted_s, oldest_waiting_s, mean_wait_s,
+      admits, admits_aged, admits_lane,
+      admits_past_earlier: number,  // admitted while an earlier request kept waiting (cheapest first, lane)
+      starvation_preempts: number,  // slots paused for a request waiting twice the age bound for cells
+      lane: { busy: boolean, id_slot, session_id, remaining_tokens,    // the deep prefill holding the lane (null when free)
+              busy_seconds: number, occupancy: number /* busy_seconds / scheduler uptime */ }
+    },
     totals: { parks, park_drops, unparks, preempts, resumes, grows, park_bytes, unpark_bytes, park_seconds, unpark_seconds,
               park_host_seconds, unpark_host_seconds,
               park_gbps, unpark_gbps, waited_slot, waited_kv, rollback_fallbacks, recompute_tokens, kv_overflows }
@@ -208,7 +232,7 @@ memory: {
 }
 slots: [{ id, state: "idle"|"started"|"processing_prompt"|"done_prompt"|"generating"|"wait_other"|"preempted"|"recompute",
           is_processing: boolean, n_ctx: number, n_ctx_used: number, n_reserved: number, id_task: number | null,
-          wait_reason: "none"|"slot"|"kv"|null, n_unparked_tokens: number,
+          wait_reason: "none"|"slot"|"session"|"kv"|"disk"|"lane"|null, n_unparked_tokens: number,
           n_prompt_tokens: number, n_cached_tokens: number, n_prefill_tokens: number, n_decoded: number, speculative: boolean }]
 events: { jsonl_enabled: boolean, jsonl_path: string | null, subscribers: number, records_emitted: number, records_dropped: number }
 ```

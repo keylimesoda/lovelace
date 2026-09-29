@@ -1787,7 +1787,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"--kv-budget"},
         {"--no-kv-budget"},
         string_format("with --kv-unified: admit a task only when its KV reservation fits, park idle slots to the prompt cache "
-            "to make room and queue tasks FIFO instead of failing on a full cache (default: %s)", params.kv_budget ? "enabled" : "disabled"),
+            "to make room and queue tasks (cheapest uncached work first, with aging) instead of failing on a full cache (default: %s)", params.kv_budget ? "enabled" : "disabled"),
         [](common_params & params, bool value) {
             params.kv_budget = value;
         }
