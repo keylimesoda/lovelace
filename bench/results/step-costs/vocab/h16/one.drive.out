@@ -1,0 +1,3 @@
+{"prefill": 0, "target": 64000, "rec_depth": 63948, "session": "2026-09-27T08-18-54_01a0e1f2.jsonl", "prompt_tokens": 61500, "wall_s": 18.2}
+{"capture_s": 2.0, "stream_events_in_capture": 212, "approx_aggregate_tps": 106.0}
+{"req": 0, "prompt_n": 4, "cache_n": 61496, "predicted_n": 256, "decode_tps": 130.66396252045146, "draft_n": 235, "draft_accepted": 176, "acceptance": 0.749}

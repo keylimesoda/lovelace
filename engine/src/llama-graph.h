@@ -21,6 +21,15 @@ struct llama_cparams;
 struct llama_layer;
 struct llama_prec_policy;
 
+// MTP draft LM head restricted to a subset of the vocabulary (llama_set_draft_vocab())
+struct llama_draft_head {
+    const ggml_tensor * src = nullptr; // the full LM head the rows were gathered from
+
+    ggml_tensor * w   = nullptr; // [n_embd, n_draft] rows of src
+    ggml_tensor * s   = nullptr; // scale of w: null, src's scalar scale, or its per-row scale gathered
+    ggml_tensor * ids = nullptr; // I32 [n_draft], token id of each row
+};
+
 struct llama_memory_context_i;
 
 class llama_kv_cache_context;
@@ -347,8 +356,10 @@ public:
     ggml_tensor * self_k_idxs = nullptr; // I64 [n_batch]
     ggml_tensor * self_v_idxs = nullptr; // I64 [n_batch] or [n_batch*n_embd_v_gqa]
 
-    ggml_tensor * self_kq_mask     = nullptr; // F32/F16 [n_kv, n_batch/n_stream, 1, n_stream]
+    ggml_tensor * self_kq_mask     = nullptr; // F32/F16 [n_kv, n_batch/n_stream, 1, n_stream] (input, or ggml_kq_mask(keys, rows))
     ggml_tensor * self_kq_mask_cnv = nullptr; //         [n_kv, n_batch/n_stream, 1, n_stream]
+    ggml_tensor * self_kq_keys     = nullptr; // I32     [n_kv, 1, 1, n_stream]                  (only for the device-built mask)
+    ggml_tensor * self_kq_rows     = nullptr; // I32     [2, n_batch/n_stream, 1, n_stream]
 
     // note: assumes v_rot^2 == I
     ggml_tensor * self_k_rot = nullptr;
@@ -793,6 +804,7 @@ struct llm_graph_params {
     const llama_cross            * cross;
 
     const llama_prec_policy * prec_policy = nullptr;
+    const llama_draft_head  * draft_head  = nullptr;
 
     std::map<llama_seq_id, llama_sampler *> samplers;
 
@@ -875,6 +887,10 @@ struct llm_graph_params {
 
         // TODO: https://github.com/ggml-org/llama.cpp/pull/24340#discussion_r3448035248
         if (cparams.nextn_layer_offset != other.cparams.nextn_layer_offset) {
+            return false;
+        }
+
+        if (draft_head != other.draft_head) {
             return false;
         }
 
@@ -1035,6 +1051,7 @@ struct llm_graph_context {
     const llama_cross            * cross;
 
     const llama_prec_policy * prec_policy;
+    const llama_draft_head  * draft_head;
 
     std::map<llama_seq_id, llama_sampler *> samplers;
 
@@ -1063,6 +1080,13 @@ struct llm_graph_context {
               ggml_tensor * w,
               ggml_tensor * cur,
               ggml_tensor * w_s = nullptr) const;
+
+    // LM head of an MTP draft graph: with a draft vocabulary set and head_w its source, only its rows are computed and
+    // scattered into a full-vocabulary row (-INF elsewhere); otherwise build_lora_mm(head_w, cur, head_s)
+    ggml_tensor * build_mtp_lm_head(
+              ggml_tensor * cur,
+              ggml_tensor * head_w,
+              ggml_tensor * head_s) const;
 
     // do mat_mul_id, while optionally apply lora and per-expert scale
     ggml_tensor * build_lora_mm_id(

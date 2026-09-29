@@ -19,6 +19,7 @@
 #include <iomanip>
 #include <map>
 #include <cinttypes>
+#include <fstream>
 
 #define SPC_DBG(fmt, ...) LOG_DBG("spec %12.*s: " fmt, 12, __func__, __VA_ARGS__)
 #define SPC_TRC(fmt, ...) LOG_TRC("spec %12.*s: " fmt, 12, __func__, __VA_ARGS__)
@@ -2602,6 +2603,25 @@ common_speculative_init_result::common_speculative_init_result(
         if (ctx_dft == nullptr) {
             LOG_ERR("%s: failed to create MTP context\n", __func__);
             return;
+        }
+
+        const std::string & vocab_file = params.speculative.draft.vocab_file;
+        if (!vocab_file.empty()) {
+            std::vector<llama_token> ids;
+            std::ifstream f(vocab_file);
+            std::string line;
+            while (f && std::getline(f, line)) {
+                const size_t b = line.find_first_not_of(" \t\r");
+                if (b == std::string::npos || line[b] == '#') {
+                    continue;
+                }
+                ids.push_back((llama_token) std::stol(line.substr(b)));
+            }
+            if (!f.eof() || ids.empty() || !llama_set_draft_vocab(ctx_dft, ids.data(), (int32_t) ids.size())) {
+                LOG_ERR("%s: failed to apply the draft vocabulary '%s'\n", __func__, vocab_file.c_str());
+                llama_free(ctx_dft);
+                return;
+            }
         }
 
         pimpl->context.reset(ctx_dft);

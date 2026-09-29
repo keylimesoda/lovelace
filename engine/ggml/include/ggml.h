@@ -583,6 +583,7 @@ extern "C" {
         GGML_OP_GATED_DELTA_NET,
         GGML_OP_GATED_DELTA_NET_RR,
         GGML_OP_SSM_CONV_FOLD,
+        GGML_OP_KQ_MASK,
         GGML_OP_LIGHTNING_INDEXER,
         GGML_OP_DSV4_HC_COMB,
         GGML_OP_DSV4_HC_PRE,
@@ -2703,6 +2704,20 @@ extern "C" {
             struct ggml_tensor  * rs,
             int32_t               K,
             int32_t               dst_row0);
+
+    // attention (KQ) mask built from compact per-cell and per-row data, so that only those are uploaded
+    //
+    //   keys : I32 [n_kv, 1, 1, n_stream]   -- per KV cell: bits 0..23 its position, bits 24..31 the set of row
+    //                                          sequences that see the cell (0: no row sees it)
+    //   rows : I32 [2, n_rows, 1, n_stream] -- per row: { its sequence bit (one of bits 24..31), last visible position }
+    //
+    // result: [n_kv, n_rows, 1, n_stream] of type F16 or F32,
+    //   0 where (keys[j] & rows[i][0]) != 0 && (keys[j] & 0xFFFFFF) <= rows[i][1], -INFINITY elsewhere
+    GGML_API struct ggml_tensor * ggml_kq_mask(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * keys,
+            struct ggml_tensor  * rows,
+            enum ggml_type        type);
 
     // DSA lightning indexer
     //

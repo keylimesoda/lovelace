@@ -26,17 +26,36 @@
 
 // dedup helpers
 
+// with keys/rows given, the mask is built on the device by ggml_kq_mask() from compact inputs when the cache allows
+// it (llama_kv_mask_on_device()); *keys stays nullptr when the mask is a host-filled input
 static ggml_tensor * build_attn_inp_kq_mask(
         ggml_context * ctx,
         const llama_kv_cache_context * mctx,
         const llama_ubatch & ubatch,
-        const llama_cparams & cparams) {
+        const llama_cparams & cparams,
+        ggml_tensor ** keys = nullptr,
+        ggml_tensor ** rows = nullptr) {
     const auto n_kv     = mctx->get_n_kv();
     const auto n_tokens = ubatch.n_tokens;
     const auto n_stream = cparams.kv_unified ? 1 : ubatch.n_seqs_unq;
 
     // flash attention requires an f16 mask
     const auto type = cparams.flash_attn ? GGML_TYPE_F16 : GGML_TYPE_F32;
+
+    if (keys && mctx->kq_mask_on_device(ubatch, n_stream, cparams.causal_attn)) {
+        *keys = ggml_new_tensor_4d(ctx, GGML_TYPE_I32, n_kv, 1, 1, n_stream);
+        ggml_set_input(*keys);
+        ggml_set_name(*keys, "attn_inp_kq_mask_keys");
+
+        *rows = ggml_new_tensor_4d(ctx, GGML_TYPE_I32, 2, n_tokens/n_stream, 1, n_stream);
+        ggml_set_input(*rows);
+        ggml_set_name(*rows, "attn_inp_kq_mask_rows");
+
+        ggml_tensor * res = ggml_kq_mask(ctx, *keys, *rows, type);
+        ggml_set_name(res, "attn_inp_kq_mask");
+
+        return res;
+    }
 
     ggml_tensor * res = ggml_new_tensor_4d(ctx, type, n_kv, n_tokens/n_stream, 1, n_stream);
     ggml_set_input(res);
@@ -62,6 +81,40 @@ static bool can_reuse_kq_mask(
     res &= (kq_mask->ne[3] == n_stream);
 
     return res;
+}
+
+// for a mask from build_attn_inp_kq_mask() with keys/rows: the host/device choice is part of the reuse key
+static bool can_reuse_kq_mask(
+        ggml_tensor * kq_mask,
+        ggml_tensor * kq_keys,
+        const llama_kv_cache_context * mctx,
+        const llama_ubatch & ubatch,
+        const llama_cparams & cparams) {
+    const auto n_stream = cparams.kv_unified ? 1 : ubatch.n_seqs_unq;
+
+    bool res = can_reuse_kq_mask(kq_mask, mctx, ubatch, cparams);
+
+    res &= (kq_keys != nullptr) == mctx->kq_mask_on_device(ubatch, n_stream, cparams.causal_attn);
+
+    return res;
+}
+
+static void set_input_kq_mask(
+        const llama_kv_cache_context * mctx,
+        ggml_tensor * kq_mask,
+        ggml_tensor * kq_keys,
+        ggml_tensor * kq_rows,
+        const llama_ubatch * ubatch,
+        bool causal_attn) {
+    // the mask inputs are left unallocated when the graph only stores K/V without attending
+    // (e.g. DFlash's KV-injection pass)
+    if (kq_keys) {
+        if (kq_keys->buffer) {
+            mctx->set_input_kq_mask_keys(kq_keys, kq_rows, ubatch, causal_attn);
+        }
+    } else if (kq_mask && kq_mask->buffer) {
+        mctx->set_input_kq_mask(kq_mask, ubatch, causal_attn);
+    }
 }
 
 // impl
@@ -491,11 +544,7 @@ void llm_graph_input_attn_kv::set_input(const llama_ubatch * ubatch) {
     mctx->set_input_k_idxs(self_k_idxs, ubatch);
     mctx->set_input_v_idxs(self_v_idxs, ubatch);
 
-    // the mask is left unallocated when the graph only stores K/V without attending
-    // (e.g. DFlash's KV-injection pass)
-    if (self_kq_mask && self_kq_mask->buffer) {
-        mctx->set_input_kq_mask(self_kq_mask, ubatch, cparams.causal_attn);
-    }
+    set_input_kq_mask(mctx, self_kq_mask, self_kq_keys, self_kq_rows, ubatch, cparams.causal_attn);
 
     if (self_k_rot && self_k_rot->buffer) {
         mctx->set_input_k_rot(self_k_rot);
@@ -516,7 +565,7 @@ bool llm_graph_input_attn_kv::can_reuse(const llm_graph_params & params) {
     res &= self_k_idxs->ne[0] == params.ubatch.n_tokens;
   //res &= self_v_idxs->ne[0] == params.ubatch.n_tokens; // TODO: need to move this to the unified cache and check there
 
-    res &= can_reuse_kq_mask(self_kq_mask, mctx, params.ubatch, params.cparams);
+    res &= can_reuse_kq_mask(self_kq_mask, self_kq_keys, mctx, params.ubatch, params.cparams);
 
     return res;
 }
@@ -1110,7 +1159,7 @@ void llm_graph_input_mem_hybrid::set_input(const llama_ubatch * ubatch) {
     mctx->get_attn()->set_input_k_idxs(inp_attn->self_k_idxs, ubatch);
     mctx->get_attn()->set_input_v_idxs(inp_attn->self_v_idxs, ubatch);
 
-    mctx->get_attn()->set_input_kq_mask(inp_attn->self_kq_mask, ubatch, cparams.causal_attn);
+    set_input_kq_mask(mctx->get_attn(), inp_attn->self_kq_mask, inp_attn->self_kq_keys, inp_attn->self_kq_rows, ubatch, cparams.causal_attn);
 
     if (inp_attn->self_k_rot) {
         mctx->get_attn()->set_input_k_rot(inp_attn->self_k_rot);
@@ -1145,7 +1194,7 @@ bool llm_graph_input_mem_hybrid::can_reuse(const llm_graph_params & params) {
     res &= inp_attn->self_k_idxs->ne[0] == params.ubatch.n_tokens;
   //res &= inp_attn->self_v_idxs->ne[0] == params.ubatch.n_tokens; // TODO: need to move this to the unified cache and check there
 
-    res &= can_reuse_kq_mask(inp_attn->self_kq_mask, mctx->get_attn(), params.ubatch, params.cparams);
+    res &= can_reuse_kq_mask(inp_attn->self_kq_mask, inp_attn->self_kq_keys, mctx->get_attn(), params.ubatch, params.cparams);
 
     res &= inp_rs->s_copy->ne[0] == mctx->get_recr()->get_n_rs();
 
@@ -1522,6 +1571,7 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     mctx             (params.mctx),
     cross            (params.cross),
     prec_policy      (params.prec_policy),
+    draft_head       (params.draft_head),
     samplers         (params.samplers),
     cb_func          (params.cb),
     res              (params.res),
@@ -1577,6 +1627,33 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     }
 
     return res;
+}
+
+ggml_tensor * llm_graph_context::build_mtp_lm_head(
+          ggml_tensor * cur,
+          ggml_tensor * head_w,
+          ggml_tensor * head_s) const {
+    bool use_draft = draft_head && draft_head->src == head_w;
+    for (const auto & lora : *loras) {
+        use_draft &= lora.first->get_weight(head_w) == nullptr;
+    }
+    if (!use_draft) {
+        return build_lora_mm(head_w, cur, head_s);
+    }
+
+    const int64_t n_vocab = head_w->ne[1];
+    const int64_t n_draft = draft_head->w->ne[1];
+    const int64_t n_out   = cur->ne[1];
+
+    ggml_tensor * logits = build_lora_mm(draft_head->w, cur, draft_head->s); // [n_draft, n_out]
+
+    // every consumer (logits readback, CPU and backend samplers) keeps the [n_vocab, n_out] layout: tokens outside the
+    // draft vocabulary get -INF, so they are never drafted. ggml_pad only provides the shape (fill overwrites it).
+    ggml_tensor * full = ggml_fill_inplace(ctx0, ggml_pad(ctx0, logits, n_vocab - n_draft, 0, 0, 0), -INFINITY);
+    full = ggml_set_rows(ctx0, ggml_reshape_3d(ctx0, full, 1, n_vocab, n_out),
+            ggml_reshape_3d(ctx0, logits, 1, n_draft, n_out), draft_head->ids);
+
+    return ggml_reshape_2d(ctx0, full, n_vocab, n_out);
 }
 
 ggml_tensor * llm_graph_context::build_lora_mm_id(
@@ -2871,7 +2948,7 @@ static std::unique_ptr<llm_graph_input_attn_kv> build_attn_inp_kv_impl(
         inp->self_k_idxs = mctx_cur->build_input_k_idxs(ctx0, ubatch);
         inp->self_v_idxs = mctx_cur->build_input_v_idxs(ctx0, ubatch);
 
-        inp->self_kq_mask = build_attn_inp_kq_mask(ctx0, mctx_cur, ubatch, cparams);
+        inp->self_kq_mask = build_attn_inp_kq_mask(ctx0, mctx_cur, ubatch, cparams, &inp->self_kq_keys, &inp->self_kq_rows);
         inp->self_kq_mask_cnv = inp->self_kq_mask;
     }
 

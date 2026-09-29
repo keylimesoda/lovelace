@@ -7,6 +7,7 @@ RUN apt-get update -qq \
 COPY engine/build-sm89/bin/ /opt/lovelace/bin/
 COPY apps/web/dist/ /opt/lovelace/web/
 COPY bench/replay/capture_proxy.py bench/replay/corpusfmt.py /opt/lovelace/proxy/
+COPY deploy/draft-vocab/qwen3.8-27b.txt /opt/lovelace/draft-vocab/
 
 ENV LD_LIBRARY_PATH=/opt/lovelace/bin
 WORKDIR /opt/lovelace

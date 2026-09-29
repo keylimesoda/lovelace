@@ -316,6 +316,9 @@ llama_build(test-backend-ops.cpp)
 # ReplaySSM: record + fold must reproduce the gated delta net recurrence bit for bit on each backend
 llama_build_and_test(test-gdn-replay.cpp)
 
+# KQ mask: the device-built mask (ggml_kq_mask) is bitwise equal to the host mask on each backend
+llama_build_and_test(test-kq-mask.cpp)
+
 # session store: parked and restored (delta, disk-promoted) sequences are byte-identical; needs a model and a GPU,
 # run it with bench/session_restore_check.sh
 llama_build(test-session-restore.cpp)

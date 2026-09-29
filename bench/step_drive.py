@@ -1,6 +1,8 @@
 """Drive N concurrent decodes at fixed depths for a step profile (used by bench/step_profile.sh).
 
-1. For each target depth, picks the recorded OMP turn closest to it, one distinct session per target.
+1. For each target depth, picks the recorded OMP turn closest to it, one distinct session per target (from the
+   sessions whose file names start with one of --sessions, if given; e.g. the sessions a draft vocabulary was built
+   without, bench/draft_vocab.py --exclude).
 2. Prefills each prompt alone (max_tokens=1), so every slot holds its prompt.
 3. Sends all prompts concurrently (streaming, ignore_eos, production sampling, fixed seeds). Once every stream has
    produced --warm-tokens tokens it runs --on-start, waits --capture-s, runs --on-stop, then lets the requests finish
@@ -8,6 +10,7 @@
 
 Usage (from bench/replay): uv run python ../step_drive.py --base-url http://127.0.0.1:18400/v1 --depths 52000,52000
          [--max-tokens 256] [--warm-tokens 24] [--capture-s 2] [--on-start CMD] [--on-stop CMD] [--greedy]
+         [--sessions PREFIX,...]
 """
 
 import argparse
@@ -26,10 +29,12 @@ from corpusfmt import CORPUS_DIR, iter_turns, load_tools  # noqa: E402
 TOOLS = load_tools(CORPUS_DIR)
 
 
-def pick_distinct(depths):
+def pick_distinct(depths, prefixes=()):
     """For each target depth, the turn closest to it from a session not used by an earlier target."""
     by_session = {}
     for f in sorted((CORPUS_DIR / "sessions").glob("*.jsonl")):
+        if prefixes and not f.name.startswith(tuple(prefixes)):
+            continue
         by_session[f.name] = [(t.get("rec_prompt_tokens") or t.get("est_prompt_tokens") or 0, t) for t in iter_turns(f)]
     used, picks = set(), []
     for target in depths:
@@ -57,9 +62,10 @@ def main():
     ap.add_argument("--on-start", default=None)
     ap.add_argument("--on-stop", default=None)
     ap.add_argument("--greedy", action="store_true")
+    ap.add_argument("--sessions", default="", help="comma-separated session file-name prefixes to pick from")
     a = ap.parse_args()
     sampling = {"temperature": 0} if a.greedy else {"temperature": 1.0, "top_p": 0.95, "top_k": 20}
-    picks = pick_distinct([int(x) for x in a.depths.split(",")])
+    picks = pick_distinct([int(x) for x in a.depths.split(",")], [p for p in a.sessions.split(",") if p])
     client = httpx.Client(base_url=a.base_url, timeout=3600)
 
     for i, (target, depth, name, turn) in enumerate(picks):

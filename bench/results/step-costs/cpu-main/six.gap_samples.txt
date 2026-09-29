@@ -1,0 +1,68 @@
+cpu-main/six.sqlite: 36 target-decode starts, mean gap before the first target kernel 1.756 ms, 47 decode-thread samples in the windows
+first CUDA runtime call after the window start: mean 0.039 ms
+
+CUDA runtime calls in the window (per step):                                     ms  calls
+  cudaGraphLaunch_v10000                                                   1.266    1.0
+  cudaGraphExecUpdate_v10020                                               0.156    0.1
+  cudaLaunchKernel_v7000                                                   0.115  109.7
+  cudaGraphDestroy_v10000                                                  0.025    0.1
+  cuKernelGetName                                                          0.008  109.7
+  cudaMemcpyAsync_v3020                                                    0.006    1.6
+  cudaStreamEndCapture_v10000                                              0.002    0.1
+  cudaStreamSynchronize_v3020                                              0.001    0.0
+  cudaStreamBeginCapture_v10000                                            0.000    0.1
+  cudaGetDevice_v3020                                                      0.000    0.0
+
+decode-thread samples, inclusive (% of 47):
+   34.0%  ggml_backend_cuda_graph_compute(ggml_backend*, ggml_cgraph*)
+   34.0%  0x0
+   34.0%  [Broken backtraces]
+   34.0%  llama_context::process_ubatch(llama_ubatch const&, llm_graph_type, llama_memory_context_i*, ggml_status&)
+   34.0%  ggml_backend_sched_graph_compute_async
+   34.0%  llama_context::graph_compute(ggml_cgraph*, bool)
+   29.8%  __pthread_mutex_unlock
+   29.8%  0x7c3e1a3f1017
+   29.8%  0x7c3df42df93f
+   29.8%  0x7c3df42e515b
+   29.8%  0x7c3e1a1ad565
+   29.8%  0x7c3e1a2cdf12
+   29.8%  cuGraphLaunch
+   29.8%  0x7c3e1b352806
+   29.8%  0x7c3e24221e2b
+   29.8%  cudaGraphLaunch
+   29.8%  0x7c3df42df745
+   27.7%  0x7c3df42e4f8b
+   25.5%  0x7c3df42f282e
+   14.9%  0x7c3df425525f
+   12.8%  0x7c3df4237c78
+    6.4%  __libc_malloc
+    6.4%  0x7c3df42375af
+    6.4%  0x7c3df4249b15
+    6.4%  0x7c3df4254f80
+
+decode-thread samples, self (% of 47):
+   29.8%  __pthread_mutex_unlock
+    4.3%  __libc_malloc
+    4.3%  0x7c3e2be1c3e6
+    4.3%  0x7c3e1a4bfbf7
+    4.3%  __pthread_rwlock_unlock
+    2.1%  0x7c3df42e5153
+    2.1%  0x7c3e1a4bf9b4
+    2.1%  0x7c3df42330c6
+    2.1%  0x7c3df4255242
+    2.1%  ggml_can_fuse_subgraph_ext
+    2.1%  0x7c3e1a4b728f
+    2.1%  __cudaPopCallConfiguration
+    2.1%  __pthread_rwlock_wrlock
+    2.1%  __tls_get_addr
+    2.1%  0x7c3df423309b
+    2.1%  0x7c3df42330bb
+    2.1%  0x7c3e1b352572
+    2.1%  0x7c3df420e850
+    2.1%  0x7c3e1a4963f3
+    2.1%  0x7c3df423c570
+    2.1%  0x7c3df42f23b6
+    2.1%  0x7c3df42edfce
+    2.1%  0xffffffffbd814b25
+    2.1%  0x7c3e2be1b43e
+    2.1%  0x7c3df619511a

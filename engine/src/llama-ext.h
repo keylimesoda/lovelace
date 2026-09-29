@@ -100,6 +100,11 @@ LLAMA_API void llama_set_embeddings_nextn(struct llama_context * ctx, bool value
 // chain multiple trained NextN heads. Default 0 (first head).
 LLAMA_API void llama_set_nextn_layer_offset(struct llama_context * ctx, int32_t offset);
 
+// MTP draft context only: compute the draft LM head over the given token ids (gathered once from the target's
+// output weights) and give every other token -INF, so drafts come from that subset. The target's verification
+// is unaffected. Returns false if the model's MTP graph can't use it or the ids are invalid.
+LLAMA_API bool llama_set_draft_vocab(struct llama_context * ctx, const llama_token * ids, int32_t n);
+
 // mirrors:
 // LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
 LLAMA_API float * llama_get_embeddings_nextn(struct llama_context * ctx);

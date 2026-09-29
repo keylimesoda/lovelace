@@ -5049,6 +5049,63 @@ struct test_gated_delta_net_rr : public test_case {
     }
 };
 
+// GGML_OP_KQ_MASK
+// keys: positions near 0, near the 24-bit limit and in between, random visibility sets over n_seqs bits (0 included);
+// rows: random sequence bit, last visible position anywhere in that range or the non-causal 0xFFFFFF
+struct test_kq_mask : public test_case {
+    const ggml_type type;
+    const int64_t n_kv;
+    const int64_t n_rows;
+    const int64_t n_stream;
+    const int     n_seqs;
+
+    std::string vars() override {
+        return VARS_TO_STR5(type, n_kv, n_rows, n_stream, n_seqs);
+    }
+
+    test_kq_mask(ggml_type type = GGML_TYPE_F16, int64_t n_kv = 1024, int64_t n_rows = 6, int64_t n_stream = 1, int n_seqs = 6)
+        : type(type), n_kv(n_kv), n_rows(n_rows), n_stream(n_stream), n_seqs(n_seqs) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * keys = ggml_new_tensor_4d(ctx, GGML_TYPE_I32, n_kv, 1, 1, n_stream);
+        ggml_tensor * rows = ggml_new_tensor_4d(ctx, GGML_TYPE_I32, 2, n_rows, 1, n_stream);
+        ggml_set_name(keys, "keys");
+        ggml_set_name(rows, "rows");
+
+        ggml_tensor * out = ggml_kq_mask(ctx, keys, rows, type);
+        ggml_set_name(out, "out");
+        return out;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        std::mt19937 gen(0x4B51);
+        const auto pos = [&]() -> int32_t {
+            switch (gen() % 3) {
+                case 0:  return gen() % 64;
+                case 1:  return 0xFFFFFF - (int32_t) (gen() % 64);
+                default: return gen() % 0x1000000;
+            }
+        };
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
+            std::vector<int32_t> data(ggml_nelements(t));
+            if (strcmp(t->name, "keys") == 0) {
+                for (auto & k : data) {
+                    const uint32_t own = gen() & ((1u << n_seqs) - 1);
+                    k = (int32_t) ((own << 24) | (uint32_t) pos());
+                }
+            } else if (strcmp(t->name, "rows") == 0) {
+                for (size_t i = 0; i < data.size(); i += 2) {
+                    data[i + 0] = (int32_t) (1u << (24 + gen() % n_seqs));
+                    data[i + 1] = gen() % 8 == 0 ? 0xFFFFFF : pos();
+                }
+            } else {
+                continue;
+            }
+            ggml_backend_tensor_set(t, data.data(), 0, ggml_nbytes(t));
+        }
+    }
+};
+
 // GGML_OP_SSM_CONV_FOLD
 // the output is the folded history followed by the conv record arena after the op wrote it
 struct test_ssm_conv_fold : public test_case {
@@ -11552,6 +11609,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                 test_cases.emplace_back(new test_ssm_conv_fold(3, 256, n_seq_tokens, 1, K, m_first, TEST_RR_SRC_SAME));
             }
         }
+    }
+    for (ggml_type type : { GGML_TYPE_F16, GGML_TYPE_F32 }) {
+        for (int64_t n_kv : { 256, 1000, 4096 + 3 }) {
+            for (int64_t n_rows : { 1, 6, 24 }) {
+                test_cases.emplace_back(new test_kq_mask(type, n_kv, n_rows, 1, 6));
+            }
+        }
+        test_cases.emplace_back(new test_kq_mask(type, 1024, 8, 3, 2));
+        test_cases.emplace_back(new test_kq_mask(type, 256*1024 + 8, 24, 1, 8));
     }
 
 #if 0

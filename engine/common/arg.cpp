@@ -4262,6 +4262,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_N_MAX"));
     add_opt(common_arg(
+        {"--spec-draft-vocab"}, "FNAME",
+        "MTP draft: restrict the draft LM head to the token ids listed in FNAME (one per line, '#' comments); "
+        "the target model still verifies over the full vocabulary (default: full vocabulary)",
+        [](common_params & params, const std::string & value) {
+            params.speculative.draft.vocab_file = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_VOCAB"));
+    add_opt(common_arg(
         {"--spec-draft-ubatch-size", "-ubd"}, "N",
         "physical maximum batch size for the draft context (default: 32; DFlash/DSpark: max(128, parallel * (n_max + 1)); non-causal batches clamp undersized values)",
         [](common_params & params, int value) {

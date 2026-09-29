@@ -3,8 +3,11 @@
 #   bench/step_profile.sh OUT_DIR SPEC [SPEC ...] [-- extra server args]
 #     SPEC = LABEL=DEPTH[,DEPTH...]   one capture per spec: one concurrent request per depth (bench/step_drive.py)
 #   e.g. bench/step_profile.sh bench/results/step-profile/base six=52000,52000,52000,52000,52000,52000 one=64000
+#   deploy/draft-vocab is mounted at /draft-vocab (e.g. -- --spec-draft-vocab /draft-vocab/qwen3.8-27b.txt)
 # env: BIN (default <worktree>/engine/build-sm89/bin), CAPTURE_S (2), MAX_TOKENS (256), SPEC_N (3),
-#      CPU_SAMPLE=1 adds host CPU sampling with DWARF backtraces (nsys stats --report osrt/cpu views)
+#      CPU_SAMPLE=1 adds host CPU sampling with DWARF backtraces (nsys stats --report osrt/cpu views),
+#      GREEDY=1 decodes at temperature 0 (deterministic draft acceptance; default: production sampling, fixed seeds),
+#      SESSIONS=PREFIX,... picks the drive's turns from those corpus sessions only (bench/step_drive.py --sessions)
 # Writes OUT_DIR/LABEL.nsys-rep, LABEL.sqlite, LABEL.drive.out, LABEL.table.txt (bench/step_table.py) and server.log.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -26,7 +29,7 @@ PORT=18400 C=stepprof
 docker rm -f $C >/dev/null 2>&1
 mkdir -p /tmp/stepprof-sessions
 docker run -d --name $C --gpus all $CAPS_STR --network host --ulimit memlock=-1:-1 -e LD_LIBRARY_PATH=/e \
-  -v "$BIN:/e" -v "$HOME/models:/models:ro" -v "$OUT:/out" -v /tmp/stepprof-sessions:/sessions \
+  -v "$BIN:/e" -v "$HOME/models:/models:ro" -v "$OUT:/out" -v /tmp/stepprof-sessions:/sessions -v "$HERE/../deploy/draft-vocab:/draft-vocab:ro" \
   lovelace-nsys:cuda13.1 nsys launch --session-new=$C --trace=cuda,nvtx,osrt --cuda-graph-trace=node \
   /e/llama-server -m /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf -ngl 99 -np 6 --kv-unified -c 327680 \
     -ctk q5_0 -ctv q5_0 --spec-type draft-mtp --spec-draft-n-max ${SPEC_N:-3} -ctkd q5_0 -ctvd q5_0 -fa on -ub 1024 -b 2048 \
@@ -41,7 +44,8 @@ if [ $ok = 1 ]; then
   for spec in "${SPECS[@]}"; do
     L=${spec%%=*} D=${spec#*=}
     (cd "$HERE/replay" && uv run python ../step_drive.py --base-url http://127.0.0.1:$PORT/v1 --depths "$D" \
-       --max-tokens ${MAX_TOKENS:-256} --capture-s ${CAPTURE_S:-2} \
+       --max-tokens ${MAX_TOKENS:-256} --capture-s ${CAPTURE_S:-2} $([ "${GREEDY:-0}" = 1 ] && echo --greedy) \
+       --sessions "${SESSIONS:-}" \
        --on-start "docker exec $C nsys start --session=$C $SAMPLE --output=/out/$L --force-overwrite=true >/dev/null" \
        --on-stop "docker exec $C nsys stop --session=$C >/dev/null") > "$OUT/$L.drive.out" 2>&1
     docker exec $C bash -c "[ -f /out/$L.nsys-rep ] || { \$NSYS_IMPORTER -i /out/$L.qdstrm >/dev/null && rm /out/$L.qdstrm; }"
