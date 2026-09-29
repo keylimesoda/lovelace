@@ -70,6 +70,7 @@
 #include "ggml-cuda/cumsum.cuh"
 #include "ggml-cuda/fill.cuh"
 #include "ggml-cuda/lightning-indexer.cuh"
+#include "ggml-cuda/kq-mask.cuh"
 #include "ggml.h"
 
 #include <algorithm>
@@ -2414,6 +2415,9 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
             break;
         case GGML_OP_SSM_CONV_FOLD:
             ggml_cuda_op_ssm_conv_fold(ctx, dst);
+            break;
+        case GGML_OP_KQ_MASK:
+            ggml_cuda_op_kq_mask(ctx, dst);
             break;
         case GGML_OP_DSV4_HC_COMB:
             ggml_cuda_op_dsv4_hc_comb(ctx, dst);
@@ -6124,6 +6128,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_SSM_CONV_FOLD:
             return ggml_is_contiguous(op) &&
                 (op->src[1]->buffer == nullptr || ggml_backend_buft_is_cuda(op->src[1]->buffer->buft));
+        case GGML_OP_KQ_MASK:
+            return true;
         case GGML_OP_DSV4_HC_COMB:
             return op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F32 &&
                 op->src[2]->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32;

@@ -14,6 +14,41 @@ struct llama_model;
 struct llama_context;
 
 //
+// KQ mask of a ubatch over the cells of a cache (free functions, so that tests can drive them without a model)
+//
+
+struct llama_kv_mask_args {
+    const llama_hparams & hparams;
+    const llama_ubatch  * ubatch;
+
+    const llama_kv_cells_vec    & v_cells;
+    const std::vector<uint32_t> & seq_to_stream;
+
+    uint32_t       n_swa;
+    llama_swa_type swa_type;
+
+    int64_t n_kv;
+    int64_t n_stream; // streams in the ubatch
+    int64_t n_tps;    // tokens per stream
+};
+
+struct llama_kv_mask_scratch {
+    std::vector<llama_pos> cell_pos;
+    std::vector<uint64_t>  cell_own;
+    std::vector<uint32_t>  cells_at_p1;
+};
+
+// the F16/F32 mask [n_kv, n_tps, 1, n_stream], filled on the host
+void llama_kv_mask_set_host(const llama_kv_mask_args & args, ggml_tensor * dst, bool causal_attn, llama_kv_mask_scratch & scratch);
+
+// true if ggml_kq_mask() builds the same mask from llama_kv_mask_set_keys(): no ALiBi or SWA, at most 8 distinct
+// sequences per stream with ids < 64, positions below 2^24, and no cell hidden by the M-RoPE 2D rule
+bool llama_kv_mask_on_device(const llama_kv_mask_args & args, bool causal_attn, llama_kv_mask_scratch & scratch);
+
+// the inputs of ggml_kq_mask(): keys I32 [n_kv, 1, 1, n_stream], rows I32 [2, n_tps, 1, n_stream]
+void llama_kv_mask_set_keys(const llama_kv_mask_args & args, bool causal_attn, int32_t * keys, int32_t * rows);
+
+//
 // llama_kv_cache
 //
 
@@ -234,6 +269,10 @@ public:
     void set_input_k_shift(ggml_tensor * dst) const;
 
     void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
+
+    // the mask built on the device from compact inputs (see llama_kv_mask_on_device())
+    bool kq_mask_on_device    (const llama_ubatch & ubatch, int64_t n_kv, int64_t n_stream, bool causal_attn) const;
+    void set_input_kq_mask_keys(ggml_tensor * keys, ggml_tensor * rows, const llama_ubatch * ubatch, bool causal_attn) const;
     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
 
     void set_input_k_rot(ggml_tensor * dst) const;
@@ -315,10 +354,10 @@ private:
     // scratch of seq_rm(): the cells to remove
     std::vector<uint32_t> seq_rm_cells;
 
-    // scratch of set_input_kq_mask(): per-cell position and visibility bits of the batch sequences
-    mutable std::vector<llama_pos> kq_mask_cell_pos;
-    mutable std::vector<uint64_t>  kq_mask_cell_own;
-    mutable std::vector<uint32_t>  kq_mask_cells_at_p1;
+    // scratch of the KQ mask functions
+    mutable llama_kv_mask_scratch kq_mask_scratch;
+
+    llama_kv_mask_args kq_mask_args(const llama_ubatch * ubatch, int64_t n_kv, int64_t n_stream) const;
 
     // pending stream copies that will be applied during the next update
     stream_copy_info sc_info;
@@ -445,6 +484,9 @@ public:
 
     void set_input_k_shift   (ggml_tensor * dst) const;
     void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
+
+    bool kq_mask_on_device    (const llama_ubatch & ubatch, int64_t n_stream, bool causal_attn) const;
+    void set_input_kq_mask_keys(ggml_tensor * keys, ggml_tensor * rows, const llama_ubatch * ubatch, bool causal_attn) const;
     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
 
     void set_input_k_rot(ggml_tensor * dst) const;

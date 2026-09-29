@@ -1082,6 +1082,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GATED_DELTA_NET",
     "GATED_DELTA_NET_RR",
     "SSM_CONV_FOLD",
+    "KQ_MASK",
     "LIGHTNING_INDEXER",
     "DSV4_HC_COMB",
     "DSV4_HC_PRE",
@@ -1103,7 +1104,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
 };
 
-static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
+static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1199,6 +1200,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "gated_delta_net(q, k, v, g, beta, s)",
     "gated_delta_net_rr(q, k, v, g, beta, s, rec, rs)",
     "ssm_conv_fold(conv_state, recx, x, rs)",
+    "kq_mask(keys, rows)",
     "lightning_indexer(q, k, weights, mask)",
     "dsv4_hc_comb(mixes, scale, base)",
     "dsv4_hc_pre(x, weights)",
@@ -1220,7 +1222,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
+static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -6541,6 +6543,28 @@ struct ggml_tensor * ggml_ssm_conv_fold(
     result->src[1] = recx;
     result->src[2] = x;
     result->src[3] = rs;
+
+    return result;
+}
+
+// ggml_kq_mask
+
+struct ggml_tensor * ggml_kq_mask(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * keys,
+        struct ggml_tensor  * rows,
+        enum ggml_type        type) {
+    GGML_ASSERT(keys->type == GGML_TYPE_I32 && rows->type == GGML_TYPE_I32);
+    GGML_ASSERT(ggml_is_contiguous(keys) && ggml_is_contiguous(rows));
+    GGML_ASSERT(type == GGML_TYPE_F16 || type == GGML_TYPE_F32);
+    GGML_ASSERT(keys->ne[1] == 1 && keys->ne[2] == 1);
+    GGML_ASSERT(rows->ne[0] == 2 && rows->ne[2] == 1 && rows->ne[3] == keys->ne[3]);
+
+    struct ggml_tensor * result = ggml_new_tensor_4d(ctx, type, keys->ne[0], rows->ne[1], 1, keys->ne[3]);
+
+    result->op     = GGML_OP_KQ_MASK;
+    result->src[0] = keys;
+    result->src[1] = rows;
 
     return result;
 }

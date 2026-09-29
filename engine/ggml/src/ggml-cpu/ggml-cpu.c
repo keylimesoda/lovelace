@@ -2091,6 +2091,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_ssm_conv_fold(params, tensor);
             } break;
+        case GGML_OP_KQ_MASK:
+            {
+                ggml_compute_forward_kq_mask(params, tensor);
+            } break;
         case GGML_OP_LIGHTNING_INDEXER:
             {
                 ggml_compute_forward_lightning_indexer(params, tensor);
@@ -2289,6 +2293,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_GATED_DELTA_NET:
         case GGML_OP_GATED_DELTA_NET_RR:
         case GGML_OP_SSM_CONV_FOLD:
+        case GGML_OP_KQ_MASK:
         case GGML_OP_DSV4_HC_COMB:
         case GGML_OP_DSV4_HC_PRE:
         case GGML_OP_DSV4_HC_POST:

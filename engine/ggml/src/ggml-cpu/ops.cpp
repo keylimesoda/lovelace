@@ -11322,6 +11322,50 @@ void ggml_compute_forward_gated_delta_net_rr(
     }
 }
 
+// ggml_compute_forward_kq_mask
+
+template <typename T>
+static void ggml_compute_forward_kq_mask_impl(const ggml_compute_params * params, ggml_tensor * dst, T keep, T drop) {
+    const int32_t * keys = (const int32_t *) dst->src[0]->data; // [n_kv, 1, 1, n_stream]
+    const int32_t * rows = (const int32_t *) dst->src[1]->data; // [2, n_rows, 1, n_stream]
+
+    const int64_t n_kv   = dst->ne[0];
+    const int64_t n_rows = dst->ne[1];
+    const int64_t n_all  = n_rows*dst->ne[3];
+
+    for (int64_t ir = params->ith; ir < n_all; ir += params->nth) {
+        const int64_t   s   = ir/n_rows;
+        const int32_t   bit = rows[2*ir + 0];
+        const int32_t   pm  = rows[2*ir + 1];
+        const int32_t * key = keys + s*n_kv;
+        T * row = (T *) ((char *) dst->data + ir*dst->nb[1]);
+
+        for (int64_t j = 0; j < n_kv; ++j) {
+            row[j] = (key[j] & bit) && (key[j] & 0xFFFFFF) <= pm ? keep : drop;
+        }
+    }
+}
+
+void ggml_compute_forward_kq_mask(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    switch (dst->type) {
+        case GGML_TYPE_F16:
+            {
+                ggml_compute_forward_kq_mask_impl<ggml_fp16_t>(params, dst,
+                        GGML_CPU_FP32_TO_FP16(0.0f), GGML_CPU_FP32_TO_FP16(-INFINITY));
+            } break;
+        case GGML_TYPE_F32:
+            {
+                ggml_compute_forward_kq_mask_impl<float>(params, dst, 0.0f, -INFINITY);
+            } break;
+        default:
+            {
+                GGML_ABORT("fatal error");
+            }
+    }
+}
+
 // ggml_compute_forward_ssm_conv_fold
 
 static void ggml_compute_forward_ssm_conv_fold_f32(

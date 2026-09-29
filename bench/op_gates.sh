@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Correctness gates for a build, in one GPU-lock hold: test-backend-ops (test mode) for the given ops, and
-# test-gdn-replay. Output in OUT_FILE; exit status non-zero if any gate fails.
+# Correctness gates for a build, in one GPU-lock hold: test-backend-ops (test mode) for the given ops,
+# test-gdn-replay and test-kq-mask (when built). Output in OUT_FILE; exit status non-zero if any gate fails.
 #   bench/op_gates.sh OUT_FILE BIN_DIR [OP ...]      (default ops: MUL_MAT TOP_K FLASH_ATTN_EXT)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -20,6 +20,11 @@ mkdir -p "$(dirname "$OUT")"
   echo "== test-gdn-replay" >> "$OUT"
   run /e/test-gdn-replay > /tmp/op_gates.$$ 2>&1 || rc=1
   tail -5 /tmp/op_gates.$$ >> "$OUT"
+  if [ -x "$BIN/test-kq-mask" ]; then
+    echo "== test-kq-mask" >> "$OUT"
+    run /e/test-kq-mask > /tmp/op_gates.$$ 2>&1 || rc=1
+    cat /tmp/op_gates.$$ >> "$OUT"
+  fi
   rm -f /tmp/op_gates.$$
   echo "exit $rc" >> "$OUT"
   exit $rc
