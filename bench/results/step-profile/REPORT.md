@@ -75,9 +75,13 @@ in the replay the aggregate is bounded by admission/queueing and prefill (TTFT p
 
 ## What's left (by size)
 
-1. Host gaps are still the largest lever: 24-row masks are 14 MB of stores per decode (target + catch-up), plus the
-   target graph launch (~1.2 ms). Building the mask on the GPU from compact per-cell data (1.4 MB), or launching the
-   target graph before its inputs are known, removes most of that.
+1. Host gaps are still the largest lever (9.5 ms/step in the final build): the 24-row masks are 14 MB of CPU stores
+   per decode (target + catch-up, ~1.3 ms each, store-bound: 4 threads did not help), plus their H2D copies (0.5 ms
+   each on the GPU timeline) and the target graph launch (~1.2 ms). GPU mask design: upload per-cell f32 keys
+   (seq rank * 2^21 + pos, or -1 when no batch sequence sees the cell; 1.1 MB) and per-row [lo, hi] bounds, and build
+   the f16 mask on the GPU (visible iff lo <= key <= hi). Fall back to the CPU mask when a cell belongs to more than
+   one batch sequence or M-RoPE 2D positions differ from the text position; that choice must be part of the graph
+   reuse key.
 2. Draft LM head: 3 x 1.1 ms/step. Agent outputs use 19.5k distinct tokens; the 16k most frequent cover 99.7%
    (the id prefix does not: 32k ids cover 93%). A gathered 16k-row draft head (69 MB VRAM) would save ~3 ms/step.
 3. MMQ at 24 rows streams ~620 GB/s vs ~720 GB/s for MMVQ at 4 rows; about 3 ms/step is available in the kernel.
