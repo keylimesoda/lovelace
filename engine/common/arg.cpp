@@ -1837,6 +1837,30 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_KV_TIMESLICE").set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--sched-lane-tokens"}, "N",
+        string_format("KV budget: a request with more than N uncached prompt tokens (a deep cold prefill) is admitted only "
+            "while no other such prompt is being processed; it waits in the queue without holding cells "
+            "(default: %d, 0 = no prefill lane)", params.sched_lane_tokens),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("sched-lane-tokens must be non-negative");
+            }
+            params.sched_lane_tokens = value;
+        }
+    ).set_env("LLAMA_ARG_SCHED_LANE_TOKENS").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--sched-age-bound"}, "S",
+        string_format("KV budget: queued requests are admitted cheapest first (fewest uncached prompt tokens), with a "
+            "priority that rises with the wait; a request waiting S seconds or more goes next and nothing is admitted past "
+            "it (default: %.0f)", (double) params.sched_age_bound),
+        [](common_params & params, const std::string & value) {
+            params.sched_age_bound = std::stof(value);
+            if (params.sched_age_bound <= 0) {
+                throw std::invalid_argument("sched-age-bound must be positive");
+            }
+        }
+    ).set_env("LLAMA_ARG_SCHED_AGE_BOUND").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--context-shift"},
         {"--no-context-shift"},
         string_format("whether to use context shift on infinite text generation (default: %s)", params.ctx_shift ? "enabled" : "disabled"),

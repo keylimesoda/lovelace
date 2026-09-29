@@ -645,6 +645,8 @@ struct common_params {
     int32_t kv_budget_headroom  = 256;   // cells kept free when admitting new work
     int32_t prefill_chunk_gen   = 1024;  // max prompt tokens per batch while another slot generates; 0 = n_batch
     float   kv_timeslice        = 0.0f;  // round-robin quantum and wait threshold in seconds; 0 = run to completion
+    int32_t sched_lane_tokens   = 16384; // uncached prompt tokens above which a request waits for the single prefill lane; 0 = no lane
+    float   sched_age_bound     = 120.0f; // seconds after which a waiting request is admitted next (queue order: cheapest uncached first)
 
     std::string public_path   = "";                                                                         // NOLINT
     std::string api_prefix    = "";                                                                         // NOLINT

@@ -328,12 +328,15 @@ struct server_slot {
     double                         obs_prompt_start_ms = -1.0; // the first batch with the prompt was queued
     bool                           obs_prefetch_hit    = false;
     int64_t                        obs_t_admit_us      = 0;
+    int32_t                        obs_n_uncached      = -1;    // uncached prompt tokens estimated at admission
+    bool                           obs_aged            = false; // admitted as overdue (waited the age bound)
 
     // KV budget scheduling (see server-sched.h)
     int32_t            n_reserved = 0; // cells reserved for the running task
     int64_t            t_preempt  = 0; // > 0 while preempted, resume order
     bool               rr_preempt = false; // preempted by time slicing: resumes after the requests that waited before
     int64_t            t_slice    = 0; // start of the current time slice of generation (0 = not generating yet)
+    bool               sched_lane = false; // admitted into the prefill lane: holds it while its prompt is processed
     server_prompt_data park_data;      // parked sequence state of a preempted slot
     llama_tokens       recompute_tokens;
 
@@ -486,12 +489,15 @@ struct server_slot {
         obs_prompt_start_ms  = -1.0;
         obs_prefetch_hit    = false;
         obs_t_admit_us      = 0;
+        obs_n_uncached      = -1;
+        obs_aged            = false;
         n_accepted_per_pos.clear();
 
         n_reserved = 0;
         t_preempt  = 0;
         rr_preempt = false;
         t_slice    = 0;
+        sched_lane = false;
         park_data  = {};
         recompute_tokens.clear();
 
@@ -1076,6 +1082,7 @@ private:
         SCHED_ADMITTED,
         SCHED_DROPPED,   // the task failed to launch and was answered with an error
         SCHED_WAIT_SLOT, // no idle slot
+        SCHED_WAIT_SESSION, // another request of the same session runs
         SCHED_WAIT_KV,   // the reservation does not fit, even after parking every idle slot
         SCHED_WAIT_XFER, // it fits once the sessions being parked have been copied to host memory
     };
@@ -1086,14 +1093,35 @@ private:
         int64_t      t_enqueue   = 0;
         uint64_t     session_id  = 0;      // the session of the task, once identified
         const char * session_tier = nullptr; // where its session was when the task was first tried
+        const char * wait_now    = "none"; // why it waited at the last admission attempt
+        int32_t      n_uncached  = 0;      // prompt tokens its session's cells or mirror do not hold (the order key)
+        bool         lane        = false;  // a deep cold prefill: admitted only while the prefill lane is free
     };
 
     bool                    kv_budget_on = false;
     server_kv_budget        kv_budget;
-    std::deque<sched_entry> sched_queue;     // FIFO of tasks waiting for a slot or for KV cells
+    std::deque<sched_entry> sched_queue;     // tasks waiting for a slot, KV cells or the prefill lane (arrival order)
     std::vector<int>        sched_preempted; // preempted slot ids, resumed first, in order
     bool                    sched_dirty = false; // something changed that may allow admission
     std::vector<server_kv_budget::candidate> sched_cands; // scratch for slot selection
+    std::vector<server_slot *> prompt_order; // scratch: the slots in prompt batch filling order
+
+    // Scheduling v2 (docs/design/session-store.md): admission order, prefill lane, starvation bound
+    std::vector<server_sched_order::item> sched_items; // scratch: the queue as order items
+    std::vector<int> sched_order;        // the queue in admission order (indices into sched_queue), last computed
+    uint64_t sched_next_session = 0;     // the session of the next request in line that waits for cells (prefetch)
+    int64_t  sched_t_start_us   = 0;     // start of the scheduler, for the lane occupancy
+    int64_t  sched_lane_t0_us   = 0;     // the lane became busy (0 = free)
+    int64_t  sched_lane_busy_us = 0;     // total time the lane was busy, past intervals
+    struct sched_v2_totals {
+        uint64_t n_admit       = 0; // requests admitted from the queue
+        uint64_t n_admit_aged  = 0; // admitted as overdue (waited the age bound or longer)
+        uint64_t n_admit_lane  = 0; // admitted into the prefill lane
+        uint64_t n_admit_past  = 0; // admitted while an earlier request kept waiting
+        uint64_t n_starve_preempt = 0; // generating slots paused for an overdue request (twice the bound)
+        int64_t  us_wait_max   = 0; // the longest queue wait of an admitted request
+        int64_t  us_wait_sum   = 0;
+    } sched_v2;
 
     // gauges read by the metrics task, which may run on the queue worker while a decode is in flight
     std::atomic<int32_t> sched_n_waiting { 0 };
@@ -1649,8 +1677,17 @@ private:
             kv_budget.headroom = params_base.kv_budget_headroom;
             kv_budget.slots.assign(slots.size(), {});
 
+            sched_t_start_us   = ggml_time_us();
+            sched_lane_t0_us   = 0;
+            sched_lane_busy_us = 0;
+            sched_next_session = 0;
+            sched_v2 = {};
+
             SRV_INF("KV budget: %d cells shared by %d slots, reserving up to %d generated tokens per request, headroom %d cells\n",
                     kv_budget.n_cells, (int) slots.size(), params_base.kv_budget_gen, kv_budget.headroom);
+            SRV_INF("KV budget: queue order cheapest uncached first, age bound %.0f s; prefill lane above %d uncached tokens%s\n",
+                    (double) params_base.sched_age_bound, params_base.sched_lane_tokens,
+                    params_base.sched_lane_tokens > 0 ? "" : " (off)");
             if (!prompt_cache && !sessions) {
                 SRV_WRN("%s", "KV budget: no prompt cache (--cache-ram 0), parked sessions are dropped and re-prefilled\n");
             }
@@ -2014,6 +2051,7 @@ private:
     // mirror the slots into the budget before planning
     //  - a slot being parked counts as empty: its cells are freed as soon as the copy completes
     //  - a slot with another transfer in progress cannot be parked yet
+    //  - an idle slot holding the session of a queued request is parked last
     void sched_sync() {
         for (size_t i = 0; i < slots.size(); i++) {
             const auto & slot = slots[i];
@@ -2023,7 +2061,90 @@ private:
             s.n_used      = slot.state == SLOT_STATE_PREEMPTED || parking ? 0 : slot.prompt.n_tokens();
             s.n_reserved  = slot.n_reserved;
             s.t_last_used = slot.t_last_used;
+            s.wanted      = sched_session_wanted(slot.session_id);
         }
+    }
+
+    bool sched_session_wanted(uint64_t session_id) const {
+        return session_id != 0 && std::find(sched_wanted.begin(), sched_wanted.end(), session_id) != sched_wanted.end();
+    }
+
+    // the slot holding the prefill lane: admitted into it, its prompt not processed yet
+    const server_slot * sched_lane_slot() const {
+        for (const auto & slot : slots) {
+            if (slot.sched_lane && slot.is_processing() &&
+                (slot.state == SLOT_STATE_STARTED || slot.state == SLOT_STATE_PROCESSING_PROMPT)) {
+                return &slot;
+            }
+        }
+        return nullptr;
+    }
+
+    // lane occupancy: busy intervals; a lane that frees up lets the next deep prefill in
+    void sched_lane_account() {
+        const bool busy = sched_lane_slot() != nullptr;
+        const int64_t t_now = ggml_time_us();
+        if (busy && sched_lane_t0_us == 0) {
+            sched_lane_t0_us = t_now;
+        } else if (!busy && sched_lane_t0_us > 0) {
+            sched_lane_busy_us += t_now - sched_lane_t0_us;
+            sched_lane_t0_us = 0;
+            sched_dirty = true;
+        }
+    }
+
+    // prompt tokens of a queued task that neither the cells nor the mirror of its session hold
+    int32_t sched_uncached(const sched_entry & e) const {
+        const server_task & task = e.task;
+        const int32_t n = task.n_tokens();
+        if (!sessions || e.session_id == 0) {
+            // outside the sessions: the best prefix an idle slot holds (the prompt cache is not searched)
+            int32_t best = 0;
+            for (const auto & slot : slots) {
+                if (!slot.is_processing() && slot.session_id == 0 && slot.prompt.n_tokens() > 0) {
+                    best = std::max(best, (int32_t) slot.prompt.tokens.get_common_prefix(task.tokens));
+                }
+            }
+            return n - best;
+        }
+        const server_session * s = sessions->get(e.session_id);
+        if (s == nullptr) {
+            return n;
+        }
+        if (s->id_slot >= 0 && slots[s->id_slot].session_id == s->id && slots[s->id_slot].prompt.n_tokens() > 0) {
+            return n - (int32_t) slots[s->id_slot].prompt.tokens.get_common_prefix(task.tokens);
+        }
+        const llama_tokens & a = task.tokens.get_tokens();
+        const size_t n_max = std::min<size_t>({ a.size(), s->tokens.size(), (size_t) std::max(0, s->n_kv) });
+        size_t lcp = 0;
+        while (lcp < n_max && a[lcp] == s->tokens[lcp]) {
+            lcp++;
+        }
+        return n - (int32_t) lcp;
+    }
+
+    // the queue in admission order (server_sched_order), with the costs and lane flags refreshed
+    void sched_order_queue(int64_t t_now) {
+        const int32_t lane_tokens = params_base.sched_lane_tokens;
+        sched_items.resize(sched_queue.size());
+        for (size_t i = 0; i < sched_queue.size(); i++) {
+            auto & e = sched_queue[i];
+            e.n_uncached = sched_uncached(e);
+            e.lane       = lane_tokens > 0 && e.n_uncached > lane_tokens;
+            sched_items[i] = { e.t_enqueue, e.n_uncached };
+        }
+        server_sched_order::order(sched_items, t_now, sched_age_bound_us(), sched_order);
+    }
+
+    int64_t sched_age_bound_us() const {
+        return (int64_t) (params_base.sched_age_bound * 1e6);
+    }
+
+    // a queued task is launched into the slot: the lane, the order key and the age go with it
+    void sched_mark_admit(server_slot & slot, const sched_entry & e) {
+        slot.sched_lane     = e.lane;
+        slot.obs_n_uncached = e.n_uncached;
+        slot.obs_aged       = ggml_time_us() - e.t_enqueue >= sched_age_bound_us();
     }
 
     // headroom only protects running work, a lone task may use every cell
@@ -2471,28 +2592,48 @@ private:
         }
     }
 
-    // round-robin time slicing (--kv-timeslice): once the next queued request has waited a slice for KV cells, pause
-    // the generating slot that has run longest, if its cells let that request in; runs at a token boundary
+    // pause the generating slot that has run longest, at a token boundary, if its cells let the request that has waited
+    // longest in; it resumes after the requests waiting now
+    //  - round-robin time slicing (--kv-timeslice S): once that request has waited S for KV cells, a slot that ran S
+    //  - the starvation bound: once it has waited twice --sched-age-bound for KV cells (turns run to completion
+    //    otherwise), a slot that ran the bound
     void sched_timeslice() {
-        const int64_t slice = (int64_t) (params_base.kv_timeslice * 1e6);
-        if (slice <= 0 || sched_queue.empty()) {
+        if (sched_queue.empty()) {
             return;
         }
 
         const int64_t t_now = ggml_time_us();
 
-        auto & head = sched_queue.front();
-        if (strcmp(head.wait_reason, "kv") != 0 || t_now - head.t_enqueue < slice) {
+        // the slice starts with the generation
+        for (auto & slot : slots) {
+            if (slot.state == SLOT_STATE_GENERATING && slot.t_slice == 0) {
+                slot.t_slice = t_now;
+            }
+        }
+
+        const sched_entry * head = &sched_queue.front();
+        for (const auto & e : sched_queue) {
+            if (e.t_enqueue < head->t_enqueue) {
+                head = &e;
+            }
+        }
+        if (strcmp(head->wait_now, "kv") != 0) {
+            return;
+        }
+
+        const int64_t bound    = sched_age_bound_us();
+        const bool    starving = t_now - head->t_enqueue >= 2 * bound;
+
+        int64_t slice = (int64_t) (params_base.kv_timeslice * 1e6);
+        if (starving) {
+            slice = slice > 0 ? std::min(slice, bound) : bound;
+        } else if (slice <= 0 || t_now - head->t_enqueue < slice) {
             return;
         }
 
         server_slot * victim = nullptr;
         for (auto & slot : slots) {
             if (slot.state != SLOT_STATE_GENERATING) {
-                continue;
-            }
-            if (slot.t_slice == 0) {
-                slot.t_slice = t_now; // the slice starts with the generation
                 continue;
             }
             if (!slot.spec_draft.empty() || !slot.spec_i_batch.empty() || slot.task->is_parent() || slot.task->is_child() ||
@@ -2508,7 +2649,7 @@ private:
         }
 
         // the cells the head needs, against what the running slots leave (idle slots can be parked)
-        const server_task & task = head.task;
+        const server_task & task = head->task;
         const int32_t n_predict = task.params.n_predict != -1 ? task.params.n_predict : params_base.n_predict;
         const int64_t need      = sched_reservation(task.n_tokens(), n_predict);
 
@@ -2523,6 +2664,11 @@ private:
             return;
         }
 
+        if (starving) {
+            sched_v2.n_starve_preempt++;
+            SLT_WRN(*victim, "starvation bound: task %d has waited %.1f s for KV cells, pausing this slot\n", task.id,
+                    (t_now - head->t_enqueue) / 1e6);
+        }
         sched_preempt(*victim, /* rr */ true);
     }
 
@@ -2637,7 +2783,7 @@ private:
             server_slot & slot = slots[sess->id_slot];
             if (slot.is_processing()) {
                 // a second request of the session waits for the first
-                return SCHED_WAIT_SLOT;
+                return SCHED_WAIT_SESSION;
             }
             if (slot.xfer == server_slot::XFER_SYNC) {
                 sched_finish_xfer(slot, true);
@@ -2654,6 +2800,7 @@ private:
                 c.n_used      = slot.prompt.n_tokens();
                 c.n_lcp       = 0;
                 c.t_last_used = slot.t_last_used;
+                c.wanted      = sched_session_wanted(slot.session_id);
             }
             id_slot = server_kv_budget::pick_slot(cands, task.n_tokens(), slot_prompt_similarity);
             if (id_slot < 0) {
@@ -2722,6 +2869,7 @@ private:
 
         slot.n_reserved      = need;
         slot.obs_wait_reason = e.wait_reason;
+        sched_mark_admit(slot, e);
 
         if (!launch_slot_with_task(slot, std::move(task))) {
             slot.n_reserved = 0;
@@ -2731,15 +2879,14 @@ private:
         return SCHED_ADMITTED;
     }
 
-    // restore the session of the queue head while the head waits (for KV cells to grow into, or a slot), so that its
-    // request starts without waiting for the copies: into an idle slot, empty or least recently used, parking idle
-    // sessions that are not queued themselves if the cells are needed (parks are free)
+    // restore the session of the next request in line (sched_next_session: the first in admission order that waits
+    // for cells or a slot) while it waits, so that it starts without waiting for the copies: into an idle slot, empty or
+    // least recently used, parking idle sessions that are not queued themselves if the cells are needed (parks are free)
     void sched_prefetch() {
-        if (!sessions || sched_queue.empty()) {
+        if (!sessions || sched_queue.empty() || sched_next_session == 0) {
             return;
         }
-        const auto & e = sched_queue.front();
-        server_session * s = e.session_id ? sessions->get(e.session_id) : nullptr;
+        server_session * s = sessions->get(sched_next_session);
         if (s == nullptr || s->id_slot >= 0 || s->tier != SERVER_SESSION_RAM || s->n_kv == 0) {
             return;
         }
@@ -2816,6 +2963,7 @@ private:
                 // the cells of a session are its own
                 c.n_lcp       = c.idle && c.n_used > 0 && slot.session_id == 0 ? (int32_t) slot.prompt.tokens.get_common_prefix(task.tokens) : 0;
                 c.t_last_used = slot.t_last_used;
+                c.wanted      = sched_session_wanted(slot.session_id);
             }
             id_slot = server_kv_budget::pick_slot(cands, task.n_tokens(), slot_prompt_similarity);
             if (id_slot < 0) {
@@ -2932,6 +3080,7 @@ private:
 
         slot.n_reserved = need;
         slot.obs_wait_reason = wait_reason;
+        sched_mark_admit(slot, e);
 
         bool ok;
         if (task.is_parent()) {
@@ -3017,7 +3166,10 @@ private:
         }
     }
 
-    // admit waiting work in order: preempted slots first, then the queue; stops at the first that has to wait
+    // admit waiting work: preempted slots first, then the queue in admission order (server_sched_order: overdue requests
+    // oldest first, then cheapest uncached work first with aging). A request that has to wait lets the next one try,
+    // except an overdue request waiting for cells or a slot: nothing is admitted past it. A deep cold prefill (lane)
+    // waits while the prefill lane is busy, without holding cells.
     void sched_admit() {
         if (!sched_dirty) {
             return;
@@ -3025,12 +3177,17 @@ private:
         sched_dirty = false;
 
         bool head_waits = false;
+        const int64_t bound = sched_age_bound_us();
 
         while (true) {
             // a slot paused by time slicing lets the requests that were already waiting go first
+            int64_t t_oldest = INT64_MAX;
+            for (const auto & e : sched_queue) {
+                t_oldest = std::min(t_oldest, e.t_enqueue);
+            }
             const bool resume_first = !sched_preempted.empty() && (sched_queue.empty() ||
                     !slots[sched_preempted.front()].rr_preempt ||
-                    slots[sched_preempted.front()].t_preempt < sched_queue.front().t_enqueue);
+                    slots[sched_preempted.front()].t_preempt < t_oldest);
 
             if (resume_first) {
                 server_slot & slot = slots[sched_preempted.front()];
@@ -3046,25 +3203,76 @@ private:
                 break;
             }
 
-            auto & entry = sched_queue.front();
-            const auto res = sched_try_admit(entry);
-            if (res == SCHED_WAIT_SLOT || res == SCHED_WAIT_KV || res == SCHED_WAIT_XFER) {
-                if (strcmp(entry.wait_reason, "none") == 0) {
-                    // a session task waits for a transfer only while its mirror is read back from disk
-                    entry.wait_reason = res == SCHED_WAIT_SLOT ? "slot" : (res == SCHED_WAIT_XFER && sessions ? "disk" : "kv");
-                    (res == SCHED_WAIT_SLOT ? sched_stats.n_wait_slot : sched_stats.n_wait_kv)++;
+            const int64_t t_now = ggml_time_us();
+            sched_order_queue(t_now);
+            const bool lane_busy = sched_lane_slot() != nullptr;
+
+            int  i_done = -1;
+            bool admitted = false;
+            for (int idx : sched_order) {
+                auto & entry = sched_queue[idx];
+                const bool overdue = t_now - entry.t_enqueue >= bound;
+
+                if (entry.lane && lane_busy) {
+                    entry.wait_now = "lane";
+                    if (strcmp(entry.wait_reason, "none") == 0) {
+                        entry.wait_reason = "lane";
+                    }
+                    continue;
                 }
+
+                const auto res = sched_try_admit(entry);
+                if (res == SCHED_ADMITTED || res == SCHED_DROPPED) {
+                    i_done   = idx;
+                    admitted = res == SCHED_ADMITTED;
+                    break;
+                }
+
+                // a session task waits for a transfer only while its mirror is read back from disk
+                entry.wait_now = res == SCHED_WAIT_SLOT ? "slot" : res == SCHED_WAIT_SESSION ? "session" :
+                    (res == SCHED_WAIT_XFER && sessions ? "disk" : "kv");
+                if (strcmp(entry.wait_reason, "none") == 0) {
+                    entry.wait_reason = entry.wait_now;
+                    (res == SCHED_WAIT_SLOT || res == SCHED_WAIT_SESSION ? sched_stats.n_wait_slot : sched_stats.n_wait_kv)++;
+                }
+                if (overdue && (res == SCHED_WAIT_SLOT || res == SCHED_WAIT_KV)) {
+                    // the starvation bound: the cells and slots that free up go to this request
+                    break;
+                }
+            }
+
+            if (i_done < 0) {
                 head_waits = true;
                 break;
             }
 
-            sched_queue.pop_front();
+            if (admitted) {
+                const auto & e = sched_queue[i_done];
+                const int64_t wait = t_now - e.t_enqueue;
+                sched_v2.n_admit++;
+                sched_v2.n_admit_aged += wait >= bound;
+                sched_v2.n_admit_lane += e.lane;
+                sched_v2.n_admit_past += e.t_enqueue > t_oldest;
+                sched_v2.us_wait_max   = std::max(sched_v2.us_wait_max, wait);
+                sched_v2.us_wait_sum  += wait;
+            }
+            sched_queue.erase(sched_queue.begin() + i_done);
         }
 
+        // the next request in line that waits for cells or a slot: its session is prefetched
+        sched_next_session = 0;
         if (head_waits) {
+            for (int idx : sched_order) {
+                const auto & e = sched_queue[idx];
+                if (strcmp(e.wait_now, "kv") == 0 || strcmp(e.wait_now, "slot") == 0) {
+                    sched_next_session = e.session_id;
+                    break;
+                }
+            }
             sched_prefetch();
         }
 
+        sched_lane_account();
         sched_n_waiting.store((int32_t) sched_queue.size(), std::memory_order_relaxed);
     }
 
@@ -4261,8 +4469,9 @@ private:
         if (kv_budget_on) {
             sched_poll_xfers(/* wait */ false);
             sched_sessions_poll();
+            sched_lane_account();
             sched_admit();
-            // the head of the queue that still waits may be restored meanwhile
+            // the next request in line that still waits may be restored meanwhile
             sched_prefetch();
         }
 
@@ -4627,7 +4836,27 @@ private:
         if (params_base.cont_batching || batch.size() == 0) {
             bool add_ok = true; // false means the batch is full, skip remaining slots
 
-            iterate(slots, [&](server_slot & slot) {
+            // the prompt budget of the step goes to the fewest remaining prompt tokens first: short deltas and restored
+            // sessions start decoding while a deep prefill takes what is left (the rest of the step budget)
+            auto & order = prompt_order;
+            order.clear();
+            for (auto & slot : slots) {
+                order.push_back(&slot);
+            }
+            auto remaining = [](const server_slot * s) -> int64_t {
+                if (s->state == SLOT_STATE_RECOMPUTE) {
+                    return (int64_t) s->recompute_tokens.size() - s->prompt.n_tokens();
+                }
+                if ((s->state == SLOT_STATE_STARTED || s->state == SLOT_STATE_PROCESSING_PROMPT) && s->task) {
+                    return (int64_t) s->task->n_tokens() - s->prompt.n_tokens();
+                }
+                return INT64_MAX;
+            };
+            std::stable_sort(order.begin(), order.end(), [&](const server_slot * a, const server_slot * b) {
+                return remaining(a) < remaining(b);
+            });
+
+            iterate(order, [&](server_slot & slot) {
                 if (!add_ok || batch.size() >= n_batch_prompt) {
                     return; // batch is full, skip remaining slots
                 }
@@ -5807,6 +6036,67 @@ public:
         obs->emit(std::move(rec));
     }
 
+    // Scheduling v2 in /telemetry: the queue in admission order, waits (the starvation check), prefill lane occupancy
+    json sched_telemetry_json() const {
+        const int64_t t_now = ggml_time_us();
+        const int64_t bound = sched_age_bound_us();
+
+        std::vector<server_sched_order::item> items;
+        items.reserve(sched_queue.size());
+        int64_t t_oldest = t_now;
+        for (const auto & e : sched_queue) {
+            items.push_back({ e.t_enqueue, e.n_uncached });
+            t_oldest = std::min(t_oldest, e.t_enqueue);
+        }
+        std::vector<int> order;
+        server_sched_order::order(items, t_now, bound, order);
+
+        json queue = json::array();
+        for (int idx : order) {
+            const auto & e = sched_queue[idx];
+            queue.push_back({
+                {"id_task",     e.task.id},
+                {"session_id",  e.session_id},
+                {"n_tokens",    e.task.n_tokens()},
+                {"n_uncached",  e.n_uncached},
+                {"lane",        e.lane},
+                {"wait_s",      (t_now - e.t_enqueue) / 1e6},
+                {"overdue",     server_sched_order::overdue(items[idx], t_now, bound)},
+                {"wait_reason", e.wait_reason},
+                {"wait_now",    e.wait_now},
+            });
+        }
+
+        const server_slot * lane = sched_lane_slot();
+        const int64_t lane_busy_us = sched_lane_busy_us + (sched_lane_t0_us > 0 ? t_now - sched_lane_t0_us : 0);
+        const int64_t uptime_us    = std::max<int64_t>(1, t_now - sched_t_start_us);
+        const double  wait_now_s   = (t_now - t_oldest) / 1e6;
+
+        return {
+            {"age_bound_s",      params_base.sched_age_bound},
+            {"lane_tokens",      params_base.sched_lane_tokens},
+            {"queue",            std::move(queue)},
+            {"next_session",     sched_next_session},
+            {"max_wait_s",       std::max(sched_v2.us_wait_max / 1e6, wait_now_s)},
+            {"max_wait_admitted_s", sched_v2.us_wait_max / 1e6},
+            {"oldest_waiting_s", wait_now_s},
+            {"mean_wait_s",      sched_v2.n_admit > 0 ? sched_v2.us_wait_sum / 1e6 / sched_v2.n_admit : 0.0},
+            {"admits",           sched_v2.n_admit},
+            {"admits_aged",      sched_v2.n_admit_aged},
+            {"admits_lane",      sched_v2.n_admit_lane},
+            {"admits_past_earlier", sched_v2.n_admit_past},
+            {"starvation_preempts", sched_v2.n_starve_preempt},
+            {"lane", {
+                {"busy",             lane != nullptr},
+                {"id_slot",          lane ? json(lane->id) : json(nullptr)},
+                {"session_id",       lane ? json(lane->session_id) : json(nullptr)},
+                {"remaining_tokens", lane && lane->task ? json(lane->task->n_tokens() - lane->prompt.n_tokens()) : json(nullptr)},
+                {"busy_seconds",     lane_busy_us / 1e6},
+                {"occupancy",        (double) lane_busy_us / uptime_us},
+            }},
+        };
+    }
+
     // the loop's own view for GET /telemetry: slots, scheduler gauges and totals, memory
     // runs on the loop thread, or on the queue worker while a decode is in flight (read-only)
     json obs_telemetry_json() const {
@@ -5884,6 +6174,7 @@ public:
                     {"recompute_tokens",    sched_stats.n_recompute_tokens},
                     {"kv_overflows",        sched_stats.n_kv_overflow},
                 }},
+                {"scheduler", sched_telemetry_json()},
             }},
             {"totals", {
                 {"prompt_tokens",           m.prompt.count},
@@ -6152,6 +6443,9 @@ private:
         rec.queue_wait_ms = task.t_arrival_us > 0 ? (t_now - task.t_arrival_us) / 1e3 : 0.0;
         rec.wait_reason       = slot.obs_wait_reason;
         rec.n_unparked_tokens = slot.obs_n_unparked;
+        rec.sched_n_uncached  = slot.obs_n_uncached;
+        rec.sched_lane        = slot.sched_lane;
+        rec.sched_aged        = slot.obs_aged;
 
         obs->counters.req_started.fetch_add(1, std::memory_order_relaxed);
         obs->emit(std::move(rec));
@@ -6219,6 +6513,9 @@ private:
         rec.n_ctx_used          = slot.prompt.n_tokens();
         rec.wait_reason         = slot.obs_wait_reason;
         rec.n_unparked_tokens   = slot.obs_n_unparked;
+        rec.sched_n_uncached    = slot.obs_n_uncached;
+        rec.sched_lane          = slot.sched_lane;
+        rec.sched_aged          = slot.obs_aged;
         rec.session_id          = slot.session_id;
         rec.session_tier        = slot.obs_session_tier;
         rec.restore_bytes       = slot.obs_restore_bytes;

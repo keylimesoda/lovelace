@@ -12,11 +12,13 @@ exec "$HERE/../deploy/gpu-lock.sh" bash -c '
   set -uo pipefail
   BIN=$1 OUT=$2 LABEL=$3 CTX=$4 AGENTS=$5 DUR=$6 MIND=$7 HERE=$8; shift 8
   docker rm -f replay-srv >/dev/null 2>&1
+  mkdir -p "$OUT/$LABEL"
   docker run -d --name replay-srv --gpus all --network host --ulimit memlock=-1:-1 -v "$BIN:/e" -v "$HOME/models:/models:ro" \
-    lovelace-engine-runtime:cuda13.1 /e/llama-server -m /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf -ngl 99 -fa on \
+    -v "$OUT/$LABEL:/out" lovelace-engine-runtime:cuda13.1 /e/llama-server \
+    -m /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf -ngl 99 -fa on \
     --jinja -ub 1024 -b 2048 -np 6 --kv-unified -c "$CTX" -ctk q5_0 -ctv q5_0 --spec-type draft-mtp --spec-draft-n-max 3 \
     -ctkd q5_0 -ctvd q5_0 --cache-ram 32768 -ctxcp 8 --reasoning-preserve --alias qwen3.8-27b --telemetry --metrics \
-    --host 127.0.0.1 --port 18000 "$@" >/dev/null
+    --request-log-jsonl /out/requests.server.jsonl --host 127.0.0.1 --port 18000 "$@" >/dev/null
   for i in $(seq 150); do curl -sf 127.0.0.1:18000/health >/dev/null && break; sleep 2; done
   WFLAG=(); [ "${WARMUP:-0}" = 1 ] && WFLAG=(--warmup)
   (cd "$HERE/replay" && uv run replay.py --base-url http://127.0.0.1:18000/v1 --model qwen3.8-27b "${WFLAG[@]}" \

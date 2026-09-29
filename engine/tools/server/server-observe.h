@@ -170,8 +170,12 @@ struct server_obs_record {
     int32_t      n_predict  = -1;
     int32_t      n_ctx_slot = 0;
     double       queue_wait_ms = -1.0; // < 0 = unknown
-    const char * wait_reason   = "none"; // KV budget: "none", "slot" or "kv"
+    const char * wait_reason   = "none"; // KV budget: "none", "slot", "session", "kv", "disk" or "lane"
     int32_t      n_unparked_tokens = 0; // tokens restored from host memory at launch
+    // scheduling v2: the admission order key and how the request was admitted
+    int32_t      sched_n_uncached = -1;    // uncached prompt tokens estimated at admission (-1 = not queued)
+    bool         sched_lane       = false; // admitted into the prefill lane (a deep cold prefill)
+    bool         sched_aged       = false; // admitted as overdue (waited the age bound or longer)
 
     // session store (--session-ram): where the session (session_id) was at admission (gpu/ram/disk/new, nullptr = none)
     const char * session_tier    = nullptr;

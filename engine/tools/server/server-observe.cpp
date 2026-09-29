@@ -594,6 +594,20 @@ static json obs_request_info(const server_obs_record & rec, bool with_detail) {
     return res;
 }
 
+// scheduling v2: the queue wait and how the request was admitted (null outside the KV budget queue)
+static json obs_sched_info(const server_obs_record & rec) {
+    if (rec.sched_n_uncached < 0) {
+        return nullptr;
+    }
+    return {
+        {"queue_wait_ms", r3(std::max(0.0, rec.queue_wait_ms))},
+        {"wait_reason",   rec.wait_reason},
+        {"n_uncached",    rec.sched_n_uncached},
+        {"lane",          rec.sched_lane},
+        {"aged",          rec.sched_aged},
+    };
+}
+
 std::string server_observer::format(const server_obs_record & rec, uint64_t seq) const {
     json res = {
         {"schema_version",     1},
@@ -618,6 +632,7 @@ std::string server_observer::format(const server_obs_record & rec, uint64_t seq)
                 res["queue_wait_ms"] = r3(rec.queue_wait_ms);
                 res["wait_reason"]   = rec.wait_reason;
                 res["n_unparked_tokens"] = rec.n_unparked_tokens;
+                res["sched"]         = obs_sched_info(rec);
             } break;
         case SERVER_OBS_REC_REQUEST_DONE:
             {
@@ -635,6 +650,7 @@ std::string server_observer::format(const server_obs_record & rec, uint64_t seq)
                     {"wait_reason",         rec.wait_reason},
                     {"error",               rec.error_msg.empty() ? json(nullptr) : json(rec.error_msg)},
                 };
+                res["sched"]   = obs_sched_info(rec);
                 res["session"] = rec.session_tier == nullptr ? json(nullptr) : json {
                     {"id",              rec.session_id},
                     {"tier",            rec.session_tier},

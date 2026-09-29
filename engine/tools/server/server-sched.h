@@ -15,6 +15,7 @@ struct server_kv_budget {
         int32_t n_reserved  = 0;     // cells promised to the running task (0 when idle)
         bool    active      = false; // runs (or holds a preempted) task: not parkable
         int64_t t_last_used = -1;    // victim order, least recently used first
+        bool    wanted      = false; // idle, but a queued request continues its session: parked last
     };
 
     int32_t n_cells  = 0; // total cells of the unified KV cache
@@ -91,7 +92,11 @@ struct server_kv_budget {
                 idle.push_back(i);
             }
         }
+        // longest idle first; the sessions that queued requests continue go last
         std::stable_sort(idle.begin(), idle.end(), [&](int a, int b) {
+            if (slots[a].wanted != slots[b].wanted) {
+                return !slots[a].wanted;
+            }
             return slots[a].t_last_used < slots[b].t_last_used;
         });
 
@@ -113,12 +118,13 @@ struct server_kv_budget {
         int32_t n_used      = 0;  // cells held now
         int32_t n_lcp       = 0;  // common prefix of the held prompt with the new prompt
         int64_t t_last_used = -1;
+        bool    wanted      = false; // holds the session of a queued request: replaced last
     };
 
     // session-affine slot choice for a new prompt of n_prompt tokens, -1 if no slot is idle
     //   1. the idle slot holding the longest common prefix, if it covers more than sim_min of the prompt
     //   2. an empty idle slot, so that no resident session has to be parked
-    //   3. the least recently used idle slot
+    //   3. the least recently used idle slot, one holding the session of a queued request last
     static int pick_slot(const std::vector<candidate> & cands, int32_t n_prompt, float sim_min) {
         int best = -1;
         for (int i = 0; i < (int) cands.size(); i++) {
@@ -144,10 +150,55 @@ struct server_kv_budget {
             if (c.n_used == 0 && (empty < 0 || c.t_last_used < cands[empty].t_last_used)) {
                 empty = i;
             }
-            if (lru < 0 || c.t_last_used < cands[lru].t_last_used) {
+            if (lru < 0 || (c.wanted != cands[lru].wanted ? !c.wanted : c.t_last_used < cands[lru].t_last_used)) {
                 lru = i;
             }
         }
         return empty >= 0 ? empty : lru;
+    }
+};
+
+// Admission order of the queued requests (Scheduling v2 in docs/design/session-store.md):
+//   - a request that has waited bound_us or longer is overdue: overdue requests go first, the oldest first
+//   - the others go cheapest first, by their uncached prompt tokens scaled down linearly with the wait, so that the
+//     priority of a request rises as it waits: aged cost = n_uncached * (1 - wait / bound); ties go to the oldest
+struct server_sched_order {
+    struct item {
+        int64_t t_enqueue_us = 0;
+        int32_t n_uncached   = 0; // prompt tokens to compute: not in the cells or the mirror of its session
+    };
+
+    static bool overdue(const item & it, int64_t t_now_us, int64_t bound_us) {
+        return t_now_us - it.t_enqueue_us >= bound_us;
+    }
+
+    static double aged_cost(const item & it, int64_t t_now_us, int64_t bound_us) {
+        const double age = std::clamp((double) (t_now_us - it.t_enqueue_us) / (double) bound_us, 0.0, 1.0);
+        return (double) it.n_uncached * (1.0 - age);
+    }
+
+    // indices of items in admission order
+    static void order(const std::vector<item> & items, int64_t t_now_us, int64_t bound_us, std::vector<int> & out) {
+        out.resize(items.size());
+        for (int i = 0; i < (int) items.size(); i++) {
+            out[i] = i;
+        }
+        std::stable_sort(out.begin(), out.end(), [&](int a, int b) {
+            const auto & x = items[a];
+            const auto & y = items[b];
+            const bool ox = overdue(x, t_now_us, bound_us);
+            const bool oy = overdue(y, t_now_us, bound_us);
+            if (ox != oy) {
+                return ox;
+            }
+            if (!ox) {
+                const double cx = aged_cost(x, t_now_us, bound_us);
+                const double cy = aged_cost(y, t_now_us, bound_us);
+                if (cx != cy) {
+                    return cx < cy;
+                }
+            }
+            return x.t_enqueue_us < y.t_enqueue_us;
+        });
     }
 };
