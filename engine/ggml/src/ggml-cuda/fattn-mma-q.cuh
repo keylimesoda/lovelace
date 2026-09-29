@@ -1829,8 +1829,10 @@ static void ggml_cuda_flash_attn_ext_mma_q_pf_launch(ggml_backend_cuda_context &
 
     // Split the K/V cells into chunks (at least 2048 cells each) so that the waves of blocks (one block per SM) are
     // full: minimize waves * (tiles per chunk + a per-block overhead of ~16 tiles for Q and the partial results).
+    // The f16 partial results of all chunks are kept to at most 64 MiB of pool memory.
     const int nunits = ntiles_tok * K->ne[2] * Q->ne[3];
-    const int nchunks_max = std::max(1, std::min(16, ntiles_kv/32));
+    const int64_t part_bytes  = Q->ne[1]*Q->ne[2]*Q->ne[3]*D*int64_t(sizeof(half));
+    const int nchunks_max = std::max<int64_t>(1, std::min<int64_t>({16, ntiles_kv/32, (int64_t(64) << 20)/part_bytes}));
     int nchunks = 1;
     int64_t best_cost = INT64_MAX;
     for (int n = 1; n <= nchunks_max; ++n) {
