@@ -40,8 +40,13 @@ this table is not a clean comparison; step wall is.
 Correctness (`gates/mask.txt`): test-backend-ops KQ_MASK 22/22 (CUDA vs CPU), test-gdn-replay all passed,
 test-kq-mask (committed, engine/tests/test-kq-mask.cpp): device mask bitwise equal to the host mask on CUDA and
 CPU for 6 and 24 rows, n_pos 1 and 4 (M-RoPE), 286,720 cells, a prefix shared by two batch sequences, non-causal,
-3 streams; the M-RoPE image block and 9-sequence cases are refused (host mask). Greedy gate (MTP on, then off):
-queued at the time of writing, results land in `greedy/mask-mtp/COMPARE.txt`, `greedy/mask-nospec/COMPARE.txt`.
+3 streams; the M-RoPE image block and 9-sequence cases are refused (host mask).
+
+Greedy gate (`greedy/mask-mtp/COMPARE.txt`, `greedy/mask-nospec/COMPARE.txt`, six sessions at ~20k, 128 tokens):
+**sequential 6/6 identical with MTP on and with MTP off: PASS.** With MTP on, the sequential draft counters are
+identical too (main and GPU mask both 519 accepted / 724 drafted = 0.717, per-session equal). Concurrent: 1/6
+identical on both (MTP and no-MTP), the same as main against itself (step-profile REPORT: timing-dependent batch
+composition flips near-ties; margins 0.04-0.06 here), so it does not separate a code change.
 
 ## Item 2: reduced-vocab MTP draft head — implemented, NOT yet measured
 
