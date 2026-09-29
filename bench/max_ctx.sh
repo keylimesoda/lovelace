@@ -26,7 +26,8 @@ try() { # bin ctx log -> 0 if the server becomes healthy
   docker rm -f $C >/dev/null 2>&1
   mapfile -t A < <(args_for "$ctx" | tr " " "\n")
   docker run -d --name $C --gpus all --network host --ulimit memlock=-1:-1 -v "$bin:/e" -v "$HOME/models:/models:ro" \
-    -v /tmp/max-ctx-sessions:/sessions lovelace-engine-runtime:cuda13.1 /e/llama-server "${A[@]}" >/dev/null
+    -v /tmp/max-ctx-sessions:/sessions -v "$HERE/../deploy/draft-vocab:/opt/lovelace/draft-vocab:ro" \
+    lovelace-engine-runtime:cuda13.1 /e/llama-server "${A[@]}" >/dev/null
   for i in $(seq 200); do
     [ "$(docker inspect -f {{.State.Running}} $C 2>/dev/null)" = true ] || break
     curl -sf 127.0.0.1:$PORT/health >/dev/null && { ok=0; break; }; sleep 2
