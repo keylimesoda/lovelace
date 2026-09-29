@@ -1,30 +1,28 @@
 # Live status (update at every milestone; read with docs/CHARTER.md at the start of a session)
 
-Updated: 2026-09-29 ~10:25 local.
+Updated: 2026-09-29 ~12:00 local.
 
 ## Incidents 2026-09-29
 - **Benches OOM-killed the desktop** (05:09 and 09:42, both in the 6 x 150k replay): the session disk tier of the bench
   scripts was /tmp (tmpfs = RAM). Fixed on main: session dirs on the NVMe (~/.cache/lovelace-bench), hard
   `--memory 34g` cap on every engine container (bench and production), arena 30 -> 24 GiB, RAM sampler + guard in
   bench/final_acceptance.sh. Verified: container 26.1 of 34 GiB, host >= 27 GiB available during a 200k warm-up.
-- **Scheduler lost wake-up on main** (10:06-10:17, 3 agents x 200k): KV-waiting requests are not re-admitted when the
-  idle victim's session sync completes; the server sat idle with 2 queued until an unrelated request arrived. Blocks
-  redeploy. Fix in progress: fix/sched-wakeup (agent SchedWakeup), with a failing-then-passing test.
-- Final acceptance so far (bench/results/final, main fca2e7862, CTX 376832): sweep and 6 x 60k done (153.6 t/s,
-  TTFT 8.7/16.7 s, 0 errors); 6 x 150k and 3 x 200k to rerun after the fix.
+- **Scheduler lost wake-up** (10:06-10:17, 3 agents x 200k): a finished session sync didn't re-run admission, so the
+  server idled with 2 queued requests until an unrelated request arrived. Fixed and merged (fix/sched-wakeup,
+  812043c2e; test-server-wakeup; bench/wakeup_repro.sh).
 
 ## Production
-- Stopped during measurement. Restart with `deploy/serve.sh balanced` (lovelace engine :8090, capture proxy :8080).
+- **Running** main 812043c2e: `deploy/serve.sh balanced` (engine :8090, capture proxy :8080), CTX 376832, 6 slots,
+  24 GiB pinned session arena, container capped at 34 GiB. Smoke-tested through the proxy 2026-09-29 ~11:55.
   The old ninfer container `ninfer-qwen` is stopped and kept only for comparison.
 
-## Acceptance (docs/CHARTER.md rows)
-- A1 quality: **PASS**. lovelace KL 0.0171 vs ninfer 0.0282 against the same Q8_0 reference (docs/quality-kld.md).
-- B1 single stream: **PASS** on branch results (decode equal or faster at every depth; cold prefill at 126k 1922/1730
-  tok/s at 1/6 lanes vs ninfer 1619). The final depth sweep on merged main is still to run.
-- B2 multi-agent: **PASS** (bench/results/acceptance/REPORT.md): lovelace 76.3 t/s steady, TTFT 19/40 s vs ninfer
-  3 lanes 41.0 t/s, 62/159 s; ninfer 6 lanes can't start at >= 163k. restore-latency build: 82.8 t/s.
-- C3 no collapse at 6 x 150k: **FAIL** so far (41.2 t/s). Cause fixed on feat/resident-cost (prefill attended every
-  resident cell); re-measure after merge.
+## Acceptance (docs/CHARTER.md rows; evidence bench/results/final/REPORT.md)
+- A1 quality **PASS**; B1 single stream **PASS** (except cold prefill of a ~5k prompt, 2603 vs 3122 tok/s);
+  B2 6 x 60k **PASS** 153.6 t/s vs ninfer 41.0; C1 >= 200k per agent **PASS**; C2 no stalls/errors **PASS**.
+- C3 no collapse at depth **PARTIAL**: 6 x 150k 66.3 t/s (was 25.0) = 43% of the 60k aggregate vs a 70% target.
+  Limits: ~2 sessions fit the pool at 161k median depth; the 24 GiB RAM tier cycles via NVMe (698 demotions,
+  prefetch 0/113). Candidates: feat/sched-v2 run-to-completion + prefetch on top of main, smaller mirrors
+  (checkpoints), or more pool.
 - TTFT p90 swings ~40-60 s run to run on an unchanged build; judge TTFT with 2 runs per side or by p50.
 
 ## In-flight engineering (worktrees in ~/Work/lovelace-wt/, branches not yet merged)

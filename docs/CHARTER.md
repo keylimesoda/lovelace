@@ -21,11 +21,11 @@ faster for multi-user**. Benchmarks must be cheap, deterministic scripts; spend 
 |---|---|---|---|
 | A1 | Quality >= previous setup | eval/kld against the same Q8_0 reference: lovelace (GPU-5 + q5_0 KV) vs ninfer artifact + rk4v4-e8 | **PASS**: KL 0.0171 vs 0.0282, top-1 95.67% vs 94.50% (docs/quality-kld.md) |
 | A2 | Quality vs BF16 | Q8_0 used as the proxy reference (KL of Q8_0 vs BF16 not measured) | proxy only |
-| B1 | Single-stream speed >= previous | bench/h2h.sh ENGINE 1 sweep (bench/depth_sweep.py, 8k-200k) | **PASS** (branch results, final main sweep pending): decode 113/119/99/78/110 vs 109/111/90/79/81 tok/s at 5k-198k; cold prefill at 126k 1922 (1 lane) / 1730 (6 lanes) vs 1619, at 198k 1291/1199 vs 851 (bench/results/prefill-depth, feat/prefill-depth merged; KLD 0.01721 <= 0.01757) |
-| B2 | Multi-agent aggregate >= previous | bench/h2h.sh ENGINE N replay:6:60000:1200 on both engines | **PASS**: 6 agents, 20 min: lovelace 76.3 t/s steady, TTFT p50/p90 19/40 s, 0 errors vs ninfer (best config that starts, 3 lanes) 41.0 t/s, 62/159 s |
-| C1 | >= 170k (target 262k) context per agent, never lost | session-store replays (bench/results/session-store) | met: 0 errors, 0 sessions lost at ~150k x 6 |
-| C2 | 4-6 agents without stalls or errors | bench/results/main-327k, session-store | met: 0 errors; TTFT p90 41 s at real depth |
-| C3 | No aggregate collapse at depth; pausing agents OK, no starvation | 6 x 150k replay, steady after first contacts, vs 6 x 60k (docs/design/session-store.md, Scheduling v2) | **FAIL** so far: 41.2 vs 82.8 t/s. Cause found: prefill attended every resident cell; feat/resident-cost fixes it (prefill with a 148k session resident 1741 vs 1743 tok/s alone). Re-measure after merge |
+| B1 | Single-stream speed >= previous | bench/h2h.sh ENGINE 1 sweep (bench/depth_sweep.py, 5k-198k) | **PASS** (bench/results/final): decode 133/139/117/98/113 vs 109/111/90/79/81 tok/s; cold prefill 2554/2356/2025/1394 vs 1899/2018/1619/851 at 30k-198k. Exception: 5k cold prefill 2603 vs 3122 |
+| B2 | Multi-agent aggregate >= previous | bench/h2h.sh ENGINE N replay:6:60000:1200 on both engines | **PASS**: 153.6 t/s steady, TTFT p50/p90 8.7/16.7 s, 0 errors vs ninfer (best config that starts, 3 lanes) 41.0 t/s, 62/159 s |
+| C1 | >= 170k (target 262k) context per agent, never lost | 3 x 200k replay with swapping (bench/results/final) | **PASS**: 71 turns at >= 200k (max 220k) across 4 sessions, median 208k tokens from cache, 0 errors; per-agent limit 262k |
+| C2 | 4-6 agents without stalls or errors | bench/results/final 6 x 60k, 6 x 150k, 3 x 200k | **PASS**: 0 errors in all runs; lost wake-up stall found and fixed (fix/sched-wakeup, regression test) |
+| C3 | No aggregate collapse at depth; pausing agents OK, no starvation | 6 x 150k replay, steady after first contacts, vs 6 x 60k | **PARTIAL**: 66.3 t/s at 161k median depth (was 25.0), 43% of the 60k aggregate vs a 70% target. Limit: ~2 sessions fit the pool at that depth; RAM tier cycles via NVMe (698 demotions) |
 | D1 | DFlash2 considered | bake-off: acceptance 0.27 vs MTP 0.55 on agent traffic | done (MTP chosen) |
 | D2 | Exotic KV considered | KLD of q4/q5/q8 mixes; ninfer E8 measured in A1 (adds 0.0055 KL vs q5_0's 0.0008); KVarN not measured | done: q5_0 kept |
 | D3 | SM89 kernels | llama-bench tables (bench/results/main-gate) | done |
