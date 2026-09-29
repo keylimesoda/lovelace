@@ -5,7 +5,6 @@ For each target depth it picks a recorded OMP turn from a distinct session (benc
 max_tokens=1 and prints the server's prompt timings. --on-start/--on-stop run around the last request only.
 With --decode-during, the first session generates (streaming, ignore_eos) while the last prompt is prefilled, so
 the measured prefill shares its ubatches with another session's decode (the server batches both).
-Afterwards it prints the server's slot table (cells used per slot).
 
 Usage (from bench/replay): uv run python ../resident_drive.py --base-url http://127.0.0.1:18410/v1 --depths 150000,128000
          [--decode-during] [--on-start CMD] [--on-stop CMD]
@@ -74,13 +73,6 @@ def main():
                           "wall_s": round(wall, 1),
                           **({"concurrent_decode_events": d1 - d0,
                               "concurrent_decode_eps": round((d1 - d0) / wall, 2)} if dec else {})}), flush=True)
-    root = a.base_url.rsplit("/v1", 1)[0]
-    try:
-        slots = httpx.get(f"{root}/slots", timeout=30).json()
-        print(json.dumps({"slots": [{"id": s.get("id"), "n_ctx_used": s.get("n_ctx_used"),
-                                     "is_processing": s.get("is_processing")} for s in slots]}), flush=True)
-    except Exception as e:  # noqa: BLE001 - informational only
-        print(json.dumps({"slots_error": str(e)}), flush=True)
 
 
 if __name__ == "__main__":

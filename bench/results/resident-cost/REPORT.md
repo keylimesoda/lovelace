@@ -54,19 +54,21 @@ the per-cell sequence bits from both ends), padded to 256 cells as before. The K
 every term of the table above follows the ubatch's own cells, for every FA kernel: the FA kernel range, the f16
 conversion, the mask size (host build and upload) and the mask pre-pass.
 
-- Graph reuse: the window start is recorded in the mask input's (unused) `op_params[0]` and is part of
-  `can_reuse_kq_mask()`, so a reused graph never keeps stale view offsets.
+- Graph reuse: the window start is recorded in the (unused) `op_params[0]` of the mask's input tensor (the host mask,
+  or the keys of the GPU-built mask) and is part of `can_reuse_kq_mask()`, so a reused graph never keeps stale view
+  offsets.
 - Scope: on for LLM_ARCH_QWEN35/QWEN35MOE caches without SWA/ALiBi (the MTP draft cache shares the cells and gets its
   own window). Families that index cells directly (indexer caches, relative position buckets, DeepSeek-V4) keep
   `kv_lo = 0`. Sequence ids >= 64 fall back to the full range. `LLAMA_KV_WINDOW=0` turns it off (A/B).
-- It narrows a ubatch whose sequences sit in a compact cell range: a prefill (alone in its ubatch) and any session
-  whose cells are contiguous. A ubatch that mixes several sessions (a prefill chunk batched with another session's
-  decode) gets the union of their ranges; there the kernel-level tile skipping of feat/prefill-depth
-  (`flash_attn_ext_mma_q_pf`, skips 64-cell tiles no row of the block sees) is what removes the FA cost, see the
-  mixed run below. Placement is unchanged (first fit from the head); a session appended after another one's later
-  cells spans them.
-- Not duplicated: the GPU-built KQ mask (feat/step-costs 0c727e790) is not needed for this case (the window makes
-  the host mask the same size as alone); it still helps mixed ubatches.
+- It narrows a ubatch whose sequences sit in a compact cell range: a prefill and any session whose cells are
+  contiguous. A ubatch holding several sessions gets the union of their ranges (6 decoding sessions: the whole cache);
+  there the per-tile skipping of the FA kernels (fattn-mma-q decode gather, `flash_attn_ext_mma_q_pf` for prefill)
+  carries the FA cost. Placement is unchanged (first fit from the head): a session whose later turns land above
+  another session's cells spans them.
+- Rebased onto origin/main 3ce297f40 (feat/prefill-depth and feat/step-costs merged): `llama_kv_mask_args` carries
+  `kv_lo`, and the GPU-built mask's keys (`llama_kv_mask_set_keys`) and its M-RoPE fallback check read cells
+  `kv_lo + j`. test-kq-mask gains a windowed case: a 64-row prefill of the second of two sessions masked over
+  `[39936, 50176)` must equal those columns of the full-range mask, and the device mask must equal the host mask.
 
 Gates (build 896206c36 vs main 76f8ee574):
 
@@ -90,3 +92,21 @@ Same script and prompts (`after/*.drive.out`, `after/*.table.txt`):
 With the other session resident the prefill is now within 0.2% of alone (target: within 10%). Per ubatch the resident
 run matches alone class by class: FA kernel 179.4 vs 178.7 ms, H2D 300 vs 299 MiB (12.5 ms), conversion 6.6 ms,
 host gap 20.7 ms.
+
+Mixed: the first session generates (streaming) while the second prompt is prefilled (`mixed=150000,128000+decode`).
+The capture has 267 segments for 129 prefill ubatches, so the server ran the other session's decode as separate
+decode calls between prompt chunks [INFERENCE from the segment count], and each call gets its own window:
+
+| run | main | window |
+|---|---|---|
+| mixed: prefill tok/s | 934 | **1637** |
+| mixed: concurrent decode, stream events/s | 3.22 | **5.07** |
+
+No regression alone, `bench/pp_depth.sh` (llama-bench, one sequence, so the window equals `[0, n_kv)`), tok/s:
+
+| build | pp2048 | pp2048 @ d65536 | pp2048 @ d131072 |
+|---|---|---|---|
+| main 76f8ee574 | 3006 ± 52 | 1872 ± 24 | 1356 ± 9 |
+| window | 2998 ± 58 | 1860 ± 3 | 1350 ± 7 |
+
+(within run-to-run noise: the code path is the same for a single sequence).
