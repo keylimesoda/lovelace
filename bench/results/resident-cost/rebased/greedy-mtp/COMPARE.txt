@@ -1,0 +1,16 @@
+== seq
+2026-09-24T08-12-05_01a0d278.jsonl: identical (128 tokens)
+2026-09-27T08-15-02_01a0e1ee.jsonl: identical (128 tokens)
+2026-09-27T08-42-53_01a0e208.jsonl: identical (128 tokens)
+2026-09-25T05-26-18_01a0d707.jsonl: identical (128 tokens)
+2026-09-25T05-41-06_01a0d714.jsonl: identical (128 tokens)
+2026-09-26T04-24-42_01a0dbf5.jsonl: identical (128 tokens)
+6/6 identical
+== par
+2026-09-24T08-12-05_01a0d278.jsonl: diverges at token 12/128: ' package' vs ' plugin', baseline top-1/top-2 logprob margin None
+2026-09-27T08-15-02_01a0e1ee.jsonl: diverges at token 73/128: ' -' vs ' ', baseline top-1/top-2 logprob margin None
+2026-09-27T08-42-53_01a0e208.jsonl: diverges at token 51/128: 'MB' vs ' MB', baseline top-1/top-2 logprob margin None
+2026-09-25T05-26-18_01a0d707.jsonl: diverges at token 5/128: ' from' vs ' today', baseline top-1/top-2 logprob margin None
+2026-09-25T05-41-06_01a0d714.jsonl: diverges at token 18/128: ' Muse' vs ' version', baseline top-1/top-2 logprob margin None
+2026-09-26T04-24-42_01a0dbf5.jsonl: diverges at token 3/128: ' a' vs ' the', baseline top-1/top-2 logprob margin None
+0/6 identical

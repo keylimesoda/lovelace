@@ -1,0 +1,69 @@
+/home/ric/Work/lovelace-wt/resident/bench/results/resident-cost/rebased/main/mixed.sqlite
+all: 267 ubatches, wall 267.2 ms/ubatch, H2D 47 MiB/ubatch
+  class                          ms/ubatch  share
+  matmul                            113.06  42.3%
+  FA kernel                          74.71  28.0%
+  DeltaNet                           26.57   9.9%
+  misc                               11.78   4.4%
+  host gap (GPU idle)                10.97   4.1%
+  MTP FA kernel                       8.62   3.2%
+  MTP matmul                          6.91   2.6%
+  norms                               6.63   2.5%
+  FA mask pre-pass                    3.65   1.4%
+  upload H2D                          2.24   0.8%
+  memcpy kind2                        0.78   0.3%
+  MTP misc                            0.57   0.2%
+  MTP norms                           0.30   0.1%
+  mask (GPU build)                    0.22   0.1%
+  MTP mask (GPU build)                0.13   0.0%
+band 1/3 (ubatches 0-88): 89 ubatches, wall 213.2 ms/ubatch, H2D 44 MiB/ubatch
+  class                          ms/ubatch  share
+  matmul                            112.26  52.7%
+  FA kernel                          27.46  12.9%
+  DeltaNet                           26.45  12.4%
+  misc                               11.73   5.5%
+  host gap (GPU idle)                10.64   5.0%
+  MTP matmul                          7.09   3.3%
+  norms                               6.63   3.1%
+  MTP FA kernel                       4.01   1.9%
+  FA mask pre-pass                    2.96   1.4%
+  upload H2D                          2.13   1.0%
+  memcpy kind2                        0.61   0.3%
+  MTP misc                            0.57   0.3%
+  MTP norms                           0.30   0.1%
+  mask (GPU build)                    0.19   0.1%
+  MTP mask (GPU build)                0.11   0.1%
+band 2/3 (ubatches 89-177): 89 ubatches, wall 273.7 ms/ubatch, H2D 48 MiB/ubatch
+  class                          ms/ubatch  share
+  matmul                            115.26  42.1%
+  FA kernel                          77.52  28.3%
+  DeltaNet                           27.14   9.9%
+  misc                               12.10   4.4%
+  host gap (GPU idle)                11.28   4.1%
+  MTP FA kernel                       8.78   3.2%
+  MTP matmul                          6.92   2.5%
+  norms                               6.76   2.5%
+  FA mask pre-pass                    3.71   1.4%
+  upload H2D                          2.29   0.8%
+  memcpy kind2                        0.69   0.3%
+  MTP misc                            0.58   0.2%
+  MTP norms                           0.31   0.1%
+  mask (GPU build)                    0.22   0.1%
+  MTP mask (GPU build)                0.13   0.0%
+band 3/3 (ubatches 178-266): 89 ubatches, wall 314.6 ms/ubatch, H2D 49 MiB/ubatch
+  class                          ms/ubatch  share
+  FA kernel                         119.16  37.9%
+  matmul                            111.65  35.5%
+  DeltaNet                           26.12   8.3%
+  MTP FA kernel                      13.09   4.2%
+  misc                               11.51   3.7%
+  host gap (GPU idle)                10.98   3.5%
+  MTP matmul                          6.74   2.1%
+  norms                               6.51   2.1%
+  FA mask pre-pass                    4.27   1.4%
+  upload H2D                          2.29   0.7%
+  memcpy kind2                        1.04   0.3%
+  MTP misc                            0.56   0.2%
+  MTP norms                           0.30   0.1%
+  mask (GPU build)                    0.25   0.1%
+  MTP mask (GPU build)                0.15   0.0%

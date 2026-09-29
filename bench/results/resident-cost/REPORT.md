@@ -70,7 +70,16 @@ conversion, the mask size (host build and upload) and the mask pre-pass.
   `kv_lo + j`. test-kq-mask gains a windowed case: a 64-row prefill of the second of two sessions masked over
   `[39936, 50176)` must equal those columns of the full-range mask, and the device mask must equal the host mask.
 
-Gates (build 896206c36 vs main 76f8ee574):
+Gates on the rebased build (origin/main 3ce297f40 + this branch; `rebased/`):
+
+- test-backend-ops FLASH_ATTN_EXT 4093/4093 and KQ_MASK 22/22 passed, test-gdn-replay `all ReplaySSM checks passed`
+  (`rebased/gates-ops.txt`); test-kq-mask `all KQ mask checks passed`, including the windowed case
+  (`rebased/gate-kq-mask.txt`).
+- greedy gate vs origin/main: **sequential 6/6 identical with MTP on and off**. Concurrent: 0/6 (MTP on) and 3/6 (off);
+  the off-run divergences are near-ties (margins 0.005-0.13) and the MTP-on ones hit the same tokens as main-vs-main
+  runs (' package'/' plugin' at 12, ' a'/' the' at 3); concurrent batching is not a gate (not deterministic on main).
+
+Gates on the pre-rebase build (896206c36 vs main 76f8ee574):
 
 - `bench/op_gates.sh gates-ops.txt <bin> FLASH_ATTN_EXT`: test-backend-ops FLASH_ATTN_EXT 4052/4052 passed (no ggml op
   is touched), test-gdn-replay `all ReplaySSM checks passed`.
@@ -110,3 +119,34 @@ No regression alone, `bench/pp_depth.sh` (llama-bench, one sequence, so the wind
 | window | 2998 ± 58 | 1860 ± 3 | 1350 ± 7 |
 
 (within run-to-run noise: the code path is the same for a single sequence).
+
+### On the rebased build (origin/main with the prefill kernel and the GPU mask)
+
+feat/prefill-depth's prefill kernel already skips 64-cell tiles that no row of a block sees, so origin/main no longer
+runs PV over the other session; what is left is the tile-visibility pre-pass and the per-tile work over the full
+range. Same script (`rebased/main`, `rebased/window`):
+
+| run | origin/main tok/s | ms/ubatch | window tok/s | ms/ubatch |
+|---|---|---|---|---|
+| alone | - | - | 2001 | 488.3 |
+| resident (147,684 other cells) | 1901 | 511.2 | **2009** | **486.4** |
+| mixed: prefill tok/s | 1764 | 267.2 | **1862** | 253.2 |
+| mixed: concurrent decode events/s | 5.53 | | **5.84** | |
+
+(alone is the same code path on both builds: one sequence, window = `[0, n_kv)`.) Resident per ubatch, origin/main vs
+window: FA kernel 146.3 vs 123.4 ms, FA mask pre-pass 7.5 vs 2.6 ms, H2D 90 vs 73 MiB; the window run equals alone
+class by class. So with the window the resident prefill is at alone speed (2009 vs 2001 tok/s), +5.7% over
+origin/main; the mixed prefill gains 5.6% and the concurrent decode 5.6%.
+
+pp2048 at depth (`rebased/pp-depth.txt`), tok/s: origin/main 3083 ± 21 / 2198 ± 11 / 1698 ± 4 vs window
+3084 ± 19 / 2199 ± 7 / 1699 ± 6 at d0 / d65536 / d131072 (no change alone).
+
+## Commands
+
+```sh
+bench/resident_profile.sh bench/results/resident-cost/<dir> alone=128000 resident=150000,128000 mixed=150000,128000+decode   # BIN=<bin dir>
+bench/op_gates.sh OUT <bin> FLASH_ATTN_EXT KQ_MASK
+deploy/gpu-lock.sh docker run --rm --gpus all -v <bin>:/e lovelace-engine-runtime:cuda13.1 /e/test-kq-mask
+bench/greedy_gate.sh OUT <main bin> <branch bin>; NO_SPEC=1 bench/greedy_gate.sh OUT2 <main bin> <branch bin>
+DEPTHS=0,65536,131072 bench/pp_depth.sh OUT <main bin> <branch bin>
+```
