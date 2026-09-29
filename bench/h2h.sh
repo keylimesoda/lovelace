@@ -55,7 +55,8 @@ case "$MODE" in
     uv run replay.py --base-url http://127.0.0.1:$PORT/v1 --model qwen3.8-27b "${WFLAG[@]}" --agents "$A" --duration "$DUR" --no-drain \
       --start-turn-min-depth "$MD" --think-scale 0.25 --max-think 20 --output-tokens recorded --temperature 1.0 \
       --extra-body "{\"top_p\":0.95,\"top_k\":20}" --results-dir "$OUT" --label "$LABEL" > "$OUT/$LABEL.replay.out" 2>&1
-    echo 180 > "$OUT/$LABEL/warmup_s" ;;
+    echo 180 > "$OUT/$LABEL/warmup_s"
+    [ "$ENGINE" = lovelace ] && curl -sf 127.0.0.1:$PORT/telemetry > "$OUT/$LABEL/telemetry-end.json" ;;
 esac
 docker logs h2h > "$OUT/$LABEL.server.log" 2>&1
 docker rm -f h2h >/dev/null
