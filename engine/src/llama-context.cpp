@@ -1356,6 +1356,101 @@ void llama_context::set_nextn_layer_offset(int32_t offset) {
     cparams.nextn_layer_offset = offset;
 }
 
+bool llama_context::set_draft_vocab(const llama_token * ids_in, int32_t n) {
+    ggml_tensor * head   = model.output;
+    const int64_t n_vocab = head ? head->ne[1] : 0;
+
+    if (cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP ||
+        (model.arch != LLM_ARCH_QWEN35 && model.arch != LLM_ARCH_QWEN35MOE && model.arch != LLM_ARCH_QWEN3NEXT)) {
+        LLAMA_LOG_ERROR("%s: a draft vocabulary needs an MTP context of a Qwen3.5/Qwen3-Next model\n", __func__);
+        return false;
+    }
+    if (!head || head->buffer == nullptr) {
+        LLAMA_LOG_ERROR("%s: the model has no output weights\n", __func__);
+        return false;
+    }
+    for (const auto & layer : model.layers) {
+        if (layer.nextn.shared_head_head) {
+            LLAMA_LOG_ERROR("%s: the model's MTP layers have their own LM head\n", __func__);
+            return false;
+        }
+    }
+
+    std::vector<llama_token> ids(ids_in, ids_in + n);
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    if (ids.empty() || ids.front() < 0 || ids.back() >= n_vocab) {
+        LLAMA_LOG_ERROR("%s: draft vocabulary ids must be in [0, %" PRId64 ")\n", __func__, n_vocab);
+        return false;
+    }
+    const int64_t n_draft = ids.size();
+
+    ggml_tensor * head_s = model.output_s;
+    const bool gather_s = head_s && ggml_nelements(head_s) != 1;
+    if (gather_s && (head_s->type != GGML_TYPE_F32 || ggml_nelements(head_s) != n_vocab)) {
+        LLAMA_LOG_ERROR("%s: unsupported output scale shape\n", __func__);
+        return false;
+    }
+
+    ggml_init_params params = { 3*ggml_tensor_overhead(), nullptr, true };
+    ggml_context_ptr ctx(ggml_init(params));
+
+    llama_draft_head dh;
+    dh.src = head;
+    dh.w   = ggml_new_tensor_2d(ctx.get(), head->type, head->ne[0], n_draft);
+    dh.ids = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_I32, n_draft);
+    dh.s   = gather_s ? ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, n_draft) : head_s;
+    ggml_set_name(dh.w,   "output_draft.weight");
+    ggml_set_name(dh.ids, "output_draft.ids");
+
+    ggml_backend_buffer_ptr buf(ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), ggml_backend_buffer_get_type(head->buffer)));
+    if (!buf) {
+        LLAMA_LOG_ERROR("%s: failed to allocate the draft LM head\n", __func__);
+        return false;
+    }
+    ggml_backend_buffer_set_usage(buf.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+
+    // gather the rows, reading the head in chunks of up to 64 MiB of consecutive rows
+    const size_t row_size   = head->nb[1];
+    const int64_t chunk_rows = std::max<int64_t>(1, (64u << 20)/row_size);
+    std::vector<uint8_t> chunk, rows((size_t) n_draft*row_size);
+    for (int64_t k = 0; k < n_draft; ) {
+        const int64_t r0 = ids[k];
+        int64_t kend = k;
+        while (kend < n_draft && ids[kend] < r0 + chunk_rows) {
+            ++kend;
+        }
+        const int64_t r1 = ids[kend - 1] + 1;
+        chunk.resize((size_t) (r1 - r0)*row_size);
+        ggml_backend_tensor_get(head, chunk.data(), r0*row_size, chunk.size());
+        for (; k < kend; ++k) {
+            memcpy(rows.data() + k*row_size, chunk.data() + (ids[k] - r0)*row_size, row_size);
+        }
+    }
+    ggml_backend_tensor_set(dh.w, rows.data(), 0, rows.size());
+    ggml_backend_tensor_set(dh.ids, ids.data(), 0, ggml_nbytes(dh.ids));
+
+    if (gather_s) {
+        std::vector<float> s_all(n_vocab), s_draft(n_draft);
+        ggml_backend_tensor_get(head_s, s_all.data(), 0, ggml_nbytes(head_s));
+        for (int64_t k = 0; k < n_draft; ++k) {
+            s_draft[k] = s_all[ids[k]];
+        }
+        ggml_backend_tensor_set(dh.s, s_draft.data(), 0, ggml_nbytes(dh.s));
+    }
+
+    LLAMA_LOG_INFO("%s: draft LM head over %" PRId64 " of %" PRId64 " tokens (%.1f MiB, %s)\n", __func__,
+            n_draft, n_vocab, ggml_backend_buffer_get_size(buf.get())/1024.0/1024.0, ggml_backend_buffer_name(buf.get()));
+
+    draft_head     = dh;
+    draft_head_ctx = std::move(ctx);
+    draft_head_buf = std::move(buf);
+
+    sched_need_reserve = true;
+
+    return true;
+}
+
 void llama_context::set_causal_attn(bool value) {
     LLAMA_LOG_DEBUG("%s: value = %d\n", __func__, value);
 
@@ -2669,6 +2764,7 @@ llm_graph_params llama_context::graph_params(
         /*.mctx        =*/ mctx,
         /*.cross       =*/ &cross,
         /*.prec_policy =*/ &model.prec_policy,
+        /*.draft_head  =*/ draft_head.w ? &draft_head : nullptr,
         /*.samplers    =*/ sampling.samplers,
         /*.n_outputs   =*/ n_outputs,
         /*.cb          =*/ graph_get_cb(),
@@ -4627,6 +4723,10 @@ void llama_set_embeddings_layer_inp(llama_context * ctx, uint32_t lid, bool valu
 
 void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {
     ctx->set_nextn_layer_offset(offset);
+}
+
+bool llama_set_draft_vocab(llama_context * ctx, const llama_token * ids, int32_t n) {
+    return ctx->set_draft_vocab(ids, n);
 }
 
 llama_memory_t llama_get_memory(const struct llama_context * ctx) {

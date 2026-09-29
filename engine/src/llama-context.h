@@ -120,6 +120,7 @@ struct llama_context {
     void set_embeddings_nextn(bool value, bool masked);
     void set_embeddings_layer_inp(uint32_t lid, bool enable);
     void set_nextn_layer_offset(int32_t offset);
+    bool set_draft_vocab(const llama_token * ids, int32_t n);
     void set_causal_attn(bool value);
     void set_warmup(bool value);
 
@@ -362,6 +363,11 @@ private:
     ggml_backend_sched_ptr sched;
 
     bool sched_need_reserve = true;
+
+    // MTP draft LM head over a subset of the vocabulary (set_draft_vocab), with the buffer that owns it
+    llama_draft_head        draft_head;
+    ggml_context_ptr        draft_head_ctx;
+    ggml_backend_buffer_ptr draft_head_buf;
 
     ggml_backend_t backend_cpu = nullptr;
     std::vector<ggml_backend_ptr> backends;

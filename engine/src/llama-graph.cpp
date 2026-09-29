@@ -1571,6 +1571,7 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     mctx             (params.mctx),
     cross            (params.cross),
     prec_policy      (params.prec_policy),
+    draft_head       (params.draft_head),
     samplers         (params.samplers),
     cb_func          (params.cb),
     res              (params.res),
@@ -1626,6 +1627,33 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     }
 
     return res;
+}
+
+ggml_tensor * llm_graph_context::build_mtp_lm_head(
+          ggml_tensor * cur,
+          ggml_tensor * head_w,
+          ggml_tensor * head_s) const {
+    bool use_draft = draft_head && draft_head->src == head_w;
+    for (const auto & lora : *loras) {
+        use_draft &= lora.first->get_weight(head_w) == nullptr;
+    }
+    if (!use_draft) {
+        return build_lora_mm(head_w, cur, head_s);
+    }
+
+    const int64_t n_vocab = head_w->ne[1];
+    const int64_t n_draft = draft_head->w->ne[1];
+    const int64_t n_out   = cur->ne[1];
+
+    ggml_tensor * logits = build_lora_mm(draft_head->w, cur, draft_head->s); // [n_draft, n_out]
+
+    // every consumer (logits readback, CPU and backend samplers) keeps the [n_vocab, n_out] layout: tokens outside the
+    // draft vocabulary get -INF, so they are never drafted. ggml_pad only provides the shape (fill overwrites it).
+    ggml_tensor * full = ggml_fill_inplace(ctx0, ggml_pad(ctx0, logits, n_vocab - n_draft, 0, 0, 0), -INFINITY);
+    full = ggml_set_rows(ctx0, ggml_reshape_3d(ctx0, full, 1, n_vocab, n_out),
+            ggml_reshape_3d(ctx0, logits, 1, n_draft, n_out), draft_head->ids);
+
+    return ggml_reshape_2d(ctx0, full, n_vocab, n_out);
 }
 
 ggml_tensor * llm_graph_context::build_lora_mm_id(

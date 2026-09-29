@@ -334,6 +334,9 @@ struct common_params_speculative_draft {
 
     bool backend_sampling = true; // offload draft sampling to the backend (default: on)
 
+    // MTP only: token ids the draft LM head is restricted to (one per line, '#' comments), empty = the full vocab
+    std::string vocab_file;
+
     common_params_model mparams;
 
     llama_context * ctx_tgt = nullptr;
