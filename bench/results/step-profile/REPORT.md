@@ -41,6 +41,10 @@ Findings:
 | 4e31dc347 | CUDA top-k for k <= 32 (register lists + warp tournament) | 151936 x 1, k=20: 85 -> 36 us; 6 rows now 2 launches instead of ~24 |
 | 2483f2646 | mask precompute from a compact 64-bit copy of each cell's sequence set + PEXT, vectorized rows | CPU microbench, 286k cells, 6 seqs: 6 rows 1.1-1.4 -> 0.22 ms; 24 rows 1.8-3.6 -> 1.3-1.9 ms (store-bound) |
 
+**Final build (2483f2646), `step-profile/v6`:** six-seq step 60.8 -> **54.0 ms** (-11%): host gap 16.1 -> 9.5 ms,
+MTP draft steps 2.17 -> 2.00 ms, target matmul/FA unchanged; single stream at 64k 29.9 -> 29.0 ms (gap 4.3 -> 3.3).
+Sum of per-request decode in the six-seq drive: 325 tok/s vs 278 base (+17%).
+
 Step profiles after the intermediate builds (`step-profile/v2..v4`): v4 (all but the last commit) six-seq step
 61.4 ms, sum of per-request decode 292 vs 278 tok/s base (+5%). The first mask version was no faster in practice:
 Qwen3.5 batches carry 4 M-RoPE positions (the 2D path), and the per-cell 256-bit sets made the pass memory-bound;
