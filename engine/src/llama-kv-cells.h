@@ -410,6 +410,17 @@ public:
     }
 
     // check if a cell is not empty and its position is within [p0, p1)
+    // append the cells of seq_id with a position in [p0, p1) to res, in position order
+    void seq_cells_in(llama_seq_id seq_id, llama_pos p0, llama_pos p1, std::vector<uint32_t> & res) const {
+        assert(seq_id >= 0);
+        assert(seq_id < LLAMA_MAX_SEQ);
+
+        const auto & sp = seq_pos[seq_id];
+        for (auto it = sp.lower_bound({ p0, 0 }); it != sp.end() && it->first < p1; ++it) {
+            res.push_back(it->second);
+        }
+    }
+
     bool pos_in(uint32_t i, llama_pos p0, llama_pos p1) const {
         assert(i < pos.size());
 

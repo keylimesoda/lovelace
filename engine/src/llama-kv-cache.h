@@ -312,6 +312,14 @@ private:
     // maps from a sequence id to a stream id
     std::vector<uint32_t> seq_to_stream;
 
+    // scratch of seq_rm(): the cells to remove
+    std::vector<uint32_t> seq_rm_cells;
+
+    // scratch of set_input_kq_mask(): per-cell position and visibility bits of the batch sequences
+    mutable std::vector<llama_pos> kq_mask_cell_pos;
+    mutable std::vector<uint64_t>  kq_mask_cell_own;
+    mutable std::vector<uint32_t>  kq_mask_cells_at_p1;
+
     // pending stream copies that will be applied during the next update
     stream_copy_info sc_info;
 
