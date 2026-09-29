@@ -34,7 +34,7 @@ docker rm -f h2h >/dev/null 2>&1
 if [ "$ENGINE" = lovelace ]; then start_lovelace; up || { docker logs h2h 2>&1 | tail -5; docker rm -f h2h; exit 1; }
 else
   ok=0
-  for C in 262144 229376 196608 163840; do
+  for C in 262144 229376 196608 163840 131072 98304; do
     start_ninfer $C
     if up; then ok=1; echo "ninfer lanes=$LANES max-context=$C" > "$OUT/$LABEL.config"; break; fi
     docker logs h2h 2>&1 | grep -iE "fatal|error|must" | head -2; docker rm -f h2h >/dev/null 2>&1

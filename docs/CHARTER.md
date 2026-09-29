@@ -29,3 +29,20 @@ faster for multi-user**. Benchmarks must be cheap, deterministic scripts; spend 
 | D2 | Exotic KV considered | KLD of q4/q5/q8 mixes done; E8 comes from A1; KVarN not measured | partial |
 | D3 | SM89 kernels | llama-bench tables (bench/results/main-gate) | done |
 | E1 | Observability without perf cost | overhead A/B < 0.5% | done |
+
+## Working agreement (how this project is run)
+
+- **Source of truth lives in the repo, not in a chat:** this file (goal, acceptance, status), README.md (what exists
+  and how to run it), docs/design/* (designs), bench/results/*/REPORT.md (evidence). A new session starts by reading
+  this file and README.md, and nothing else is assumed.
+- **Measure against the incumbent**, never only against an easy baseline. Stock llama.cpp numbers are context,
+  not acceptance.
+- **Measurement is scripts only:** `bench/acceptance.sh` runs every acceptance measurement that is missing and writes
+  `bench/results/acceptance/REPORT.md` (PASS/FAIL per row). Model-driven agents write code; they don't run
+  benchmark campaigns.
+- **Small milestones:** each milestone names the charter row it moves, ends with `bench/acceptance.sh report`, and
+  updates the Status column above.
+- **Agent models:** Luna (`sonic`/`scout`) by default; Opus (`task`) for new CUDA kernels, and for any work where Luna
+  shows failure or degradation.
+- **GPU discipline:** `deploy/gpu-lock.sh` for every GPU job (FIFO; a server is started, used and removed in one hold);
+  production (`deploy/serve.sh`) is stopped during measurement and restarted after.

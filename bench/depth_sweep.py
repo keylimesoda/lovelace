@@ -11,12 +11,14 @@ Usage (from bench/replay): uv run python ../depth_sweep.py --base-url http://127
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
 import httpx
 
-from corpusfmt import CORPUS_DIR, iter_turns, load_tools
+sys.path.insert(0, str(Path(__file__).resolve().parent / "replay"))
+from corpusfmt import CORPUS_DIR, iter_turns, load_tools  # noqa: E402
 
 TOOLS = load_tools(CORPUS_DIR)
 

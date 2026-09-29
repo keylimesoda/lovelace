@@ -86,6 +86,8 @@ done
 echo "== (1) weight quantization, buckets $SHORT"
 step base results/wq-base-q8_0-f16.bin "$REF" "$SHORT" f16 wq-base-q8_0-f16
 step compare results/wq-iq4xs-f16.json "$IQ4" "$SHORT" f16 wq-iq4xs-f16 results/wq-base-q8_0-f16.bin
+# lovelace production config (GPU-5 weights + q5_0 KV) against the same Q8_0 reference: charter row A1
+step compare results/wq-iq4xs-q5_0.json "$IQ4" "$SHORT" q5_0 wq-iq4xs-q5_0 results/wq-base-q8_0-f16.bin
 # other weight quants against the same Q8_0 reference: label=path (files that don't exist are skipped)
 WQ_CANDIDATES=(
     "gpu4-iq3s-3.23=/home/ric/models/byteshape/Qwen3.8-27B-IQ3_S-3.23bpw.gguf"
@@ -100,6 +102,6 @@ for c in "${WQ_CANDIDATES[@]}"; do
 done
 
 [[ $DRY_RUN == 1 ]] && exit 0
-results=(results/wq-iq4xs-f16.json "${wq_results[@]}")
+results=(results/wq-iq4xs-f16.json results/wq-iq4xs-q5_0.json "${wq_results[@]}")
 for t in "${KV_CANDIDATES[@]}"; do results+=("results/kv-iq4xs-${t//\//-}.json"); done
 python3 summarize.py "${results[@]}" | tee results/summary.txt
