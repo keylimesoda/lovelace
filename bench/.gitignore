@@ -1,2 +1,3 @@
 results/
 !results/*/REPORT.md
+__pycache__/
