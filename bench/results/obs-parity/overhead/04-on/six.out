@@ -1,0 +1,13 @@
+{"prefill": 0, "target": 52000, "rec_depth": 51901, "session": "2026-09-26T02-32-58_01a0db8f.jsonl", "prompt_tokens": 49669, "wall_s": 22.5}
+{"prefill": 1, "target": 52000, "rec_depth": 51828, "session": "2026-09-27T05-25-31_01a0e153.jsonl", "prompt_tokens": 49418, "wall_s": 22.5}
+{"prefill": 2, "target": 52000, "rec_depth": 51820, "session": "2026-09-27T08-42-53_01a0e208.jsonl", "prompt_tokens": 49281, "wall_s": 22.5}
+{"prefill": 3, "target": 52000, "rec_depth": 52181, "session": "2026-09-26T09-53-08_01a0dd22.jsonl", "prompt_tokens": 49697, "wall_s": 22.6}
+{"prefill": 4, "target": 52000, "rec_depth": 52236, "session": "2026-09-25T06-50-05_01a0d754.jsonl", "prompt_tokens": 49961, "wall_s": 22.4}
+{"prefill": 5, "target": 52000, "rec_depth": 51702, "session": "2026-09-26T02-50-53_01a0db9f.jsonl", "prompt_tokens": 49437, "wall_s": 22.0}
+{"capture_s": 10.0, "stream_events_in_capture": 3044, "approx_aggregate_tps": 304.4}
+{"req": 0, "prompt_n": 4, "cache_n": 49665, "predicted_n": 1024, "decode_tps": 72.49722979793471, "draft_n": 842, "draft_accepted": 742, "acceptance": 0.881}
+{"req": 1, "prompt_n": 4, "cache_n": 49414, "predicted_n": 1024, "decode_tps": 69.74731155817267, "draft_n": 871, "draft_accepted": 732, "acceptance": 0.84}
+{"req": 2, "prompt_n": 4, "cache_n": 49277, "predicted_n": 1024, "decode_tps": 68.3684507468468, "draft_n": 897, "draft_accepted": 724, "acceptance": 0.807}
+{"req": 3, "prompt_n": 4, "cache_n": 49693, "predicted_n": 1024, "decode_tps": 75.91623774858114, "draft_n": 807, "draft_accepted": 754, "acceptance": 0.934}
+{"req": 4, "prompt_n": 4, "cache_n": 49957, "predicted_n": 1024, "decode_tps": 67.42723444660334, "draft_n": 908, "draft_accepted": 720, "acceptance": 0.793}
+{"req": 5, "prompt_n": 4, "cache_n": 49433, "predicted_n": 1024, "decode_tps": 68.48737760224418, "draft_n": 891, "draft_accepted": 726, "acceptance": 0.815}

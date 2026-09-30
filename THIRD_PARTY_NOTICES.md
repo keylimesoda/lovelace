@@ -55,27 +55,37 @@ SOFTWARE.
 
 - Original work: the web dashboard of [tensorninja/ninfer-4090](https://github.com/tensorninja/ninfer-4090)
   (`apps/web`, first commit `9350a2cf`, 2026-08-23), a fork of
-  [sergiuszm/ninfer-4090](https://github.com/sergiuszm/ninfer-4090). It reached lovelace through
-  [keylimesoda/ninfer-4090-lin-hybrid](https://github.com/keylimesoda/ninfer-4090-lin-hybrid) (commit `d7acef5d`).
+  [sergiuszm/ninfer-4090](https://github.com/sergiuszm/ninfer-4090), and its `docs/dashboard.md`.
+- Base: tensorninja/ninfer-4090 at `f408990` (2026-09-23, request-log schema 20). lovelace serves that version's
+  observability API as a superset (`docs/observability-parity.md`), so `apps/web/` was reset to a verbatim copy of
+  upstream's `apps/web` at `f408990` (lovelace commit `f4f8859b6`), replacing lovelace's earlier port of the
+  `15fd064b` dashboard (which reached lovelace through
+  [keylimesoda/ninfer-4090-lin-hybrid](https://github.com/keylimesoda/ninfer-4090-lin-hybrid), commit `d7acef5d`).
 - License: Apache License, Version 2.0 (full text below). The upstream repository has no NOTICE file.
-- Changes: lovelace commit `be936cd67` ("port observability dashboard to llama.cpp telemetry payloads") and later
-  commits under `apps/web/` adapted the data layer and panels to llama-server's `/telemetry`, `/events` and request
-  log, and added the VRAM budget panel, replay tests and a sample fixture.
+- Changes: later lovelace commits under `apps/web/` add three panels (Sessions, Queue & waits, KV pool) that read the
+  `lovelace` extension of the API, its types, glossary entries, a replay fixture and tests. Every modified upstream
+  file carries, as its first line, the notice `Modified from tensorninja/ninfer-4090 (f408990) by lovelace.` in the
+  file's comment syntax (JSON files, which cannot hold one, would be listed here instead; none is modified).
 
-Compared with the tensorninja branch head (`15fd064b`), the `apps/web/` files are:
+Compared with tensorninja `f408990`, the `apps/web/` files are:
 
-- **Unchanged** (19): `.gitignore`, `.prettierignore`, `.prettierrc.json`, `src/components/echart.tsx`,
-  `src/components/tooltip.tsx`, `src/components/ui.tsx`, `src/lib/format.ts`, `src/lib/palette.ts`,
-  `src/lib/series.ts`, `src/lib/use-engine.ts`, `src/main.tsx`, `src/styles.css`, `src/styles/charts.css`,
-  `src/styles/foundation.css`, `src/styles/primitives.css`, `src/vite-env.d.ts`, `tsconfig.app.json`,
-  `tsconfig.json`, `tsconfig.node.json`.
-- **Modified by lovelace** (23): `README.md`, `bun.lock`, `index.html`, `package.json`, `vite.config.ts`,
-  `src/App.tsx`, `src/components/charts.tsx`, `src/lib/derive.ts`, `src/lib/derive.test.ts`,
-  `src/lib/engine-client.ts`, `src/lib/glossary.ts`, `src/lib/records.ts`, `src/lib/telemetry.ts`,
-  `src/panels/CachePanel.tsx`, `src/panels/EnergyPanel.tsx`, `src/panels/GpuPanel.tsx`, `src/panels/Headline.tsx`,
-  `src/panels/LatencyPanel.tsx`, `src/panels/RequestsPanel.tsx`, `src/panels/SchedulerPanel.tsx`,
-  `src/panels/SlotsPanel.tsx`, `src/panels/ThroughputPanel.tsx`, `src/styles/shell.css`.
-- **New in lovelace** (3): `fixtures/sample.jsonl`, `src/lib/replay.test.ts`, `src/panels/VramPanel.tsx`.
+- **Unchanged** (41): `.gitignore`, `.prettierignore`, `.prettierrc.json`, `README.md`, `bun.lock`, `index.html`,
+  `package.json`, `tsconfig.app.json`, `tsconfig.json`, `tsconfig.node.json`, `vite.config.ts`, `src/main.tsx`,
+  `src/styles.css`, `src/vite-env.d.ts`, `src/components/charts.tsx`, `src/components/echart.tsx`,
+  `src/components/tooltip.tsx`, `src/components/ui.tsx`, `src/lib/derive.ts`, `src/lib/derive.test.ts`,
+  `src/lib/engine-client.ts`, `src/lib/format.ts`, `src/lib/palette.ts`, `src/lib/series.ts`,
+  `src/lib/use-engine.ts`, `src/panels/AdaptersPanel.tsx`, `src/panels/CachePanel.tsx`,
+  `src/panels/ChurnPanel.tsx`, `src/panels/EnergyPanel.tsx`, `src/panels/GpuPanel.tsx`, `src/panels/Headline.tsx`,
+  `src/panels/LatencyPanel.tsx`, `src/panels/MemoryPanel.tsx`, `src/panels/RequestsPanel.tsx`,
+  `src/panels/SchedulerPanel.tsx`, `src/panels/SlotsPanel.tsx`, `src/panels/ThroughputPanel.tsx`,
+  `src/styles/charts.css`, `src/styles/foundation.css`, `src/styles/primitives.css`, `src/styles/shell.css`.
+- **Modified by lovelace** (4): `src/App.tsx`, `src/lib/glossary.ts`, `src/lib/records.ts`, `src/lib/telemetry.ts`.
+- **New in lovelace** (7): `fixtures/sample.jsonl`, `src/lib/glossary-lovelace.ts`, `src/lib/lovelace.ts`,
+  `src/lib/lovelace.test.ts`, `src/panels/KvPoolPanel.tsx`, `src/panels/QueuePanel.tsx`,
+  `src/panels/SessionsPanel.tsx`.
+
+`docs/dashboard.md` is upstream's `docs/dashboard.md` at `f408990`, modified by lovelace (same first-line notice, as an
+HTML comment).
 
 A built dashboard (`apps/web/dist`, copied into the `lovelace-serve` image) also bundles its npm dependencies,
 including React and React DOM (MIT) and Apache ECharts (Apache-2.0); see `apps/web/package.json` and `bun.lock`.

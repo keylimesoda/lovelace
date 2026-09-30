@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "lovelace-web",
+      "name": "ninfer-web",
       "dependencies": {
         "echarts": "^6.1.0",
         "react": "^19.2.8",

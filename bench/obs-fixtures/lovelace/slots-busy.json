@@ -1,0 +1,179 @@
+[
+ {
+  "checkpoints": [
+   {
+    "frontier": 16,
+    "session_digest": "0000000000000001"
+   },
+   {
+    "frontier": 33,
+    "session_digest": "0000000000000001"
+   },
+   {
+    "frontier": 36,
+    "session_digest": "0000000000000001"
+   },
+   {
+    "frontier": 103,
+    "session_digest": "0000000000000001"
+   },
+   {
+    "frontier": 106,
+    "session_digest": "0000000000000001"
+   },
+   {
+    "frontier": 134,
+    "session_digest": "0000000000000001"
+   },
+   {
+    "frontier": 137,
+    "session_digest": "0000000000000001"
+   }
+  ],
+  "id": 0,
+  "id_task": 26,
+  "is_processing": true,
+  "n_ctx": 262144,
+  "n_prompt_tokens": 424,
+  "n_prompt_tokens_cache": 103,
+  "n_prompt_tokens_processed": 38,
+  "next_token": [
+   {
+    "has_new_line": true,
+    "has_next_token": true,
+    "n_decoded": 280,
+    "n_remain": 620
+   }
+  ],
+  "params": {
+   "adaptive_decay": 0.8999999761581421,
+   "adaptive_target": -1.0,
+   "backend_sampling": false,
+   "chat_format": "peg-native",
+   "dry_allowed_length": 2,
+   "dry_base": 1.75,
+   "dry_multiplier": 0.0,
+   "dry_penalty_last_n": 64,
+   "dry_sequence_breakers": [
+    "\n",
+    ":",
+    "\"",
+    "*"
+   ],
+   "dynatemp_exponent": 1.0,
+   "dynatemp_range": 0.0,
+   "frequency_penalty": 0.0,
+   "generation_prompt": "<|im_start|>assistant\n<think>\n\n</think>\n\n",
+   "grammar": "",
+   "grammar_lazy": false,
+   "grammar_triggers": [],
+   "ignore_eos": false,
+   "logit_bias": [],
+   "lora": [],
+   "max_tokens": 900,
+   "min_keep": 0,
+   "min_p": 0.05000000074505806,
+   "mirostat": 0,
+   "mirostat_eta": 0.10000000149011612,
+   "mirostat_tau": 5.0,
+   "n_discard": 0,
+   "n_keep": 0,
+   "n_predict": 900,
+   "n_probs": 0,
+   "post_sampling_probs": false,
+   "presence_penalty": 0.0,
+   "preserved_tokens": [
+    248058,
+    248059,
+    248068,
+    248069
+   ],
+   "reasoning_format": "deepseek",
+   "reasoning_in_content": false,
+   "repeat_last_n": 64,
+   "repeat_penalty": 1.0,
+   "samplers": [
+    "penalties",
+    "dry",
+    "top_n_sigma",
+    "top_k",
+    "typ_p",
+    "top_p",
+    "min_p",
+    "xtc",
+    "temperature"
+   ],
+   "seed": 4294967295,
+   "speculative.types": "none,draft-mtp",
+   "stop": [],
+   "stream": true,
+   "temperature": 0.699999988079071,
+   "timings_per_token": false,
+   "top_k": 20,
+   "top_n_sigma": -1.0,
+   "top_p": 0.949999988079071,
+   "typical_p": 1.0,
+   "xtc_probability": 0.0,
+   "xtc_threshold": 0.10000000149011612
+  },
+  "prompt": "<|im_start|>system\nYou are a careful assistant. Answer concisely.<|im_end|>\n<|im_start|>user\nList five prime numbers and explain what a prime number is.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n### What is a Prime Number?\n\nA **prime number** is a natural number greater than 1 that has no positive divisors other than 1 and itself. In other words, it cannot be formed by multiplying two smaller natural numbers.\n\n*   **Note:** The number 1 is **not** considered<|im_end|>\n<|im_start|>user\nNow write a long, detailed essay (at least 900 words) on the history of prime numbers.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+  "retained": false,
+  "session_digest": "0000000000000001",
+  "speculative": true
+ },
+ {
+  "checkpoints": [],
+  "id": 1,
+  "is_processing": false,
+  "n_ctx": 262144,
+  "n_prompt_tokens": 0,
+  "n_prompt_tokens_cache": 0,
+  "retained": false,
+  "session_digest": "",
+  "speculative": true
+ },
+ {
+  "checkpoints": [],
+  "id": 2,
+  "is_processing": false,
+  "n_ctx": 262144,
+  "n_prompt_tokens": 0,
+  "n_prompt_tokens_cache": 0,
+  "retained": false,
+  "session_digest": "",
+  "speculative": true
+ },
+ {
+  "checkpoints": [],
+  "id": 3,
+  "is_processing": false,
+  "n_ctx": 262144,
+  "n_prompt_tokens": 0,
+  "n_prompt_tokens_cache": 0,
+  "retained": false,
+  "session_digest": "",
+  "speculative": true
+ },
+ {
+  "checkpoints": [],
+  "id": 4,
+  "is_processing": false,
+  "n_ctx": 262144,
+  "n_prompt_tokens": 0,
+  "n_prompt_tokens_cache": 0,
+  "retained": false,
+  "session_digest": "",
+  "speculative": true
+ },
+ {
+  "checkpoints": [],
+  "id": 5,
+  "is_processing": false,
+  "n_ctx": 262144,
+  "n_prompt_tokens": 0,
+  "n_prompt_tokens_cache": 0,
+  "retained": false,
+  "session_digest": "",
+  "speculative": true
+ }
+]

@@ -1,0 +1,128 @@
+{
+ "artifact_type": "ninfer_serve_request_log",
+ "continuation_cache": {
+  "admitted_lane": 2,
+  "alias_kind": "none",
+  "cache_write_tokens": 0,
+  "completion_publication_queued": true,
+  "deepest_candidate_agreement": null,
+  "destructive_rollback": false,
+  "final_miss_reason": "no_alias",
+  "lookup_microseconds": 0,
+  "preflight_microseconds": 0,
+  "restore_failure": "none",
+  "restore_gate_checks": 0,
+  "restore_gate_passes": 0,
+  "restore_microseconds": 0,
+  "restore_target_lane": 2,
+  "restored_bytes": 0,
+  "restored_tokens": 0,
+  "source": "none"
+ },
+ "event": "request_done",
+ "lovelace": {
+  "endpoint": "oai_resp",
+  "energy": {
+   "decode_joules": 102.937,
+   "prefill_joules": 28.969,
+   "total_joules": 131.905
+  },
+  "id_parent": null,
+  "id_slot": 2,
+  "id_task": 435,
+  "n_ctx_slot": 262144,
+  "n_ctx_used": 88,
+  "n_predict": 32,
+  "n_unparked_tokens": 0,
+  "queue_wait_ms": 6.158,
+  "rates": {
+   "decode_tps": 98.958,
+   "prefill_tps": 551.407
+  },
+  "schema_version": 2,
+  "seq": 16,
+  "session": {
+   "id": 3,
+   "park_ms": 0.001,
+   "prefetch_hit": false,
+   "prompt_start_ms": 0.065,
+   "restore_bytes": 0,
+   "restore_issue_ms": 0.0,
+   "restore_ms": 0.0,
+   "restore_ready_ms": null,
+   "tier": "new"
+  },
+  "speculative": {
+   "n_verif_steps": 12
+  },
+  "task_type": "completion",
+  "truncated": false,
+  "wait_reason": "none"
+ },
+ "request": {
+  "adapter": "",
+  "enable_thinking": true,
+  "has_tool_history": false,
+  "message_count": 0,
+  "model": "qwen3.8-27b",
+  "preserve_thinking": true,
+  "preserve_thinking_semantic_change": false,
+  "prompt_cache_key_digest": "0000000000000003",
+  "protocol": "openai_responses",
+  "request_id": 435,
+  "requested_output_tokens": 32,
+  "requested_output_tokens_source": "client",
+  "sampling": {
+   "frequency_penalty": 0.0,
+   "min_p": 0.05000000074505806,
+   "presence_penalty": 0.0,
+   "seed": 4294967295,
+   "temperature": 1.0,
+   "top_k": 20,
+   "top_p": 0.949999988079071
+  },
+  "stream": false,
+  "tool_choice": "auto",
+  "tool_count": 0,
+  "x_request_id": "435"
+ },
+ "result": {
+  "completion_tokens": 32,
+  "computed_prefill_tokens": 57,
+  "finish_reason": "output_limit",
+  "prefix_cache_hit_tokens": 0,
+  "prefix_reuse_path": "full_reset",
+  "prompt_tokens": 57,
+  "tool_call_count": 0,
+  "tool_call_discarded_bytes": 0,
+  "tool_calls_incomplete": 0,
+  "tool_calls_invalid_arguments": 0
+ },
+ "schema_version": 20,
+ "server_instance_id": "3fd82f3554e8f332",
+ "speculative": {
+  "accepted_per_position": [
+   9,
+   5,
+   4
+  ],
+  "accepted_tokens": 18,
+  "backend": "mtp",
+  "draft_window": 3,
+  "drafted_tokens": 35,
+  "fallback_steps": 0,
+  "rounds": 12
+ },
+ "timestamp_unix_ms": 1790746312537,
+ "timings_seconds": {
+  "decode": 0.313263,
+  "prefill": 0.103372,
+  "prepare": 0.0,
+  "publish": 0.0,
+  "queue": 0.006158,
+  "restore": 0.0,
+  "total": 0.424132,
+  "ttft": 0.109542,
+  "vision": 0.0
+ }
+}

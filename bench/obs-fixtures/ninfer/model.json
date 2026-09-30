@@ -1,0 +1,10 @@
+{
+ "context_window": 65536,
+ "created": 1790748508,
+ "id": "qwen3.8-27b",
+ "modalities": {
+  "vision": false
+ },
+ "object": "model",
+ "owned_by": "ninfer"
+}

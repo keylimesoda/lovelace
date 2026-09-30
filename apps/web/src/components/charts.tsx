@@ -212,14 +212,13 @@ export function BandChart({
  *
  * Distinct from BandChart because the two describe different quantities. A throughput sample is
  * an average over its whole interval, so it is honest to fill that interval. The scheduler's
- * busy-slot and deferred-task counts are a snapshot taken at the moment the report was emitted,
- * so filling the interval would assert an occupancy that was never measured. These are drawn as
- * points at their own timestamps, connected faintly only to show ordering.
+ * running/waiting counts are a snapshot taken at the moment the report was emitted, so filling
+ * the interval would assert an occupancy that was never measured. These are drawn as points at
+ * their own timestamps, connected faintly only to show ordering.
  */
 export function SampleChart({
   label,
   series,
-  domain,
   ceiling,
   unit,
   caption,
@@ -228,8 +227,6 @@ export function SampleChart({
 }: {
   label: string
   series: Array<{ name: string; samples: Sample[]; color: string }>
-  /** Pins the time axis, so the points line up with sibling band charts of the same records. */
-  domain?: [number, number]
   ceiling?: number
   unit?: string
   caption?: ReactNode
@@ -241,7 +238,6 @@ export function SampleChart({
     return {
       ...base,
       aria: { enabled: true, label: { description: label } },
-      xAxis: { ...base.xAxis, min: domain?.[0], max: domain?.[1] },
       yAxis: { ...base.yAxis, max: ceiling, min: 0, minInterval: 1 },
       tooltip: {
         ...base.tooltip,
@@ -276,7 +272,7 @@ export function SampleChart({
         emphasis: { scale: 1.6 },
       })),
     }
-  }, [series, domain, ceiling, unit, label])
+  }, [series, ceiling, unit, label])
 
   return (
     <Frame caption={caption} legend={legend}>

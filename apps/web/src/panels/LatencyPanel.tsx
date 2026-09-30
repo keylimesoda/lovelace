@@ -3,31 +3,28 @@ import { CHART } from '../components/echart'
 import { Term } from '../components/tooltip'
 import { Empty, Panel, Stat } from '../components/ui'
 import type { RequestSummary } from '../lib/derive'
-import { count, percent, seconds } from '../lib/format'
-import { GLOSSARY } from '../lib/glossary'
+import { bytes, count, percent, seconds } from '../lib/format'
 
 const PHASES = [
   {
     key: 'queue',
     label: 'queue',
     color: CHART.warning,
-    hint: 'Waiting for a free slot, from arrival at the HTTP handler to slot launch. Responds to slot count and generation length, not to kernel speed.',
+    hint: 'Waiting in the bounded FIFO for a lane to free up. Responds to lane count and generation length, not to kernel speed.',
+  },
+  {
+    key: 'restore',
+    label: 'restore',
+    color: CHART.blue,
+    hint: 'Importing cached continuation state into the lane, from L2 host memory or L3 disk.',
   },
   {
     key: 'prefill',
     label: 'prefill',
     color: CHART.violet,
-    hint: 'Slot prompt processing: computing the prompt tokens that neither the slot KV nor the prompt cache covered.',
+    hint: 'Evaluating the prompt tokens that no reused prefix covered.',
   },
 ] as const
-
-const FINISH_COLOR: Record<string, string> = {
-  eos: CHART.accent,
-  word: CHART.blue,
-  limit: CHART.warning,
-  cancelled: CHART.muted,
-  error: CHART.danger,
-}
 
 export function LatencyPanel({ summary }: { summary: RequestSummary }) {
   if (summary.count === 0) {
@@ -42,34 +39,27 @@ export function LatencyPanel({ summary }: { summary: RequestSummary }) {
   const dominant = PHASES.reduce((best, phase) =>
     share[phase.key] > share[best.key] ? phase : best,
   )
-  const accept = summary.speculative.acceptRate
-
-  const finishSegments = Object.entries(summary.byFinishReason)
-    .sort((a, b) => b[1] - a[1])
-    .map(([reason, requests]) => ({
-      label: reason,
-      value: requests,
-      color: FINISH_COLOR[reason] ?? CHART.dim,
-      hint: GLOSSARY.finishReason.body,
-      display: `${requests} of ${summary.count} requests`,
-    }))
 
   return (
     <Panel title="Latency" hint="ttft" note={`${summary.count} completed requests`}>
       <div className="stat-row">
-        {/* No fixed threshold makes a TTFT "bad" - acceptable latency depends on prompt size and
-            slot count - so these report without an alarm colour. */}
+        {/* No fixed threshold makes a TTFT "bad" here - acceptable latency depends on prompt size
+            and lane count - so these report without an alarm colour. */}
         <Stat value={seconds(summary.ttft.p50)} label="ttft p50" hint="ttft" />
         <Stat value={seconds(summary.ttft.p90)} label="ttft p90" hint="percentiles" />
         <Stat value={seconds(summary.ttft.p99)} label="ttft p99" hint="percentiles" />
-        <Stat value={seconds(summary.queueWait.p50)} label="queue p50" hint="queueWait" />
-        <Stat value={seconds(summary.queueWait.p90)} label="queue p90" hint="queueWait" />
         <Stat
           value={`${summary.decodeTokensPerSecond.p50.toFixed(1)}`}
           unit="tok/s"
           label="decode p50"
-          hint="perSequenceRate"
+          hint="decodePerRequest"
           tone="accent"
+        />
+        <Stat
+          value={percent(summary.speculative.acceptRate)}
+          label="mtp accept"
+          hint="mtpAccept"
+          tone={summary.speculative.acceptRate > 0.5 ? 'accent' : 'neutral'}
         />
       </div>
 
@@ -98,24 +88,11 @@ export function LatencyPanel({ summary }: { summary: RequestSummary }) {
           {PHASES.map((phase) => `${phase.label} ${percent(share[phase.key], 1)}`).join(' · ')}.
           TTFT is dominated by <strong>{dominant.label}</strong>
           {dominant.key === 'queue'
-            ? ' — requests are waiting for a slot, not being computed, so more slots (-np) or shorter generations move this before any kernel work does.'
-            : ' — prompts are genuinely being computed; check cache reuse and whether prompts share a prefix the slot KV or the prompt cache could have kept.'}
+            ? ' — requests are waiting for a lane, not being computed, so more lanes or shorter generations move this before any kernel work does.'
+            : dominant.key === 'restore'
+              ? ' — continuation import is on the critical path; check L2/L3 tier latency.'
+              : ' — prompts are genuinely being recomputed; check the cache source split.'}
         </p>
-      </div>
-
-      <div className="latency__split">
-        <div className="eyebrow">
-          <Term k="finishReason">finish reasons</Term>
-          {summary.truncated > 0 ? ` · ${summary.truncated} truncated` : ''}
-        </div>
-        <StackedBar segments={finishSegments} />
-        <Legend
-          items={finishSegments.map((segment) => ({
-            label: `${segment.label} ${segment.value}`,
-            color: segment.color,
-            hint: segment.hint,
-          }))}
-        />
       </div>
 
       <table className="table">
@@ -132,36 +109,37 @@ export function LatencyPanel({ summary }: { summary: RequestSummary }) {
           </tr>
         </thead>
         <tbody>
-          {(
-            [
-              ['prompt', summary.promptTokens],
-              ['cached', summary.cachedTokens],
-              ['computed prefill', summary.prefillTokens],
-              ['generated', summary.generated],
-            ] as const
-          ).map(([label, values]) => (
-            <tr key={label}>
-              <td>{label === 'cached' ? <Term k="cacheReuse">cached</Term> : label}</td>
-              <td className="numeric emphasis">{count(values.p50)}</td>
-              <td className="numeric emphasis">{count(values.p90)}</td>
-              <td className="numeric emphasis">{count(values.max)}</td>
-            </tr>
-          ))}
+          <tr>
+            <td>prompt</td>
+            <td className="numeric emphasis">{count(summary.promptTokens.p50)}</td>
+            <td className="numeric emphasis">{count(summary.promptTokens.p90)}</td>
+            <td className="numeric emphasis">{count(summary.promptTokens.max)}</td>
+          </tr>
+          <tr>
+            <td>
+              <Term k="prefillAvoided">recomputed prefill</Term>
+            </td>
+            <td className="numeric emphasis">{count(summary.computedPrefill.p50)}</td>
+            <td className="numeric emphasis">{count(summary.computedPrefill.p90)}</td>
+            <td className="numeric emphasis">{count(summary.computedPrefill.max)}</td>
+          </tr>
+          <tr>
+            <td>generated</td>
+            <td className="numeric emphasis">{count(summary.generated.p50)}</td>
+            <td className="numeric emphasis">{count(summary.generated.p90)}</td>
+            <td className="numeric emphasis">{count(summary.generated.max)}</td>
+          </tr>
         </tbody>
       </table>
 
-      {accept === null ? null : (
+      {summary.restores.count > 0 ? (
         <p className="panel__footnote">
-          <Term k="draftAccept">Draft acceptance</Term> {percent(accept, 1)} ·{' '}
-          {count(summary.speculative.accepted)} of {count(summary.speculative.drafted)} drafted over{' '}
-          {count(summary.speculative.verifSteps)} verification steps
-          {summary.speculative.perPosition.length > 0
-            ? ` · accepted per draft position ${summary.speculative.perPosition
-                .map((value) => count(value))
-                .join(' / ')}`
-            : null}
+          <Term k="restores">{summary.restores.count} restores</Term> moved{' '}
+          {count(summary.restores.totalTokens)} tokens ({bytes(summary.restores.totalBytes)}) at{' '}
+          {seconds(summary.restores.meanSeconds)} mean / {seconds(summary.restores.p90Seconds)} p90,
+          after {seconds(summary.restores.meanPreflightSeconds)} mean preflight.
         </p>
-      )}
+      ) : null}
     </Panel>
   )
 }

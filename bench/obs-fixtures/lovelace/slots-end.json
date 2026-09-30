@@ -1,0 +1,365 @@
+[
+ {
+  "checkpoints": [
+   {
+    "frontier": 103,
+    "session_digest": "0000000000000001"
+   },
+   {
+    "frontier": 106,
+    "session_digest": "0000000000000001"
+   },
+   {
+    "frontier": 134,
+    "session_digest": "0000000000000001"
+   },
+   {
+    "frontier": 137,
+    "session_digest": "0000000000000001"
+   },
+   {
+    "frontier": 1040,
+    "session_digest": "0000000000000001"
+   },
+   {
+    "frontier": 1043,
+    "session_digest": "0000000000000001"
+   },
+   {
+    "frontier": 1056,
+    "session_digest": "0000000000000001"
+   },
+   {
+    "frontier": 1059,
+    "session_digest": "0000000000000001"
+   }
+  ],
+  "id": 0,
+  "id_task": 392,
+  "is_processing": false,
+  "n_ctx": 262144,
+  "n_prompt_tokens": 1110,
+  "n_prompt_tokens_cache": 0,
+  "n_prompt_tokens_processed": 0,
+  "next_token": [
+   {
+    "has_new_line": false,
+    "has_next_token": false,
+    "n_decoded": 0,
+    "n_remain": 0
+   }
+  ],
+  "params": {
+   "adaptive_decay": 0.8999999761581421,
+   "adaptive_target": -1.0,
+   "backend_sampling": false,
+   "chat_format": "peg-native",
+   "dry_allowed_length": 2,
+   "dry_base": 1.75,
+   "dry_multiplier": 0.0,
+   "dry_penalty_last_n": 64,
+   "dry_sequence_breakers": [
+    "\n",
+    ":",
+    "\"",
+    "*"
+   ],
+   "dynatemp_exponent": 1.0,
+   "dynatemp_range": 0.0,
+   "frequency_penalty": 0.0,
+   "generation_prompt": "<|im_start|>assistant\n<think>\n\n</think>\n\n",
+   "grammar": "",
+   "grammar_lazy": false,
+   "grammar_triggers": [],
+   "ignore_eos": false,
+   "logit_bias": [],
+   "lora": [],
+   "max_tokens": 48,
+   "min_keep": 0,
+   "min_p": 0.05000000074505806,
+   "mirostat": 0,
+   "mirostat_eta": 0.10000000149011612,
+   "mirostat_tau": 5.0,
+   "n_discard": 0,
+   "n_keep": 0,
+   "n_predict": 48,
+   "n_probs": 0,
+   "post_sampling_probs": false,
+   "presence_penalty": 0.0,
+   "preserved_tokens": [
+    248058,
+    248059,
+    248068,
+    248069
+   ],
+   "reasoning_format": "deepseek",
+   "reasoning_in_content": false,
+   "repeat_last_n": 64,
+   "repeat_penalty": 1.0,
+   "samplers": [
+    "penalties",
+    "dry",
+    "top_n_sigma",
+    "top_k",
+    "typ_p",
+    "top_p",
+    "min_p",
+    "xtc",
+    "temperature"
+   ],
+   "seed": 4294967295,
+   "speculative.types": "none,draft-mtp",
+   "stop": [],
+   "stream": false,
+   "temperature": 0.699999988079071,
+   "timings_per_token": false,
+   "top_k": 20,
+   "top_n_sigma": -1.0,
+   "top_p": 0.949999988079071,
+   "typical_p": 1.0,
+   "xtc_probability": 0.0,
+   "xtc_threshold": 0.10000000149011612
+  },
+  "prompt": "<|im_start|>system\nYou are a careful assistant. Answer concisely.<|im_end|>\n<|im_start|>user\nList five prime numbers and explain what a prime number is.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n### What is a Prime Number?\n\nA **prime number** is a natural number greater than 1 that has no positive divisors other than 1 and itself. In other words, it cannot be formed by multiplying two smaller natural numbers.\n\n*   **Note:** The number 1 is **not** considered<|im_end|>\n<|im_start|>user\nNow write a long, detailed essay (at least 900 words) on the history of prime numbers.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nThe history of prime numbers is a narrative that spans millennia, intertwining the development of pure mathematics with practical applications in cryptography, computer science, and even ancient architecture. While primes are defined by a simple property\u2014being divisible only by 1 and themselves\u2014their distribution, properties, and significance have fascinated mathematicians from the ancient Greeks to modern-day cryptographers. This essay explores the chronological evolution of our understanding of primes, highlighting key figures, breakthroughs, and the enduring mysteries that continue to drive mathematical research.\n\n**Ancient Foundations: The Greeks and the Sieve of Eratosthenes**\n\nThe formal study of prime numbers began in ancient Greece, primarily through the work of Euclid of Alexandria. In his seminal work, *The Elements* (circa 300 BCE), Euclid established the fundamental properties of primes. Most notably, he proved the **Fundamental Theorem of Arithmetic**, which states that every integer greater than 1 is either a prime itself or can be represented uniquely as a product of prime numbers. This theorem laid the groundwork for number theory, establishing primes as the \"atoms\" of arithmetic.\n\nEuclid also provided a famous proof that there are infinitely many primes. His argument was a masterclass in logical deduction: assume there is a finite list of primes. Multiply them all together and add 1. The resulting number is not divisible by any prime in the original list, meaning it must either be prime itself or have a prime factor not in the list. Thus, the list was incomplete, proving that primes are infinite.\n\nShortly after Euclid, another Greek mathematician, Eratosthenes of Cyrene, developed an efficient algorithm for identifying primes, known as the **Sieve of Eratosthenes**. This method involves listing all numbers up to a certain limit and systematically eliminating the multiples of each prime, starting with 2, then 3, and so on. The numbers that remain are the primes. This sieve is still used today in computer science and education due to its simplicity and efficiency for finding small primes.\n\n**The Medieval and Renaissance Periods: Early Conjectures**\n\nFor centuries after the Greeks, the study of primes remained relatively stagnant in the Western world, though it continued to develop in the Islamic Golden Age. However, by the 16th and 17th centuries, European mathematicians began to revisit these concepts with new vigor.\n\nOne of the most significant early conjectures was made by Pierre de Fermat in the 17th century. Fermat proposed that numbers of the form $2^{2^n} + 1$ (now known as Fermat numbers) are prime. For the first few values of $n$, this held true, but in 1732, Leonhard Euler proved that $F_5$ is composite, disproving the general conjecture. Despite this failure, Fermat\u2019s work highlighted the difficulty in determining primality for large numbers.\n\nPerhaps the most famous conjecture in the history of primes is **Mersenne\u2019s Conjecture**, later refined by Fermat. Mersenne suggested that all numbers of the form $2^p - 1$ where $p$ is prime are themselves prime. This was also shown to be false, but the study of Mersenne primes remains a vital area of research. Mersenne primes are of particular interest because they can be tested for primality relatively efficiently using the Lucas-Lehmer test, leading to the discovery of the largest known primes to date.\n\n**The 18th and 19th Centuries: The Rise of Analytic Number Theory**\n\nThe 18th century marked a turning point with the work of Leonhard Euler, who connected primes to analysis. Euler introduced the concept of the **Euler product**, which related the sum of the reciprocals of primes to the Riemann zeta function. This was a crucial step in linking discrete number theory with continuous analysis.\n\nHowever, the central mystery of the 19th century was the distribution of primes. Mathematicians had long observed that primes become less frequent as numbers get larger. The Prime Number Theorem, which rigorously describes this distribution, was independently proved by Jacques Hadamard and Charles de la Vall\u00e9e Poussin in 1896. The theorem states that the number of primes less than a given number $x<|im_end|>\n<|im_start|>user\nSummarize that in one sentence.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+  "retained": true,
+  "session_digest": "0000000000000001",
+  "speculative": true
+ },
+ {
+  "checkpoints": [
+   {
+    "frontier": 42,
+    "session_digest": "0000000000000002"
+   },
+   {
+    "frontier": 53,
+    "session_digest": "0000000000000002"
+   }
+  ],
+  "id": 1,
+  "id_task": 417,
+  "is_processing": false,
+  "n_ctx": 262144,
+  "n_prompt_tokens": 88,
+  "n_prompt_tokens_cache": 0,
+  "n_prompt_tokens_processed": 0,
+  "next_token": [
+   {
+    "has_new_line": false,
+    "has_next_token": false,
+    "n_decoded": 0,
+    "n_remain": 0
+   }
+  ],
+  "params": {
+   "adaptive_decay": 0.8999999761581421,
+   "adaptive_target": -1.0,
+   "backend_sampling": false,
+   "chat_format": "peg-native",
+   "dry_allowed_length": 2,
+   "dry_base": 1.75,
+   "dry_multiplier": 0.0,
+   "dry_penalty_last_n": 64,
+   "dry_sequence_breakers": [
+    "\n",
+    ":",
+    "\"",
+    "*"
+   ],
+   "dynatemp_exponent": 1.0,
+   "dynatemp_range": 0.0,
+   "frequency_penalty": 0.0,
+   "generation_prompt": "<|im_start|>assistant\n<think>\n",
+   "grammar": "",
+   "grammar_lazy": false,
+   "grammar_triggers": [],
+   "ignore_eos": false,
+   "logit_bias": [],
+   "lora": [],
+   "max_tokens": 32,
+   "min_keep": 0,
+   "min_p": 0.05000000074505806,
+   "mirostat": 0,
+   "mirostat_eta": 0.10000000149011612,
+   "mirostat_tau": 5.0,
+   "n_discard": 0,
+   "n_keep": 0,
+   "n_predict": 32,
+   "n_probs": 0,
+   "post_sampling_probs": false,
+   "presence_penalty": 0.0,
+   "preserved_tokens": [
+    248058,
+    248059,
+    248068,
+    248069
+   ],
+   "reasoning_format": "deepseek",
+   "reasoning_in_content": false,
+   "repeat_last_n": 64,
+   "repeat_penalty": 1.0,
+   "samplers": [
+    "penalties",
+    "dry",
+    "top_n_sigma",
+    "top_k",
+    "typ_p",
+    "top_p",
+    "min_p",
+    "xtc",
+    "temperature"
+   ],
+   "seed": 4294967295,
+   "speculative.types": "none,draft-mtp",
+   "stop": [],
+   "stream": false,
+   "temperature": 1.0,
+   "timings_per_token": false,
+   "top_k": 20,
+   "top_n_sigma": -1.0,
+   "top_p": 0.949999988079071,
+   "typical_p": 1.0,
+   "xtc_probability": 0.0,
+   "xtc_threshold": 0.10000000149011612
+  },
+  "prompt": "<|im_start|>system\nReasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.<|im_end|>\n<|im_start|>user\nSay hello in French.<|im_end|>\n<|im_start|>assistant\n<think>\n",
+  "retained": true,
+  "session_digest": "0000000000000002",
+  "speculative": true
+ },
+ {
+  "checkpoints": [
+   {
+    "frontier": 42,
+    "session_digest": "0000000000000003"
+   },
+   {
+    "frontier": 53,
+    "session_digest": "0000000000000003"
+   }
+  ],
+  "id": 2,
+  "id_task": 435,
+  "is_processing": false,
+  "n_ctx": 262144,
+  "n_prompt_tokens": 88,
+  "n_prompt_tokens_cache": 0,
+  "n_prompt_tokens_processed": 0,
+  "next_token": [
+   {
+    "has_new_line": false,
+    "has_next_token": false,
+    "n_decoded": 0,
+    "n_remain": 0
+   }
+  ],
+  "params": {
+   "adaptive_decay": 0.8999999761581421,
+   "adaptive_target": -1.0,
+   "backend_sampling": false,
+   "chat_format": "peg-native",
+   "dry_allowed_length": 2,
+   "dry_base": 1.75,
+   "dry_multiplier": 0.0,
+   "dry_penalty_last_n": 64,
+   "dry_sequence_breakers": [
+    "\n",
+    ":",
+    "\"",
+    "*"
+   ],
+   "dynatemp_exponent": 1.0,
+   "dynatemp_range": 0.0,
+   "frequency_penalty": 0.0,
+   "generation_prompt": "<|im_start|>assistant\n<think>\n",
+   "grammar": "",
+   "grammar_lazy": false,
+   "grammar_triggers": [],
+   "ignore_eos": false,
+   "logit_bias": [],
+   "lora": [],
+   "max_tokens": 32,
+   "min_keep": 0,
+   "min_p": 0.05000000074505806,
+   "mirostat": 0,
+   "mirostat_eta": 0.10000000149011612,
+   "mirostat_tau": 5.0,
+   "n_discard": 0,
+   "n_keep": 0,
+   "n_predict": 32,
+   "n_probs": 0,
+   "post_sampling_probs": false,
+   "presence_penalty": 0.0,
+   "preserved_tokens": [
+    248058,
+    248059,
+    248068,
+    248069
+   ],
+   "reasoning_format": "deepseek",
+   "reasoning_in_content": false,
+   "repeat_last_n": 64,
+   "repeat_penalty": 1.0,
+   "samplers": [
+    "penalties",
+    "dry",
+    "top_n_sigma",
+    "top_k",
+    "typ_p",
+    "top_p",
+    "min_p",
+    "xtc",
+    "temperature"
+   ],
+   "seed": 4294967295,
+   "speculative.types": "none,draft-mtp",
+   "stop": [],
+   "stream": false,
+   "temperature": 1.0,
+   "timings_per_token": false,
+   "top_k": 20,
+   "top_n_sigma": -1.0,
+   "top_p": 0.949999988079071,
+   "typical_p": 1.0,
+   "xtc_probability": 0.0,
+   "xtc_threshold": 0.10000000149011612
+  },
+  "prompt": "<|im_start|>system\nReasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.<|im_end|>\n<|im_start|>user\nSay hello in German.<|im_end|>\n<|im_start|>assistant\n<think>\n",
+  "retained": true,
+  "session_digest": "0000000000000003",
+  "speculative": true
+ },
+ {
+  "checkpoints": [],
+  "id": 3,
+  "is_processing": false,
+  "n_ctx": 262144,
+  "n_prompt_tokens": 0,
+  "n_prompt_tokens_cache": 0,
+  "retained": false,
+  "session_digest": "",
+  "speculative": true
+ },
+ {
+  "checkpoints": [],
+  "id": 4,
+  "is_processing": false,
+  "n_ctx": 262144,
+  "n_prompt_tokens": 0,
+  "n_prompt_tokens_cache": 0,
+  "retained": false,
+  "session_digest": "",
+  "speculative": true
+ },
+ {
+  "checkpoints": [],
+  "id": 5,
+  "is_processing": false,
+  "n_ctx": 262144,
+  "n_prompt_tokens": 0,
+  "n_prompt_tokens_cache": 0,
+  "retained": false,
+  "session_digest": "",
+  "speculative": true
+ }
+]

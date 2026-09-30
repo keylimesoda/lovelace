@@ -1,0 +1,8 @@
+HEAD e72d47c6da79189d16f259601235766e0a59445e
+working tree NOT clean (uncommitted changes of the checkout itself; what ran is hashed below):
+   M BarWidget.qml
+   M Model.js
+   M ninfer-qwen
+203cc318aec9086a6c0b8e4d606a2c8951a1c6a972a52fe5468f6fdd0128159b  Model.js
+cab79bb792e339e46c9fafe2172ec875d5c0538417745032dc2a234ea53f0c04  ninfer-qwen
+unchanged during the check

@@ -37,9 +37,11 @@ t0 = time.time(); stall_t0 = None
 while True:
     try:
         d = json.load(urllib.request.urlopen(base + "/telemetry", timeout=10))
-        s = d.get("scheduler", {}); k = s.get("kv_budget", {})
+        lv = d.get("lovelace") or {}   # lovelace sections: under "lovelace" now, at the top level in schema-1 builds
+        s = (lv or d).get("scheduler", {}); k = s.get("kv_budget", {})
+        kv = lv.get("kv", {}) if lv else d.get("memory", {}).get("kv", {})
         rec = {"t": round(time.time() - t0, 1), "busy": s.get("slots_busy", 0), "waiting": k.get("queue_waiting", 0),
-               "parks": k.get("totals", {}).get("parks", 0), "cells_used": d.get("memory", {}).get("kv", {}).get("cells_used")}
+               "parks": k.get("totals", {}).get("parks", 0), "cells_used": kv.get("cells_used")}
     except Exception as e:
         rec = {"t": round(time.time() - t0, 1), "error": str(e)[:200]}
     stalled = rec.get("waiting", 0) > 0 and rec.get("busy", 1) == 0

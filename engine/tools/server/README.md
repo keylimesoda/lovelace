@@ -363,7 +363,7 @@ With `--kv-unified`, all slots share one KV cache. Upstream llama-server admits 
 
 A truncation that the memory refuses never aborts. This happens with a recurrent rollback beyond its pending records, or of a cell shared with another sequence. The server restores the newest usable context checkpoint instead, or re-prefills. A generating slot re-prefills its history and then continues.
 
-Park/unpark counts, bytes, time and GB/s, wait reasons, and reserved vs used cells appear in `GET /telemetry`, the throughput and `sched` records of `GET /events`, and `/metrics` (see `docs/observability.md`).
+Park/unpark counts, bytes, time and GB/s, wait reasons, and reserved vs used cells appear in `GET /telemetry` (`lovelace.scheduler.kv_budget`, `lovelace.kv`), the throughput and `lovelace_sched` records of `GET /events`, and `/metrics` (`lovelace:sched_*`, see `docs/observability.md`).
 
 Example for 4-6 concurrent coding agents with 100-250k-token prompts on one 24 GB GPU (Qwen3.8-27B IQ4_XS, q4_0 KV):
 
@@ -382,7 +382,7 @@ Every agent keeps its own full context; none is lost to eviction (design: `docs/
 - **Write-back mirror.** After each request, the new attention KV cells of the target and draft contexts are appended to the session's mirror in the pinned arena, and the recurrent state is snapshotted, asynchronously (`llama_state_seq_get_delta_data_async`). A rollback (the client rewrote recent history) truncates the mirror. Parking a session then only drops its cells; its context checkpoints move to the mirror.
 - **Restore.** A parked session is copied back cell by cell (coalesced per layer and run, on the copy stream) with its recurrent snapshot, and only the new part of the prompt is prefilled. While the head of the queue waits for KV cells, its session is restored ahead into an empty slot when the pool has room (prefetch).
 - **Tiers.** When the arena runs short, the least recently used parked mirrors are written to `--session-dir` on a worker thread (atomic, fsynced files) and read back before use; the sessions of queued requests are read first. A session is deleted only after `--session-ttl` of inactivity or when `--session-disk-max` is exceeded, and that is logged. The files survive a restart.
-- **Observability.** `GET /telemetry` has `memory.sessions`: arena, RAM and disk usage, demotions, promotions, prefetch hits, and per session its tier, resident cells, mirror bytes, sync time and age, restores (bytes, device and wall ms). The `request_done` records carry `session`: id, tier at admission (`gpu`, `ram`, `disk`, `new`), restore bytes and ms, the time the request waited for the restore, and whether it was prefetched.
+- **Observability.** `GET /telemetry` has `lovelace.sessions`: arena, RAM and disk usage, demotions, promotions, prefetch hits, and per session its tier, resident cells, mirror bytes, sync time and age, restores (bytes, device and wall ms); the tiers also fill tensorninja's `cache.l1` / `l2` / `l3`. The `request_done` records carry `lovelace.session`: id, tier at admission (`gpu`, `ram`, `disk`, `new`), restore bytes and ms, the time the request waited for the restore, and whether it was prefetched; `continuation_cache.source` is the same tier as `l1` / `l2` / `l3`.
 
 ### Multimodal support
 
@@ -1248,13 +1248,13 @@ In *router mode* the query param `?model={model_id}` has to be set. This endpoin
 
 ### GET `/telemetry`: Live engine, scheduler, memory and GPU board snapshot
 
-Only available with `--telemetry` or `--request-log-jsonl`. Returns one complete JSON snapshot: GPU board sensors read through NVML (loaded at runtime from `libnvidia-ml.so.1`, reported as `"available": false` when missing), board energy attributed to prefill / decode / idle, slot and queue occupancy, the server loop's wall-clock split over a rolling 10 s window, KV cells and prompt-cache usage against `--cache-ram`, per-slot occupancy, and the VRAM budget. With `--metrics`, `/metrics` also exports `llamacpp:loop_seconds_total`, `llamacpp:energy_joules_total`, `llamacpp:board_energy_joules_total`, `llamacpp:board_power_watts` and `llamacpp:idle_power_watts`.
+Only available with `--telemetry` or `--request-log-jsonl`. Returns one complete JSON snapshot in the shape of tensorninja/ninfer-4090's `/telemetry` (f408990): GPU board sensors read through NVML (loaded at runtime from `libnvidia-ml.so.1`, reported as `"available": false` when missing), scheduler occupancy and the server loop's wall-clock split, continuation-cache tiers (lovelace's session store: GPU / RAM / NVMe), per-slot occupancy, and the memory budget. lovelace-only sections (KV budget, session store, VRAM breakdown, energy split, loop window) are under `lovelace`. The body is built on the HTTP thread from a snapshot the server loop publishes; the request never waits for or wakes the loop. With `--metrics` and telemetry on, `/metrics` is rendered from the same snapshot and adds tensorninja's `ninfer:*` series and lovelace's `lovelace:*` series; `/slots` adds tensorninja's `retained`, `session_digest` and `checkpoints` keys.
 
 ### GET `/events`: Request log record stream (SSE)
 
-Only available with `--telemetry` or `--request-log-jsonl`. Streams the records `--request-log-jsonl` writes (`server_start`, `request_start`, `request_done`, `request_rejected`, `throughput`), one per `data:` line, byte-identical to the file. A new subscriber first receives the retained `server_start` record and a bounded backlog of recent records. Slow subscribers drop their oldest records instead of slowing the server down.
+Only available with `--telemetry` or `--request-log-jsonl`. Streams the records `--request-log-jsonl` writes (tensorninja's schema 20: `server_start`, `request_start`, `request_done`, `request_error`, `throughput`, plus lovelace's `lovelace_sched`) as named SSE frames (`event: <record.event>`, `data: <record>`), after a `retry: 2000` hint; the `data:` payloads are byte-identical to the file lines. A new subscriber first receives the retained `server_start` record and a bounded backlog of recent records. Slow subscribers drop their oldest records instead of slowing the server down.
 
-The payload schema of both endpoints is documented in `docs/observability.md` of the lovelace repository.
+The payload schema of both endpoints is documented in `docs/observability.md` and, field by field against tensorninja's, in `docs/observability-parity.md` of the lovelace repository.
 
 ### GET `/lora-adapters`: Get list of all LoRA adapters
 

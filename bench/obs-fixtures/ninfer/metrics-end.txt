@@ -1,0 +1,226 @@
+# TYPE llamacpp:prompt_tokens_total counter
+llamacpp:prompt_tokens_total 184
+# TYPE llamacpp:prompt_seconds_total counter
+llamacpp:prompt_seconds_total 0.801158
+# TYPE llamacpp:tokens_predicted_total counter
+llamacpp:tokens_predicted_total 1074
+# TYPE llamacpp:tokens_predicted_seconds_total counter
+llamacpp:tokens_predicted_seconds_total 10.836431
+# TYPE llamacpp:requests_processing gauge
+llamacpp:requests_processing 0
+# TYPE llamacpp:requests_deferred gauge
+llamacpp:requests_deferred 0
+# TYPE ninfer:requests_total counter
+ninfer:requests_total 5
+# TYPE ninfer:prefix_cache_hit_tokens_total counter
+ninfer:prefix_cache_hit_tokens_total 1227
+# TYPE ninfer:draft_tokens_total counter
+ninfer:draft_tokens_total 1328
+# TYPE ninfer:draft_accepted_tokens_total counter
+ninfer:draft_accepted_tokens_total 624
+# TYPE ninfer:continuation_lookup_hits_total counter
+ninfer:continuation_lookup_hits_total 6
+# TYPE ninfer:continuation_lookup_misses_total counter
+ninfer:continuation_lookup_misses_total 12
+# TYPE ninfer:continuation_preflight_candidate_rejections_total counter
+ninfer:continuation_preflight_candidate_rejections_total 0
+# TYPE ninfer:continuation_preparation_hits_total counter
+ninfer:continuation_preparation_hits_total 0
+# TYPE ninfer:continuation_preparation_decoded_total counter
+ninfer:continuation_preparation_decoded_total 1
+# TYPE ninfer:continuation_preparation_inline_total counter
+ninfer:continuation_preparation_inline_total 2
+# TYPE ninfer:continuation_restore_successes_total counter
+ninfer:continuation_restore_successes_total 3
+# TYPE ninfer:continuation_restore_failures_total counter
+ninfer:continuation_restore_failures_total 0
+# TYPE ninfer:continuation_restore_deferrals_total counter
+ninfer:continuation_restore_deferrals_total 0
+# TYPE ninfer:continuation_publication_successes_total counter
+ninfer:continuation_publication_successes_total 10
+# TYPE ninfer:continuation_publication_failures_total counter
+ninfer:continuation_publication_failures_total 0
+# TYPE ninfer:continuation_publication_superseded_total counter
+ninfer:continuation_publication_superseded_total 0
+# TYPE ninfer:continuation_publication_coalesced_total counter
+ninfer:continuation_publication_coalesced_total 0
+# TYPE ninfer:continuation_publication_failed_capacity_total counter
+ninfer:continuation_publication_failed_capacity_total 0
+# TYPE ninfer:continuation_publication_failed_evicted_total counter
+ninfer:continuation_publication_failed_evicted_total 0
+# TYPE ninfer:continuation_publication_failed_alias_moved_total counter
+ninfer:continuation_publication_failed_alias_moved_total 0
+# TYPE ninfer:continuation_publication_failed_lineage_total counter
+ninfer:continuation_publication_failed_lineage_total 0
+# TYPE ninfer:continuation_publication_failed_error_total counter
+ninfer:continuation_publication_failed_error_total 0
+# TYPE ninfer:continuation_restored_tokens_total counter
+ninfer:continuation_restored_tokens_total 1185
+# TYPE ninfer:continuation_restored_bytes_total counter
+ninfer:continuation_restored_bytes_total 485545149
+# TYPE ninfer:continuation_l1_restore_successes_total counter
+ninfer:continuation_l1_restore_successes_total 2
+# TYPE ninfer:continuation_l2_restore_successes_total counter
+ninfer:continuation_l2_restore_successes_total 1
+# TYPE ninfer:continuation_l3_restore_successes_total counter
+ninfer:continuation_l3_restore_successes_total 0
+# TYPE ninfer:continuation_l1_restored_tokens_total counter
+ninfer:continuation_l1_restored_tokens_total 1143
+# TYPE ninfer:continuation_l2_restored_tokens_total counter
+ninfer:continuation_l2_restored_tokens_total 42
+# TYPE ninfer:continuation_l3_restored_tokens_total counter
+ninfer:continuation_l3_restored_tokens_total 0
+# TYPE ninfer:continuation_l1_restored_bytes_total counter
+ninfer:continuation_l1_restored_bytes_total 330399744
+# TYPE ninfer:continuation_l2_restored_bytes_total counter
+ninfer:continuation_l2_restored_bytes_total 155145405
+# TYPE ninfer:continuation_l3_restored_bytes_total counter
+ninfer:continuation_l3_restored_bytes_total 0
+# TYPE ninfer:continuation_session_restores_total counter
+ninfer:continuation_session_restores_total 2
+# TYPE ninfer:continuation_stable_prefix_restores_total counter
+ninfer:continuation_stable_prefix_restores_total 1
+# TYPE ninfer:continuation_miss_disabled_total counter
+ninfer:continuation_miss_disabled_total 0
+# TYPE ninfer:continuation_miss_no_alias_total counter
+ninfer:continuation_miss_no_alias_total 2
+# TYPE ninfer:continuation_miss_not_attempted_total counter
+ninfer:continuation_miss_not_attempted_total 0
+# TYPE ninfer:continuation_miss_entry_unavailable_or_corrupt_total counter
+ninfer:continuation_miss_entry_unavailable_or_corrupt_total 0
+# TYPE ninfer:continuation_miss_not_deeper_total counter
+ninfer:continuation_miss_not_deeper_total 0
+# TYPE ninfer:continuation_miss_preflight_rejected_total counter
+ninfer:continuation_miss_preflight_rejected_total 0
+# TYPE ninfer:continuation_miss_rollback_conflict_total counter
+ninfer:continuation_miss_rollback_conflict_total 0
+# TYPE ninfer:continuation_miss_no_lane_total counter
+ninfer:continuation_miss_no_lane_total 0
+# TYPE ninfer:continuation_miss_restore_failed_total counter
+ninfer:continuation_miss_restore_failed_total 0
+# TYPE ninfer:continuation_restore_failed_kv_reservation_total counter
+ninfer:continuation_restore_failed_kv_reservation_total 0
+# TYPE ninfer:continuation_restore_failed_verify_depth_total counter
+ninfer:continuation_restore_failed_verify_depth_total 0
+# TYPE ninfer:continuation_restore_failed_inventory_total counter
+ninfer:continuation_restore_failed_inventory_total 0
+# TYPE ninfer:continuation_restore_failed_metadata_total counter
+ninfer:continuation_restore_failed_metadata_total 0
+# TYPE ninfer:continuation_restore_failed_decode_total counter
+ninfer:continuation_restore_failed_decode_total 0
+# TYPE ninfer:continuation_restore_failed_lane_total counter
+ninfer:continuation_restore_failed_lane_total 0
+# TYPE ninfer:admission_rejected_overloaded_total counter
+ninfer:admission_rejected_overloaded_total 0
+# TYPE ninfer:admission_rejected_queue_timeout_total counter
+ninfer:admission_rejected_queue_timeout_total 0
+# TYPE ninfer:admitted_requests_total counter
+ninfer:admitted_requests_total 6
+# TYPE ninfer:queue_seconds_total counter
+ninfer:queue_seconds_total 0.163702
+# TYPE ninfer:worker_decode_seconds_total counter
+ninfer:worker_decode_seconds_total 11.016852
+# TYPE ninfer:worker_prefill_seconds_total counter
+ninfer:worker_prefill_seconds_total 0.417357
+# TYPE ninfer:worker_admission_seconds_total counter
+ninfer:worker_admission_seconds_total 0.547498
+# TYPE ninfer:worker_admission_calls_total counter
+ninfer:worker_admission_calls_total 6
+# TYPE ninfer:worker_admission_plan_seconds_total counter
+ninfer:worker_admission_plan_seconds_total 0.000051
+# TYPE ninfer:worker_admission_restore_seconds_total counter
+ninfer:worker_admission_restore_seconds_total 0.132383
+# TYPE ninfer:worker_admission_commit_seconds_total counter
+ninfer:worker_admission_commit_seconds_total 0.415053
+# TYPE ninfer:worker_publish_seconds_total counter
+ninfer:worker_publish_seconds_total 0.000059
+# TYPE ninfer:worker_upkeep_seconds_total counter
+ninfer:worker_upkeep_seconds_total 0.002686
+# TYPE ninfer:worker_decode_rounds_total counter
+ninfer:worker_decode_rounds_total 448
+# TYPE ninfer:worker_prefill_steps_total counter
+ninfer:worker_prefill_steps_total 10
+# TYPE ninfer:continuation_l2_lookup_microseconds_total counter
+ninfer:continuation_l2_lookup_microseconds_total 4
+# TYPE ninfer:continuation_l2_lookup_operations_total counter
+ninfer:continuation_l2_lookup_operations_total 2
+# TYPE ninfer:continuation_l3_lookup_microseconds_total counter
+ninfer:continuation_l3_lookup_microseconds_total 0
+# TYPE ninfer:continuation_l3_lookup_operations_total counter
+ninfer:continuation_l3_lookup_operations_total 0
+# TYPE ninfer:continuation_preflight_microseconds_total counter
+ninfer:continuation_preflight_microseconds_total 33
+# TYPE ninfer:continuation_preflight_operations_total counter
+ninfer:continuation_preflight_operations_total 2
+# TYPE ninfer:continuation_l2_restore_microseconds_total counter
+ninfer:continuation_l2_restore_microseconds_total 57989
+# TYPE ninfer:continuation_l2_restore_operations_total counter
+ninfer:continuation_l2_restore_operations_total 1
+# TYPE ninfer:continuation_l3_restore_microseconds_total counter
+ninfer:continuation_l3_restore_microseconds_total 0
+# TYPE ninfer:continuation_l3_restore_operations_total counter
+ninfer:continuation_l3_restore_operations_total 0
+# TYPE ninfer:continuation_l2_admission_microseconds_total counter
+ninfer:continuation_l2_admission_microseconds_total 1261042
+# TYPE ninfer:continuation_l2_admission_operations_total counter
+ninfer:continuation_l2_admission_operations_total 10
+# TYPE ninfer:continuation_export_microseconds_total counter
+ninfer:continuation_export_microseconds_total 263642
+# TYPE ninfer:continuation_export_operations_total counter
+ninfer:continuation_export_operations_total 6
+# TYPE ninfer:continuation_l3_persistence_microseconds_total counter
+ninfer:continuation_l3_persistence_microseconds_total 0
+# TYPE ninfer:continuation_l3_persistence_operations_total counter
+ninfer:continuation_l3_persistence_operations_total 0
+# TYPE ninfer:continuation_persistence_queued_total counter
+ninfer:continuation_persistence_queued_total 10
+# TYPE ninfer:continuation_persistence_coalesced_total counter
+ninfer:continuation_persistence_coalesced_total 1
+# TYPE ninfer:continuation_persistence_successes_total counter
+ninfer:continuation_persistence_successes_total 0
+# TYPE ninfer:continuation_persistence_failures_total counter
+ninfer:continuation_persistence_failures_total 0
+# TYPE ninfer:continuation_l2_entries gauge
+ninfer:continuation_l2_entries 8
+# TYPE ninfer:continuation_l2_bytes gauge
+ninfer:continuation_l2_bytes 2207547265
+# TYPE ninfer:continuation_l3_entries gauge
+ninfer:continuation_l3_entries 0
+# TYPE ninfer:continuation_l3_bytes gauge
+ninfer:continuation_l3_bytes 0
+# TYPE ninfer:continuation_l2_evictions_total counter
+ninfer:continuation_l2_evictions_total 0
+# TYPE ninfer:continuation_l2_evicted_bytes_total counter
+ninfer:continuation_l2_evicted_bytes_total 0
+# TYPE ninfer:continuation_l3_evictions_total counter
+ninfer:continuation_l3_evictions_total 0
+# TYPE ninfer:continuation_l3_evicted_bytes_total counter
+ninfer:continuation_l3_evicted_bytes_total 0
+# TYPE ninfer:l1_evictions_total counter
+ninfer:l1_evictions_total 2
+# TYPE ninfer:l1_demotions_total counter
+ninfer:l1_demotions_total 1
+# TYPE ninfer:kv_restore_reclaimed_lanes_total counter
+ninfer:kv_restore_reclaimed_lanes_total 0
+# TYPE ninfer:kv_growth_attempts_total counter
+ninfer:kv_growth_attempts_total 449
+# TYPE ninfer:kv_growth_forced_spills_total counter
+ninfer:kv_growth_forced_spills_total 0
+# TYPE ninfer:kv_growth_curtailed_total counter
+ninfer:kv_growth_curtailed_total 0
+# TYPE ninfer:l1_resident_entries gauge
+ninfer:l1_resident_entries 2
+# TYPE ninfer:l1_resident_bytes gauge
+ninfer:l1_resident_bytes 620552192
+# TYPE ninfer:board_energy_joules_total counter
+ninfer:board_energy_joules_total 4673.121000
+# TYPE ninfer:board_idle_watts gauge
+ninfer:board_idle_watts 0.000000
+# TYPE ninfer:prefill_energy_joules_total counter
+ninfer:prefill_energy_joules_total 228.336266
+# TYPE ninfer:decode_energy_joules_total counter
+ninfer:decode_energy_joules_total 3957.687626
+# TYPE ninfer:energy_accounted_seconds_total counter
+ninfer:energy_accounted_seconds_total 11.818175
+# TYPE ninfer:energy_samples_total counter
+ninfer:energy_samples_total 464

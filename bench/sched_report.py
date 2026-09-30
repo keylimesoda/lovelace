@@ -1,6 +1,10 @@
 """Scheduling v2 table for replay runs (bench/run_replay.sh output dirs): steady throughput and TTFT from
 bakeoff/analyze.py, plus the scheduler's own view from telemetry-end.json and the server request log.
 
+Reads both observability schemas: the current one (docs/observability-parity.md: tensorninja/ninfer-4090's records,
+`artifact_type` "ninfer_serve_request_log", lovelace's own sections under `lovelace`) and lovelace's schema 1 of older
+result directories (docs/observability.md at the time: sections at the top level and under `memory`, `timings_ms`).
+
 Usage: python bench/sched_report.py RUN_DIR [RUN_DIR ...]
 """
 
@@ -11,15 +15,32 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent / "bakeoff"))
 from analyze import pct, summarize  # noqa: E402
 
+NINFER_LOG = "ninfer_serve_request_log"
+
+
+def telemetry_sections(t: dict) -> tuple[dict, dict]:
+    """(scheduler, sessions) of a /telemetry snapshot of either schema."""
+    lv = t.get("lovelace")
+    if isinstance(lv, dict):
+        return lv.get("scheduler") or {}, lv.get("sessions") or {}
+    return t.get("scheduler") or {}, (t.get("memory") or {}).get("sessions") or {}
+
+
+def queue_wait_s(rec: dict) -> float:
+    """Arrival -> slot launch of a request_done record of either schema, in seconds."""
+    if rec.get("artifact_type") == NINFER_LOG:
+        return (rec.get("timings_seconds") or {}).get("queue", 0.0)
+    return (rec.get("timings_ms") or {}).get("queue_wait", 0.0) / 1e3
+
 
 def sched_row(run_dir: Path) -> dict:
     s = summarize(run_dir, 180.0) or {}
     t = json.loads((run_dir / "telemetry-end.json").read_text()) if (run_dir / "telemetry-end.json").exists() else {}
-    kb = (t.get("scheduler") or {}).get("kv_budget") or {}
+    sched, ss = telemetry_sections(t)
+    kb = sched.get("kv_budget") or {}
     tot = kb.get("totals") or {}
     v2 = kb.get("scheduler")  # absent before scheduling v2
-    ss = (t.get("memory") or {}).get("sessions") or {}
-    loop = (t.get("scheduler") or {}).get("totals") or {}
+    loop = sched.get("totals") or {}
 
     # per-request queue waits from the server request log (timed window and warm-up alike)
     waits = []
@@ -28,7 +49,7 @@ def sched_row(run_dir: Path) -> dict:
         for line in log.read_text().splitlines():
             rec = json.loads(line)
             if rec.get("event") == "request_done":
-                waits.append((rec.get("timings_ms") or {}).get("queue_wait", 0.0) / 1e3)
+                waits.append(queue_wait_s(rec))
 
     warm = {}
     if (run_dir / "summary.json").exists():

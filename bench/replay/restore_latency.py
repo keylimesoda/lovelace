@@ -3,7 +3,7 @@ them all, so every turn after the first contact restores a parked session. Write
 identity check) and, from the server's request log, a per-phase timing table.
 
   uv run python restore_latency.py --base-url URL --agents 3 --min-depth 60000 --turns 6 --out DIR
-  uv run python restore_latency.py --table DIR/requests.server.jsonl          # table only
+  uv run python restore_latency.py --table DIR/requests.server.jsonl          # table only (either log schema)
   uv run python restore_latency.py --compare DIR_A DIR_B                      # greedy outputs identical?
 """
 
@@ -106,29 +106,38 @@ def pct(xs, p):
     return xs[f] + (xs[c] - xs[f]) * (k - f)
 
 
+def request_row(e):
+    """Timing row of a request_done record. Reads the current observability schema (docs/observability-parity.md:
+    tensorninja/ninfer-4090's records in seconds, lovelace's session details under `lovelace`) and lovelace's schema 1
+    of older result directories (`timings_ms`, top-level `session`)."""
+    if e.get("artifact_type") == "ninfer_serve_request_log":
+        s = (e.get("lovelace") or {}).get("session") or {}
+        tm = {k: v * 1e3 for k, v in (e.get("timings_seconds") or {}).items()}
+        queue, ttft = tm.get("queue", 0.0), tm.get("ttft") or None   # ttft 0 = no token
+        prefill_tokens, error = e["result"]["computed_prefill_tokens"], None   # failures are request_error records
+    else:
+        s, tm = e.get("session") or {}, e["timings_ms"]
+        queue, ttft = tm["queue_wait"], tm.get("ttft")
+        prefill_tokens, error = e["result"]["n_prefill_tokens"], e["result"]["error"]
+    return {
+        "tier": s.get("tier"), "bytes": s.get("restore_bytes", 0), "prefetch": s.get("prefetch_hit", False),
+        "queue_ms": queue, "park_ms": s.get("park_ms"), "issue_ms": s.get("restore_issue_ms"),
+        "ready_ms": s.get("restore_ready_ms"), "prompt_start_ms": s.get("prompt_start_ms"),
+        "restore_dev_ms": s.get("restore_ms"), "prefill_ms": tm["prefill"], "prefill_tokens": prefill_tokens,
+        "first_token_after_admit_ms": (ttft - queue) if ttft is not None else None, "error": error,
+    }
+
+
 def table(path):
     """Median and p90 of each phase over the requests that restored or prefetched a parked session."""
-    rows = []
-    for line in open(path):
-        e = json.loads(line)
-        if e.get("event") != "request_done":
-            continue
-        s = e.get("session") or {}
-        tm = e["timings_ms"]
-        rows.append({
-            "tier": s.get("tier"), "bytes": s.get("restore_bytes", 0), "prefetch": s.get("prefetch_hit", False),
-            "queue_ms": tm["queue_wait"], "park_ms": s.get("park_ms"), "issue_ms": s.get("restore_issue_ms"),
-            "ready_ms": s.get("restore_ready_ms"), "prompt_start_ms": s.get("prompt_start_ms"),
-            "restore_dev_ms": s.get("restore_ms"), "prefill_ms": tm["prefill"],
-            "prefill_tokens": e["result"]["n_prefill_tokens"],
-            "first_token_after_admit_ms": (tm["ttft"] - tm["queue_wait"]) if tm.get("ttft") is not None else None,
-            "error": e["result"]["error"],
-        })
+    records = [json.loads(line) for line in open(path)]
+    rows = [request_row(e) for e in records if e.get("event") == "request_done"]
+    errors = sum(1 for r in rows if r["error"]) + sum(1 for e in records if e.get("event") == "request_error")
     sw = [r for r in rows if r["tier"] in ("ram", "disk") or r["prefetch"]]
     cols = ["queue_ms", "park_ms", "issue_ms", "restore_dev_ms", "ready_ms", "prompt_start_ms", "prefill_ms",
             "prefill_tokens", "first_token_after_admit_ms"]
     lines = [f"requests {len(rows)}, session switches {len(sw)}, prefetch hits {sum(r['prefetch'] for r in sw)}, "
-             f"errors {sum(1 for r in rows if r['error'])}, restored GiB p50 {(pct([r['bytes'] for r in sw], 50) or 0) / 2**30:.2f}",
+             f"errors {errors}, restored GiB p50 {(pct([r['bytes'] for r in sw], 50) or 0) / 2**30:.2f}",
              "", "| phase (switch requests) | p50 | p90 |", "|---|---|---|"]
     for c in cols:
         a, b = pct([r[c] for r in sw], 50), pct([r[c] for r in sw], 90)

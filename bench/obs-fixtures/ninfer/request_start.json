@@ -1,0 +1,34 @@
+{
+ "artifact_type": "ninfer_serve_request_log",
+ "event": "request_start",
+ "request": {
+  "adapter": "",
+  "enable_thinking": true,
+  "has_tool_history": false,
+  "message_count": 1,
+  "model": "qwen3.8-27b",
+  "preserve_thinking": true,
+  "preserve_thinking_semantic_change": false,
+  "prompt_cache_key_digest": "",
+  "protocol": "openai_responses",
+  "request_id": 5,
+  "requested_output_tokens": 32,
+  "requested_output_tokens_source": "client",
+  "sampling": {
+   "frequency_penalty": 0.0,
+   "min_p": 0.0,
+   "presence_penalty": 0.0,
+   "seed": 3993450878561878739,
+   "temperature": 1.0,
+   "top_k": 20,
+   "top_p": 0.949999988079071
+  },
+  "stream": false,
+  "tool_choice": "auto",
+  "tool_count": 0,
+  "x_request_id": "req_5656af7d778c46ff123e815d66fab2f3_14"
+ },
+ "schema_version": 20,
+ "server_instance_id": "serve-1-1790748495769181",
+ "timestamp_unix_ms": 1790748520803
+}

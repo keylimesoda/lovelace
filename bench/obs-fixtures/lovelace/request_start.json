@@ -1,0 +1,49 @@
+{
+ "artifact_type": "ninfer_serve_request_log",
+ "event": "request_start",
+ "lovelace": {
+  "endpoint": "oai_resp",
+  "id_parent": null,
+  "id_slot": 2,
+  "id_task": 435,
+  "n_ctx_slot": 262144,
+  "n_predict": 32,
+  "n_prompt_tokens": 57,
+  "n_unparked_tokens": 0,
+  "queue_wait_ms": 6.158,
+  "schema_version": 2,
+  "seq": 15,
+  "task_type": "completion",
+  "wait_reason": "none"
+ },
+ "request": {
+  "adapter": "",
+  "enable_thinking": true,
+  "has_tool_history": false,
+  "message_count": 0,
+  "model": "qwen3.8-27b",
+  "preserve_thinking": true,
+  "preserve_thinking_semantic_change": false,
+  "prompt_cache_key_digest": "0000000000000003",
+  "protocol": "openai_responses",
+  "request_id": 435,
+  "requested_output_tokens": 32,
+  "requested_output_tokens_source": "client",
+  "sampling": {
+   "frequency_penalty": 0.0,
+   "min_p": 0.05000000074505806,
+   "presence_penalty": 0.0,
+   "seed": 4294967295,
+   "temperature": 1.0,
+   "top_k": 20,
+   "top_p": 0.949999988079071
+  },
+  "stream": false,
+  "tool_choice": "auto",
+  "tool_count": 0,
+  "x_request_id": "435"
+ },
+ "schema_version": 20,
+ "server_instance_id": "3fd82f3554e8f332",
+ "timestamp_unix_ms": 1790746312119
+}

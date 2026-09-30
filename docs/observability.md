@@ -1,229 +1,193 @@
-# Observability: request log, /events, /telemetry, board energy (schema_version 1)
+# Observability: request log, /events, /telemetry, /metrics, /slots, board energy
+
+lovelace serves **tensorninja/ninfer-4090's observability API** (pinned at `f408990`, request-log schema 20) as a
+superset: the same paths, field names, JSON types and units, so tensorninja's dashboard (`apps/web`) and clients such
+as the omarchy-ninfer widget work unchanged. lovelace-only data is under a `lovelace` key (**`lovelace.schema_version`
+2**) in every record and in `/telemetry`; Prometheus additions use the `lovelace:` prefix. The field-by-field mapping
+(same / mapped / N/A) is in [observability-parity.md](observability-parity.md); this page describes how the data is
+produced and the lovelace extension.
 
 `llama-server` flags (engine/tools/server, implemented in `server-observe.{h,cpp}`):
 
 | Flag | Effect |
 |---|---|
-| `--telemetry` | enables `GET /telemetry`, `GET /events`, the 10 Hz energy sampler and the `/metrics` additions |
+| `--telemetry` | enables `GET /telemetry`, `GET /events`, the 10 Hz energy sampler, and the snapshot-built `/metrics` and `/slots` |
 | `--request-log-jsonl PATH` | appends every record below to PATH (append mode); implies `--telemetry` |
+| `--metrics`, `--slots` | llama.cpp's switches for `/metrics` and `/slots` (both needed by tensorninja's clients) |
 | `--web-dir DIR` | alias of llama.cpp's `--path`: serves the dashboard (`apps/web/dist`) at `/` on the API port; API routes win |
 
-Threading: the server loop only performs relaxed atomic stores (phase clock, token counters) and enqueues POD
-records. A writer thread formats records and writes the file / fans out to subscribers; a sampler thread reads the
-NVML energy counter at 10 Hz and attributes each delta to prefill / decode / idle by the loop's phase time share
-over the same period. NVML is `dlopen`ed (`libnvidia-ml.so.1`); without it every GPU/energy field is absent or `null`.
-NVML live sensors are read on the HTTP thread only when `/telemetry` is requested.
+## Cost model (CHARTER E1: nothing measurable on the decode path)
 
-Loop phases: `prefill` / `decode` = `llama_decode()` + sync (and the draft model), split by the batch's prompt-row
-share; `host` = everything else the loop does while a request is in flight or a task is handled; `idle` = waiting
-for tasks. Host time is attributed to prefill / decode pro rata when a request was in flight during the sampling
-period, to idle otherwise. Board energy is the whole board: other processes on the GPU are included.
+- The server loop only performs relaxed atomic stores (phase clock, token counters), writes fixed-size fields into the
+  observer **snapshot** under one short mutex per `llama_decode` step (per-slot view, scheduler gauges, KV budget and
+  llama.cpp metric totals; the prompt-cache and session-store tables at most every 250 ms, into preallocated
+  storage), and enqueues POD records at request start and end.
+- `GET /telemetry`, `/metrics` and `/slots` are built on the HTTP threads from that snapshot. They never post a task
+  to, wake, or wait for the server loop (a sleeping server is not woken either). `/slots` keeps llama.cpp's fields;
+  `params` and `prompt` come from the launched task, which is immutable; `generated` is not reported.
+- A writer thread formats records, writes the file and fans them out to `/events` subscribers; a sampler thread reads
+  the NVML energy counter at 10 Hz. NVML is `dlopen`ed (`libnvidia-ml.so.1`); live sensors are read on the HTTP thread
+  when `/telemetry` is requested. `nvmlDeviceGetPcieThroughput` is never called (it stalls ~20 ms in the driver and
+  slowed decode by 1-2.5 % at 1 Hz); the PCIe fields are 0.
 
-All numbers are JSON numbers. `null` means "not measured / not applicable" and must never render as 0.
-Times named `*_ms` are milliseconds, `*_seconds` seconds, `*_joules` joules, `*_bytes` bytes.
+Measured: `bench/results/obs-parity/REPORT.md` (telemetry off vs on with a 1 Hz `/telemetry` poller, a 4 s
+`/metrics` scraper and an `/events` subscriber).
 
-## Record stream (`--request-log-jsonl PATH` lines == `GET /events` SSE `data:` payloads, byte-identical)
+## Conventions
 
-SSE framing: each record is sent as `data: <json>\n\n`. Keepalives are SSE comments (`: keepalive\n\n`).
-A new subscriber first receives the retained `server_start`, then up to 512 most recent records (replay backlog), then live records.
-Records may be dropped for a slow subscriber (bounded queue, drop-oldest); `/telemetry.events.records_dropped` counts it.
+- Records are tensorninja's: envelope `artifact_type: "ninfer_serve_request_log"`, `schema_version: 20`, `event`,
+  `timestamp_unix_ms`, `server_instance_id` (16 hex chars, new per process); then `lovelace: {schema_version: 2,
+  seq, …}`, `seq` monotonic per instance (0 = `server_start`).
+- ninfer's units: `timings_seconds.*` in seconds, `*_microseconds` in µs, bytes, joules. In `lovelace` objects:
+  `*_ms` milliseconds, `*_seconds` / `*_s` seconds, `*_bytes` bytes, `*_joules` joules.
+- `null` means "not measured / not applicable" and must never render as 0. tensorninja fields with no lovelace
+  equivalent keep their JSON type with 0 / false / "" / "none" (listed in the parity doc).
 
-Envelope on every record:
+## Record stream (`--request-log-jsonl` lines == `GET /events` `data:` payloads, byte-identical)
+
+SSE framing as tensorninja's: `retry: 2000`, then per record `event: <record.event>\ndata: <json>\n\n`; keepalives are
+SSE comments (`: keepalive`). A new subscriber first receives the retained `server_start`, then up to 512 recent
+records, then live records. Records may be dropped for a slow subscriber (bounded queue, drop-oldest);
+`/telemetry.lovelace.events.records_dropped` counts it.
+
+Events: `server_start`, `request_start` (when a slot launches the request, after its queue wait), `request_done`,
+`request_error` (every request that produced no result: HTTP parse / tokenize failure, rejection at launch, failure
+before or during compute), `throughput` (every 5 s with activity; idle time folds into the next `interval_seconds`),
+and lovelace's `lovelace_sched`.
+
+### lovelace extension per record
+
 ```
-schema_version: 1
-event: "server_start" | "request_start" | "request_done" | "request_rejected" | "throughput"
-server_instance_id: string      // 16 hex chars, new per process
-seq: number                     // monotonic per instance, starts at 0 (server_start)
-timestamp_unix_ms: number
+server_start.lovelace:   { build_info, model: {path, name, ftype, n_params, size_bytes, n_ctx_train},
+                           config: {n_ctx, n_ctx_slot, n_parallel, n_batch, n_ubatch, kv_unified, cache_type_k, cache_type_v,
+                                    flash_attn, cache_ram_mib /* -1 unlimited, 0 off */, n_gpu_layers,
+                                    speculative: {types /* "none" when off */, n_max, n_min},
+                                    throughput_interval_ms, energy_sample_hz, request_log_jsonl: string|null},
+                           gpu: {available, error?, name, uuid, driver_version, memory_total_bytes, sm_clock_max_mhz,
+                                 power_limit_watts, energy_available},
+                           vram: VramBudget|null }
+request_start.lovelace:  { id_task, id_slot, id_parent, task_type /* completion|infill|embedding|rerank */,
+                           endpoint /* native|oai_chat|oai_cmpl|oai_resp|oai_asr|oai_embd|anthropic */,
+                           n_prompt_tokens, n_predict /* -1 unlimited */, n_ctx_slot,
+                           queue_wait_ms,                      // arrival at the HTTP handler -> slot launch
+                           wait_reason: "none"|"slot"|"kv",    // KV budget: first reason the request waited
+                           n_unparked_tokens }                 // tokens of a parked session restored at launch
+request_done.lovelace:   { id_task, id_slot, id_parent, task_type, endpoint, n_predict, n_ctx_slot,
+                           n_ctx_used,                         // slot sequence length at release
+                           truncated, wait_reason, n_unparked_tokens, queue_wait_ms,
+                           session: { id, tier: "gpu"|"ram"|"disk"|"new",   // where the session was at admission
+                                      restore_bytes, restore_ms,             // bytes and device time of the restore copies
+                                      park_ms, restore_issue_ms,             // host time parking others / issuing the restore
+                                      restore_ready_ms|null,                 // copies complete, ms after admission (0 = before)
+                                      prompt_start_ms|null,                  // first prompt batch queued, ms after admission
+                                      prefetch_hit } | null,                 // null without --session-ram
+                           rates: {prefill_tps|null, decode_tps|null},      // llama.cpp's per-request definitions
+                           speculative: {n_verif_steps},
+                           energy: {prefill_joules, decode_joules, total_joules} | null }
+request_error.lovelace:  { id_task|null, id_slot|null, task_type, endpoint,
+                           stage: "http"|"launch"|"prompt"|"generation", error_type, n_prompt_tokens, queue_wait_ms|null }
+throughput.lovelace:     { tokens: {drafted, accepted},
+                           phase_tokens_per_second: {prefill|null, decode|null},   // tokens / loop seconds in that phase
+                           requests: {started, done, rejected},
+                           scheduler: {slots_total, slots_busy, slots_processing_prompt, queue_deferred,   // snapshot
+                                       queue_waiting, slots_preempted,                                     // snapshot
+                                       waited_slot, waited_kv},                                            // interval
+                           kv: {cells_total, cells_used, cells_reserved},                                  // snapshot
+                           parking: {sessions_parked /* snapshot */, parks, unparks, preempts, resumes, park_bytes,
+                                     unpark_bytes, park_seconds, unpark_seconds, recompute_tokens},       // interval
+                           loop_seconds: {prefill, decode, host, idle},   // server loop wall clock, sums to ~interval_seconds
+                           batch: {decode_calls, mean_busy_slots|null},
+                           sessions: {n_gpu, n_ram, n_disk, n_io, ram_bytes, disk_bytes,              // snapshot
+                                      promotions, demotions, prefetches, prefetch_hits,
+                                      io_bytes_read, io_bytes_written} | null }                     // interval
+lovelace_sched.lovelace: { action: "park"|"unpark"|"preempt"|"resume"|"sync",
+                           id_slot, id_task|null, n_tokens, bytes,
+                           ms,        // device time of the copies
+                           host_ms,   // server loop time issuing and waiting for them
+                           gbps }
 ```
 
-### server_start
+VramBudget (ggml backend memory breakdown, captured once after model load):
+`{devices: [{name, description, total_bytes, free_bytes, model_bytes, context_bytes, compute_bytes,
+unaccounted_bytes}], host: {model_bytes, context_bytes, compute_bytes}}`; `context_bytes` is KV cache + recurrent state,
+`unaccounted = total - free - (model + context + compute)`.
+
+## GET /telemetry
+
+tensorninja's snapshot (`gpu`, `scheduler`, `cache`, `slots`, `adapters`, `memory`, `events`; mapping in the parity
+doc), plus the keys of keylimesoda/ninfer-4090-lin-hybrid's `cache` that the omarchy-ninfer widget reads, plus:
+
 ```
-build_info: string
-model: { path: string, name: string, ftype: string, n_params: number, size_bytes: number, n_ctx_train: number }
-config: {
-  n_ctx: number, n_ctx_slot: number, n_parallel: number, n_batch: number, n_ubatch: number,
-  kv_unified: boolean, cache_type_k: string, cache_type_v: string, flash_attn: string,
-  cache_ram_mib: number,            // --cache-ram; -1 = unlimited, 0 = disabled
-  n_gpu_layers: number,
-  speculative: { types: string, n_max: number, n_min: number },   // types "none" when off
-  throughput_interval_ms: number,   // reporting interval of `throughput` records (5000)
-  energy_sample_hz: number,         // 10
-  request_log_jsonl: string | null
+lovelace: {
+  schema_version: 2, build_info, sleeping,
+  energy: { available, joules: {board, prefill, decode, idle} | null,   // since server start
+            idle_watts|null,                                             // calibrated from fully idle periods
+            board_watts_1s|null },                                       // mean board power over the last second
+  gpu: { pstate|null },
+  loop: { window_seconds /* 10 */, phase: "idle"|"host"|"prefill"|"decode", seconds: {prefill, decode, host, idle},
+          fraction: {…} },
+  loop_totals_seconds: { prefill, decode, host, idle },
+  scheduler: {
+    slots_total, slots_busy, slots_idle, slots_processing_prompt, slots_generating, queue_deferred,
+    kv_budget: { enabled, queue_waiting, slots_preempted,
+                 gen_reserve, headroom, prefill_chunk_gen, timeslice,  // --kv-budget-gen, --kv-budget-headroom, --prefill-chunk-gen, --kv-timeslice
+                 totals: { parks, park_drops, unparks, preempts, resumes, grows, park_bytes, unpark_bytes,
+                           park_seconds, unpark_seconds,              // device time of the copies
+                           park_host_seconds, unpark_host_seconds,    // server loop time issuing and waiting for them
+                           park_gbps, unpark_gbps, waited_slot, waited_kv,
+                           rollback_fallbacks,                        // truncations the memory refused, recovered
+                           recompute_tokens, kv_overflows } },        // kv_overflows should stay 0
+    totals: { prompt_tokens, prompt_tokens_cached, predicted_tokens, prompt_seconds, predicted_seconds, n_decode,
+              n_busy_slots_per_decode, drafted, accepted, requests_started, requests_done, requests_rejected } },
+  kv: { cells_total, cells_used, cells_reserved, unified, n_ctx_slot, cache_type_k, cache_type_v },
+      // cells_used = sum of slot sequence lengths (idle slots keep their KV until parked)
+      // cells_reserved = cells_used plus the unused part of running requests' reservations (KV budget)
+  prompt_cache: { enabled, bytes_used, bytes_limit /* 0 = unlimited */, tokens, tokens_limit, entries },
+  sessions: { arena_bytes, arena_free_bytes, ram_bytes, disk_bytes, disk_limit_bytes /* 0 = unlimited */,
+              n_sessions, n_gpu, n_ram, n_disk, n_io, demotions, promotions, deleted, stale_syncs, prefetches,
+              prefetch_hits, syncs, sync_bytes, io_bytes_written, io_bytes_read, io_write_s, io_read_s,
+              sessions: [{ id, tier: "gpu"|"ram"|"demoting"|"disk"|"promoting", slot, resident_cells, mirror_tokens,
+                           mirror_bytes, mirror_segments, checkpoints, file_bytes, stale, sync_ms|null,
+                           since_sync_s|null, syncs, truncations, restores, last_restore_bytes, last_restore_ms,
+                           last_restore_wall_ms, prefetches, prefetch_hits, demotions, promotions }] } | null,
+  vram: VramBudget | null,
+  slots: [{ id, state: "idle"|"wait_other"|"started"|"processing_prompt"|"done_prompt"|"generating"|"preempted"|"recompute",
+            is_processing, n_ctx, n_ctx_used, n_reserved, id_task|null, wait_reason|null, n_unparked_tokens,
+            n_prompt_tokens, n_cached_tokens, n_prefill_tokens, n_decoded, speculative, session_id|null }],
+  events: { jsonl_path|null, records_emitted, records_dropped }
 }
-gpu: GpuStatic                     // see /telemetry gpu; only the static fields: available, error?, name, uuid, driver_version, memory_total_bytes, sm_clock_max_mhz, power_limit_watts, energy_available
-vram: VramBudget | null
-```
-VramBudget (from ggml backend memory breakdown, captured once after model load):
-```
-{ devices: [{ name, description, total_bytes, free_bytes, model_bytes, context_bytes, compute_bytes, unaccounted_bytes }],
-  host: { model_bytes, context_bytes, compute_bytes } }
-```
-`context_bytes` is KV cache + recurrent state; `compute_bytes` is the compute graph buffers; `unaccounted = total - free - (model+context+compute)` (other processes, CUDA context, fragmentation).
-
-### request_start  (emitted when a slot picks the task up)
-```
-request: RequestInfo
-queue_wait_ms: number              // arrival at HTTP handler -> slot launch
-wait_reason: "none" | "slot" | "kv"   // KV budget: first reason the request waited for admission (no idle slot / no KV cells)
-n_unparked_tokens: number          // tokens of a parked session restored from host memory at launch (0 = none)
-```
-RequestInfo:
-```
-{ id_task: number, id_slot: number | null, id_parent: number | null,
-  task_type: "completion" | "infill" | "embedding" | "rerank",
-  endpoint: "native" | "oai_chat" | "oai_cmpl" | "oai_resp" | "oai_asr" | "oai_embd" | "anthropic",
-  stream: boolean, n_prompt_tokens: number, n_predict: number /* -1 unlimited */, n_ctx_slot: number }
 ```
 
-### request_done  (emitted when the slot is released: finished, cancelled, or failed mid-flight)
-```
-request: RequestInfo
-result: {
-  finish_reason: "eos" | "word" | "limit" | "cancelled" | "error" | "done",   // done = embedding/rerank task
-  truncated: boolean,
-  n_prompt_tokens: number,        // prompt length
-  n_cached_tokens: number,        // reused from slot KV / prompt cache (no compute)
-  n_prefill_tokens: number,       // prompt tokens actually computed
-  n_completion_tokens: number,    // generated tokens committed
-  n_ctx_used: number,             // slot sequence length at release
-  n_unparked_tokens: number,      // as in request_start
-  wait_reason: "none" | "slot" | "kv",
-  error: string | null
-}
-timings_ms: {
-  queue_wait: number,
-  prefill: number,                // slot prompt processing wall time
-  decode: number,                 // first token -> last token
-  ttft: number | null,            // arrival -> first token (queue_wait + prefill, approximately)
-  total: number                   // arrival -> release
-}
-rates: { prefill_tps: number | null, decode_tps: number | null }   // per request (llama.cpp's own definitions)
-speculative: { n_drafted, n_accepted, n_verif_steps, accept_rate: number|null, accepted_per_pos: number[] } | null   // null when no drafting happened
-energy: { prefill_joules: number, decode_joules: number, total_joules: number } | null   // null without a board energy counter
-```
-Per-request energy = request's computed prefill tokens x (server prefill J / server prefill token) over the request's lifetime, plus the same for decode tokens. It is an attribution, not a measurement of the request alone: concurrent requests share the mean rate.
+The session table and prompt-cache figures are refreshed at most every 250 ms (they walk containers); everything else
+is as of the last `llama_decode` step.
 
-### request_rejected  (the request never produced a result)
-```
-request: { id_task: number | null, id_slot: number | null, task_type, endpoint, n_prompt_tokens: number, n_ctx_slot: number }
-stage: "http" | "launch" | "prompt"      // http: parse/tokenize failure; launch: rejected at slot launch; prompt: rejected before any compute (e.g. context exceeded)
-error: { type: string, message: string }  // type e.g. "invalid_request", "exceed_context_size", "server", "not_supported", "unavailable"
-queue_wait_ms: number | null
-```
+## Board energy
 
-### sched  (KV budget, one record per state transfer between VRAM and host memory)
-```
-action: "park" | "unpark" | "preempt" | "resume"   // park: idle session VRAM -> host; unpark: host -> VRAM at launch;
-                                                   // preempt / resume: a generating slot paused at a token boundary and resumed
-id_slot: number, id_task: number | null, n_tokens: number,
-bytes: number,                     // state bytes copied (target + draft context; 0 = no copy, e.g. resume by re-prefill)
-ms: number, gbps: number           // device time of the copies (start of the first to end of the last, excluding the wait for
-                                   // work queued before them) and bytes / time
-host_ms: number                    // time the server loop spent issuing and waiting for the copies; parks and unparks overlap
-                                   // with other slots' decoding, so this is far below ms unless nothing else runs
-```
+The sampler reads the NVML cumulative energy counter at 10 Hz and splits each delta by the server loop's phase time
+over the same period: `prefill` / `decode` = `llama_decode()` + sync (split by the batch's prompt-row share, the draft
+model counts as decode), `host` = loop work while a request is in flight (split pro rata between prefill and decode),
+`idle` = everything else. The parts sum to the board delta exactly, so ninfer's `residual_joules` is 0 by
+construction. `idle_watts` is calibrated from fully idle sampling periods (0 until the first calibration, as
+upstream). Board energy is the whole board: other processes on the GPU are included. Per-request energy
+(`request_done.lovelace.energy`) is an attribution: the request's computed tokens times the server's J/token over its
+lifetime.
 
-### throughput  (every throughput_interval_ms, only when the interval had activity; idle time is folded into the next record's interval_seconds)
-```
-interval_seconds: number
-tokens: { prefill: number, decode: number, drafted: number, accepted: number }   // prefill = computed prompt tokens, decode = committed generated tokens
-throughput_tokens_per_second: { prefill: number, decode: number }                // tokens / interval_seconds (aggregate over all slots)
-phase_tokens_per_second: { prefill: number | null, decode: number | null }       // tokens / loop seconds spent in that phase
-requests: { started: number, done: number, rejected: number }
-scheduler: { slots_total, slots_busy, slots_processing_prompt, queue_deferred,   // snapshot at emit time (drawn as points, not bands)
-             queue_waiting, slots_preempted,                                     // KV budget: admission queue length, paused slots
-             waited_slot, waited_kv }                                            // requests that started waiting in the interval, by reason
-kv: { cells_total, cells_used, cells_reserved }   // snapshot; reserved = sum over slots of max(used, reservation) of running requests + cells of idle slots
-parking: { sessions_parked,                       // prompt cache entries (snapshot)
-           parks, unparks, preempts, resumes, park_bytes, unpark_bytes, park_seconds, unpark_seconds,
-           recompute_tokens }                     // interval deltas; recompute = tokens re-prefilled to recover a lost sequence
-loop_seconds: { prefill: number, decode: number, host: number, idle: number }    // server loop wall clock split, sums to ~interval_seconds
-batch: { decode_calls: number, mean_busy_slots: number | null }                  // llama_decode calls and mean busy slots per call
-energy: {
-  board_joules: number,           // exact board counter delta
-  prefill_joules: number, decode_joules: number, idle_joules: number,   // board joules split by loop phase time share (host time is split pro rata between prefill and decode); sums to board_joules
-  idle_watts: number | null,      // board draw calibrated from fully idle sampling periods
-  joules_per_token: { served: number|null, active: number|null, prefill: number|null, decode: number|null }
-    // served = board / (prefill+decode tokens); active = (prefill+decode joules) / (prefill+decode tokens);
-    // prefill = prefill_joules / prefill tokens; decode = decode_joules / decode tokens
-} | null
-```
+## GET /metrics
 
-## GET /telemetry (complete snapshot, poll at 1 Hz; `sleeping: true` and null loop-side sections while the server sleeps)
-```
-timestamp_unix_ms, server_instance_id: string, uptime_seconds: number, model_id: string, build_info: string
-gpu: {
-  available: boolean, error?: string,
-  name?, uuid?, driver_version?, temperature_c?, fan_percent?,
-  power_watts?,                    // NVML trailing-average board power
-  power_limit_watts?, energy_available?: boolean,
-  energy_joules_total?: number | null,   // board counter since driver load
-  utilization_gpu_percent?, utilization_memory_percent?,
-  sm_clock_mhz?, sm_clock_max_mhz?, memory_clock_mhz?,
-  memory_used_bytes?, memory_total_bytes?,
-  pstate?: number,
-  throttle_reasons?: string[]      // gpu_idle, applications_clocks_setting, sw_power_cap, hw_slowdown, sync_boost, sw_thermal_slowdown, hw_thermal_slowdown, hw_power_brake_slowdown, display_clock_setting
-}
-energy: {
-  available: boolean,
-  joules: { board: number, prefill: number, decode: number, idle: number } | null,   // since server start
-  idle_watts: number | null,
-  board_watts_1s: number | null    // mean board power over the last second, from counter deltas
-}
-scheduler: {
-  slots_total, slots_busy, slots_idle, slots_processing_prompt, slots_generating, queue_deferred,
-  kv_budget: {
-    enabled: boolean, queue_waiting: number, slots_preempted: number,
-    gen_reserve: number, headroom: number, prefill_chunk_gen: number,   // --kv-budget-gen, --kv-budget-headroom, --prefill-chunk-gen
-    timeslice: number,                                                  // --kv-timeslice seconds, 0 = run to completion
-    totals: { parks, park_drops, unparks, preempts, resumes, grows, park_bytes, unpark_bytes, park_seconds, unpark_seconds,
-              park_host_seconds, unpark_host_seconds,
-              park_gbps, unpark_gbps, waited_slot, waited_kv, rollback_fallbacks, recompute_tokens, kv_overflows }
-      // park_seconds / unpark_seconds: device time of the copies (park_gbps = park_bytes / park_seconds)
-      // park_host_seconds / unpark_host_seconds: server loop time spent issuing and waiting for them
-      // park_drops: idle sessions evicted without a new host copy (already cached, or no cache room)
-      // rollback_fallbacks: truncations the memory refused, recovered from a checkpoint or by re-prefill
-      // kv_overflows: llama_decode() found no free cells despite the budget (should stay 0)
-  },
-  loop: {
-    window_seconds: number,        // rolling window (10 s)
-    phase: "idle" | "host" | "prefill" | "decode",   // current
-    seconds:  { prefill, decode, host, idle },       // over the window
-    fraction: { prefill, decode, host, idle }        // seconds / window_seconds
-  },
-  loop_totals_seconds: { prefill, decode, host, idle },   // since start
-  totals: {
-    prompt_tokens, prompt_tokens_cached, predicted_tokens,
-    prompt_seconds, predicted_seconds, n_decode, n_busy_slots_per_decode,
-    drafted, accepted, requests_started, requests_done, requests_rejected
-  }
-}
-memory: {
-  kv: { cells_total: number, cells_used: number, cells_reserved: number, unified: boolean, n_ctx_slot: number, cache_type_k: string, cache_type_v: string },
-      // cells_used = sum of slot sequence lengths (idle slots keep their KV until parked or evicted)
-      // cells_reserved = cells_used plus the unused part of the reservations of running requests (KV budget)
-  prompt_cache: { enabled: boolean, bytes_used: number, bytes_limit: number /* 0 = unlimited */, tokens: number, tokens_limit: number, entries: number },
-  vram: VramBudget | null
-}
-slots: [{ id, state: "idle"|"started"|"processing_prompt"|"done_prompt"|"generating"|"wait_other"|"preempted"|"recompute",
-          is_processing: boolean, n_ctx: number, n_ctx_used: number, n_reserved: number, id_task: number | null,
-          wait_reason: "none"|"slot"|"kv"|null, n_unparked_tokens: number,
-          n_prompt_tokens: number, n_cached_tokens: number, n_prefill_tokens: number, n_decoded: number, speculative: boolean }]
-events: { jsonl_enabled: boolean, jsonl_path: string | null, subscribers: number, records_emitted: number, records_dropped: number }
-```
+llama.cpp's series (rate gauges averaged since the previous scrape), then tensorninja's `ninfer:*` series with the
+same names and order as `serve_metrics.cpp` (the widget reads `ninfer:requests_total`,
+`ninfer:prefix_cache_hit_tokens_total`, `ninfer:draft_tokens_total`, `ninfer:draft_accepted_tokens_total`), then:
 
-## /metrics additions (Prometheus, with --metrics and telemetry on)
 ```
-llamacpp:board_energy_joules_total                      counter
-llamacpp:energy_joules_total{phase="prefill|decode|idle"} counter
-llamacpp:loop_seconds_total{phase="prefill|decode|host|idle"} counter
-llamacpp:board_power_watts                              gauge (mean over last 1 s)
-llamacpp:idle_power_watts                               gauge
-llamacpp:kv_cells_total | kv_cells_used | kv_cells_reserved   gauge
-llamacpp:sched_waiting | sched_preempted | sessions_parked    gauge
-llamacpp:sched_{parks,park_drops,unparks,preempts,resumes,grows}_total              counter
-llamacpp:sched_{park,unpark}_bytes_total, sched_{park,unpark}_seconds_total         counter
-llamacpp:sched_wait_{slot,kv}_total                                                 counter
-llamacpp:sched_{rollback_fallbacks,recompute_tokens,kv_overflows}_total             counter
+lovelace:loop_seconds_total{phase="prefill|decode|host|idle"}   counter
+lovelace:energy_joules_total{phase="prefill|decode|idle"}       counter   (with an energy counter)
+lovelace:board_power_watts                                      gauge     (mean over the last 1 s)
+lovelace:kv_cells_total | kv_cells_used | kv_cells_reserved     gauge
+lovelace:sched_waiting | sched_preempted | sessions_parked      gauge
+lovelace:sched_{parks,park_drops,unparks,preempts,resumes,grows}_total                counter
+lovelace:sched_{park,unpark}_bytes_total, sched_{park,unpark}_seconds_total           counter
+lovelace:sched_wait_{slot,kv}_total                                                   counter
+lovelace:sched_{rollback_fallbacks,recompute_tokens,kv_overflows}_total               counter
+lovelace:sessions | sessions_gpu | sessions_ram | sessions_disk | sessions_{ram,disk}_bytes   gauge (--session-ram)
+lovelace:sessions_{demotions,promotions,prefetches,prefetch_hits}_total                      counter (--session-ram)
 ```

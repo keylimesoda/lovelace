@@ -2,103 +2,98 @@ import { StackedBar } from '../components/charts'
 import { CHART } from '../components/echart'
 import { Term, Tooltip } from '../components/tooltip'
 import { Empty, Panel, Pill } from '../components/ui'
-import type { RejectionSummary } from '../lib/derive'
-import { clock, count, joules, percent, seconds } from '../lib/format'
-import type { RequestDoneRecord, RequestRejectedRecord, RequestStartRecord } from '../lib/records'
+import { SOURCE_COLOR } from '../lib/derive'
+import { bytes, clock, count, percent, seconds } from '../lib/format'
+import { GLOSSARY } from '../lib/glossary'
+import type { RequestDoneRecord, RequestStartRecord } from '../lib/records'
 
 const PHASES = [
-  { key: 'queue', color: CHART.warning, hint: 'Waiting for a free slot.' },
   {
-    key: 'prefill',
-    color: CHART.violet,
-    hint: 'Slot prompt processing: prompt tokens no cache covered.',
+    key: 'queue',
+    color: CHART.warning,
+    hint: 'Waiting in the FIFO before a lane was available.',
   },
+  {
+    key: 'restore',
+    color: CHART.blue,
+    hint: 'Importing cached continuation state into the lane.',
+  },
+  { key: 'prefill', color: CHART.violet, hint: 'Evaluating prompt tokens no prefix covered.' },
   {
     key: 'decode',
     color: CHART.accent,
-    hint: 'Generating tokens, first token to last.',
+    hint: 'Generating tokens once the first one had been emitted.',
   },
 ] as const
 
-const FINISH_COLOR: Record<string, string> = {
-  eos: CHART.muted,
-  word: CHART.muted,
-  limit: CHART.warning,
-  cancelled: CHART.dim,
-  error: CHART.danger,
+const SOURCE_HINT: Record<string, string> = {
+  l1: GLOSSARY.tierL1.body,
+  l2: GLOSSARY.tierL2.body,
+  l3: GLOSSARY.tierL3.body,
+  none: 'Nothing was reused: the whole prompt was prefilled from zero.',
 }
 
-type Row =
-  { kind: 'done'; record: RequestDoneRecord } | { kind: 'rejected'; record: RequestRejectedRecord }
-
-/** Per-request time split, drawn on the same phase colors the latency panel uses. */
+/** Per-request TTFT split, drawn on the same phase colors the latency panel uses. */
 function Waterfall({ record }: { record: RequestDoneRecord }) {
-  const t = record.timings_ms
-  const values: Record<string, number> = {
-    queue: t.queue_wait / 1000,
-    prefill: t.prefill / 1000,
-    decode: t.decode / 1000,
-  }
+  const t = record.timings_seconds
   return (
     <StackedBar
       height={5}
       segments={PHASES.map((phase) => ({
         label: phase.key,
-        value: values[phase.key]!,
+        value: t[phase.key],
         color: phase.color,
         hint: phase.hint,
-        display: `${seconds(values[phase.key]!)} of ${seconds(t.total / 1000)} total`,
+        display: `${seconds(t[phase.key])} of ${seconds(t.queue + t.restore + t.prefill + t.decode)}`,
       }))}
     />
   )
 }
 
 /** Everything the record knows about one request, shown on its timestamp. */
-function detail(record: RequestDoneRecord): string {
-  const { request, result, speculative, energy } = record
+function detail(record: RequestDoneRecord) {
+  const cache = record.continuation_cache
+  const spec = record.speculative
   const lines: string[] = [
-    `task ${request.id_task} · slot ${request.id_slot ?? '—'} · ${request.task_type} · ${request.endpoint}${request.stream ? ' · stream' : ''}`,
-    `finish: ${result.finish_reason}${result.truncated ? ' (truncated)' : ''}`,
-    `cached ${count(result.n_cached_tokens)} of ${count(result.n_prompt_tokens)} prompt tokens, computed ${count(result.n_prefill_tokens)}`,
-    `ctx used ${count(result.n_ctx_used)} of ${count(request.n_ctx_slot)}`,
+    `${record.request.protocol} · ${record.request.request_id}`,
+    `finish: ${record.result.finish_reason}`,
+    `reuse path: ${record.result.prefix_reuse_path}`,
+    `reused ${count(record.result.prefix_cache_hit_tokens)} of ${count(
+      record.result.prompt_tokens,
+    )} prompt tokens`,
   ]
-  if (record.rates.prefill_tps !== null) {
-    lines.push(`prefill ${record.rates.prefill_tps.toFixed(0)} tok/s`)
-  }
-  if (speculative) {
+  if (cache.source !== 'none') {
     lines.push(
-      `draft: ${speculative.n_accepted}/${speculative.n_drafted} accepted (${
-        speculative.accept_rate === null ? '—' : percent(speculative.accept_rate)
-      })`,
+      `restored ${count(cache.restored_tokens)} tokens (${bytes(cache.restored_bytes)}) from ${
+        cache.source
+      } in ${seconds(cache.restore_microseconds / 1e6)}`,
     )
   }
-  if (energy) {
+  if (cache.final_miss_reason && cache.final_miss_reason !== 'none') {
+    lines.push(`miss: ${cache.final_miss_reason}`)
+  }
+  if (cache.restore_failure && cache.restore_failure !== 'none') {
+    lines.push(`restore failure: ${cache.restore_failure}`)
+  }
+  if (cache.destructive_rollback) lines.push('a destructive rollback was required')
+  if (spec && spec.rounds > 0) {
     lines.push(
-      `energy: ${joules(energy.total_joules)} (prefill ${joules(energy.prefill_joules)}, decode ${joules(energy.decode_joules)}), attributed`,
+      `mtp: ${spec.accepted_tokens}/${spec.drafted_tokens} accepted (${percent(
+        spec.drafted_tokens === 0 ? 0 : spec.accepted_tokens / spec.drafted_tokens,
+      )})`,
     )
   }
-  if (result.error) lines.push(`error: ${result.error}`)
   return lines.join('\n')
 }
 
 export function RequestsPanel({
   requests,
-  rejected,
-  rejections,
   active,
 }: {
   requests: RequestDoneRecord[]
-  rejected: RequestRejectedRecord[]
-  rejections: RejectionSummary
   active: RequestStartRecord[]
 }) {
-  // Completed and rejected requests interleave in arrival order; seq is the server's own order.
-  const rows: Row[] = [
-    ...requests.map((record) => ({ kind: 'done' as const, record })),
-    ...rejected.map((record) => ({ kind: 'rejected' as const, record })),
-  ]
-    .sort((a, b) => b.record.seq - a.record.seq)
-    .slice(0, 14)
+  const recent = [...requests].reverse().slice(0, 14)
 
   return (
     <Panel
@@ -106,115 +101,67 @@ export function RequestsPanel({
       hint="ttftSplit"
       className="panel--wide"
       note={
-        <>
-          {active.length > 0 ? <Pill tone="accent">{active.length} in flight</Pill> : null}{' '}
-          {rejections.count > 0 ? (
-            <Term k="rejected">
-              <Pill tone="danger">
-                {rejections.count} rejected ·{' '}
-                {Object.entries(rejections.byErrorType)
-                  .map(([type, n]) => `${type} ${n}`)
-                  .join(' · ')}
-              </Pill>
-            </Term>
-          ) : null}{' '}
-          {`${requests.length} retained`}
-        </>
+        active.length > 0 ? (
+          <Pill tone="accent">{active.length} in flight</Pill>
+        ) : (
+          `${requests.length} retained`
+        )
       }
     >
-      {rows.length === 0 ? (
+      {recent.length === 0 ? (
         <Empty>no completed requests yet</Empty>
       ) : (
         <table className="table">
           <thead>
             <tr>
               <th>at</th>
-              <th>
-                <Term k="endpoint">api</Term>
-              </th>
+              <th>proto</th>
               <th className="numeric">prompt</th>
-              <th className="numeric">
-                <Term k="cacheReuse">cached</Term>
-              </th>
               <th className="numeric">gen</th>
               <th>
-                <Term k="finishReason">end</Term>
+                <Term k="promptSource">src</Term>
               </th>
               <th className="numeric">
                 <Term k="ttft">ttft</Term>
               </th>
               <th className="numeric">
-                <Term k="perSequenceRate">tok/s</Term>
+                <Term k="decodePerRequest">tok/s</Term>
               </th>
-              <th className="numeric">
-                <Term k="requestEnergy">J</Term>
-              </th>
-              <th style={{ width: '20%' }}>
+              <th style={{ width: '22%' }}>
                 <Term k="ttftSplit">phases</Term>
               </th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => {
-              const record = row.record
-              const key = `${record.server_instance_id}-${record.seq}`
-              if (row.kind === 'rejected') {
-                const rejection = row.record
-                return (
-                  <tr key={key}>
-                    <td>{clock(rejection.timestamp_unix_ms)}</td>
-                    <td>{rejection.request.endpoint}</td>
-                    <td className="numeric emphasis">{count(rejection.request.n_prompt_tokens)}</td>
-                    <td colSpan={7} style={{ color: CHART.danger }}>
-                      <Tooltip
-                        title={`rejected at ${rejection.stage}`}
-                        body={<span className="tipwrap">{rejection.error.message}</span>}
-                        className="tip--term"
-                      >
-                        rejected · {rejection.stage} · {rejection.error.type}
-                      </Tooltip>
-                      {rejection.queue_wait_ms === null
-                        ? null
-                        : ` · waited ${seconds(rejection.queue_wait_ms / 1000)}`}
-                    </td>
-                  </tr>
-                )
-              }
-              const done = row.record
-              const result = done.result
+            {recent.map((record) => {
+              const source = record.continuation_cache.source
+              const decodeRate =
+                record.timings_seconds.decode > 0.01
+                  ? record.result.completion_tokens / record.timings_seconds.decode
+                  : 0
               return (
-                <tr key={key}>
+                <tr key={`${record.request.request_id}-${record.timestamp_unix_ms}`}>
                   <td>
                     <Tooltip
-                      title={clock(done.timestamp_unix_ms)}
-                      body={<span className="tipwrap">{detail(done)}</span>}
+                      title={clock(record.timestamp_unix_ms)}
+                      body={<span className="tipwrap">{detail(record)}</span>}
                       className="tip--term"
                     >
-                      {clock(done.timestamp_unix_ms)}
+                      {clock(record.timestamp_unix_ms)}
                     </Tooltip>
                   </td>
-                  <td>{done.request.endpoint}</td>
-                  <td className="numeric emphasis">{count(result.n_prompt_tokens)}</td>
-                  <td className="numeric">
-                    {result.n_prompt_tokens === 0
-                      ? '—'
-                      : percent(result.n_cached_tokens / result.n_prompt_tokens)}
+                  <td>{record.request.protocol.replace('openai_', '')}</td>
+                  <td className="numeric emphasis">{count(record.result.prompt_tokens)}</td>
+                  <td className="numeric emphasis">{count(record.result.completion_tokens)}</td>
+                  <td style={{ color: SOURCE_COLOR[source] }}>
+                    <Tooltip title={source} body={SOURCE_HINT[source] ?? ''} className="tip--term">
+                      {source}
+                    </Tooltip>
                   </td>
-                  <td className="numeric emphasis">{count(result.n_completion_tokens)}</td>
-                  <td style={{ color: FINISH_COLOR[result.finish_reason] ?? CHART.muted }}>
-                    {result.finish_reason}
-                  </td>
-                  <td className="numeric emphasis">
-                    {done.timings_ms.ttft === null ? '—' : seconds(done.timings_ms.ttft / 1000)}
-                  </td>
-                  <td className="numeric">
-                    {done.rates.decode_tps === null ? '—' : done.rates.decode_tps.toFixed(0)}
-                  </td>
-                  <td className="numeric">
-                    {done.energy === null ? '—' : done.energy.total_joules.toFixed(1)}
-                  </td>
+                  <td className="numeric emphasis">{seconds(record.timings_seconds.ttft)}</td>
+                  <td className="numeric">{decodeRate > 0 ? decodeRate.toFixed(0) : '—'}</td>
                   <td>
-                    <Waterfall record={done} />
+                    <Waterfall record={record} />
                   </td>
                 </tr>
               )
@@ -223,10 +170,8 @@ export function RequestsPanel({
         </table>
       )}
       <p className="panel__footnote">
-        Phase bars are proportional to each request&apos;s own total, coloured queue / prefill /
-        decode. Hover a timestamp for slot, cache, draft, and energy detail, and a rejection for the
-        server&apos;s error message. Per-request energy is an attribution at the server-wide rate,
-        not a measurement of the request alone.
+        Phase bars are proportional to each request&apos;s own total, coloured queue / restore /
+        prefill / decode. Hover a timestamp for that request&apos;s cache decision and MTP result.
       </p>
     </Panel>
   )

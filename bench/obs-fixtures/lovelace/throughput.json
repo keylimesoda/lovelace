@@ -1,0 +1,255 @@
+{
+ "artifact_type": "ninfer_serve_request_log",
+ "continuation_cache": {
+  "aliases": {
+   "delta_routed_session_restores": 2,
+   "delta_stable_prefix_restores": 0,
+   "routed_session_restores": 2,
+   "stable_prefix_restores": 0
+  },
+  "delta_lookup_hits": 2,
+  "delta_lookup_misses": 2,
+  "delta_preflight_candidate_rejections": 0,
+  "delta_publication_failures": 0,
+  "delta_publication_successes": 4,
+  "delta_publication_superseded": 0,
+  "delta_restore_deferrals": 0,
+  "delta_restore_failures": 0,
+  "delta_restore_successes": 2,
+  "delta_restored_bytes": 0,
+  "delta_restored_tokens": 1143,
+  "latency_microseconds": {
+   "export_delta": 0,
+   "export_operations_delta": 0,
+   "export_operations_total": 0,
+   "export_total": 0,
+   "l2_admission_delta": 0,
+   "l2_admission_operations_delta": 0,
+   "l2_admission_operations_total": 0,
+   "l2_admission_total": 0,
+   "l2_lookup_delta": 0,
+   "l2_lookup_operations_delta": 0,
+   "l2_lookup_operations_total": 0,
+   "l2_lookup_total": 0,
+   "l2_restore_delta": 0,
+   "l2_restore_operations_delta": 0,
+   "l2_restore_operations_total": 0,
+   "l2_restore_total": 0,
+   "l3_lookup_delta": 0,
+   "l3_lookup_operations_delta": 0,
+   "l3_lookup_operations_total": 0,
+   "l3_lookup_total": 0,
+   "l3_persistence_delta": 0,
+   "l3_persistence_operations_delta": 0,
+   "l3_persistence_operations_total": 0,
+   "l3_persistence_total": 0,
+   "l3_restore_delta": 0,
+   "l3_restore_operations_delta": 0,
+   "l3_restore_operations_total": 0,
+   "l3_restore_total": 0,
+   "preflight_delta": 0,
+   "preflight_operations_delta": 0,
+   "preflight_operations_total": 0,
+   "preflight_total": 0
+  },
+  "lookup_hits": 2,
+  "lookup_misses": 3,
+  "miss_reasons": {
+   "delta_disabled": 0,
+   "delta_entry_unavailable_or_corrupt": 0,
+   "delta_no_alias": 2,
+   "delta_no_lane": 0,
+   "delta_not_deeper": 0,
+   "delta_preflight_rejected": 0,
+   "delta_restore_failed": 0,
+   "delta_rollback_conflict": 0,
+   "disabled": 0,
+   "entry_unavailable_or_corrupt": 0,
+   "no_alias": 3,
+   "no_lane": 0,
+   "not_deeper": 0,
+   "preflight_rejected": 0,
+   "restore_failed": 0,
+   "rollback_conflict": 0
+  },
+  "occupancy": {
+   "delta_l1_demotions": 0,
+   "delta_l1_evictions": 0,
+   "delta_l2_evicted_bytes": 0,
+   "delta_l2_evictions": 0,
+   "delta_l3_evicted_bytes": 0,
+   "delta_l3_evictions": 0,
+   "kv_growth_attempts": 0,
+   "kv_growth_curtailed": 0,
+   "kv_growth_forced_spills": 0,
+   "kv_restore_reclaimed_lanes": 0,
+   "l1_bytes": 32474911,
+   "l1_demotions": 0,
+   "l1_entries": 3,
+   "l1_evictions": 0,
+   "l2_bytes": 512203312,
+   "l2_entries": 3,
+   "l2_evicted_bytes": 0,
+   "l2_evictions": 0,
+   "l3_bytes": 0,
+   "l3_entries": 0,
+   "l3_evicted_bytes": 0,
+   "l3_evictions": 0
+  },
+  "persistence_delta": {
+   "coalesced": 0,
+   "failures": 0,
+   "queued": 0,
+   "successes": 0
+  },
+  "persistence_total": {
+   "coalesced": 0,
+   "failures": 0,
+   "queued": 0,
+   "successes": 0
+  },
+  "preflight_candidate_rejections": 0,
+  "publication_failures": 0,
+  "publication_successes": 5,
+  "publication_superseded": 0,
+  "restore_deferrals": 0,
+  "restore_failures": 0,
+  "restore_successes": 2,
+  "restored_bytes": 0,
+  "restored_tokens": 1143,
+  "tiers": {
+   "delta_l1_restore_successes": 2,
+   "delta_l1_restored_bytes": 0,
+   "delta_l1_restored_tokens": 1143,
+   "delta_l2_restore_successes": 0,
+   "delta_l2_restored_bytes": 0,
+   "delta_l2_restored_tokens": 0,
+   "delta_l3_restore_successes": 0,
+   "delta_l3_restored_bytes": 0,
+   "delta_l3_restored_tokens": 0,
+   "l1_restore_successes": 2,
+   "l1_restored_bytes": 0,
+   "l1_restored_tokens": 1143,
+   "l2_restore_successes": 0,
+   "l2_restored_bytes": 0,
+   "l2_restored_tokens": 0,
+   "l3_restore_successes": 0,
+   "l3_restored_bytes": 0,
+   "l3_restored_tokens": 0
+  }
+ },
+ "decode_batch": {
+  "average_size": 1.0,
+  "rounds": 109,
+  "row_rounds": 109
+ },
+ "energy": {
+  "accounted_seconds": 2.981358,
+  "board_joules": 1204.075,
+  "decode_joules": 933.992,
+  "idle_joules": 173.885,
+  "idle_watts": 70.869,
+  "joules_per_token": {
+   "active": 2.531178,
+   "decode": 3.459231,
+   "prefill": 0.702169,
+   "served": 2.958415
+  },
+  "prefill_joules": 96.197,
+  "residual_fraction": 0.0,
+  "residual_joules": 0.0
+ },
+ "event": "throughput",
+ "interval_seconds": 5.035576,
+ "lovelace": {
+  "batch": {
+   "decode_calls": 119,
+   "mean_busy_slots": 1.0
+  },
+  "kv": {
+   "cells_reserved": 1286,
+   "cells_total": 376832,
+   "cells_used": 1286
+  },
+  "loop_seconds": {
+   "decode": 2.542095,
+   "host": 0.113638,
+   "idle": 2.054218,
+   "prefill": 0.325625
+  },
+  "parking": {
+   "park_bytes": 0,
+   "park_seconds": 0.0,
+   "parks": 0,
+   "preempts": 0,
+   "recompute_tokens": 0,
+   "resumes": 0,
+   "sessions_parked": 0,
+   "unpark_bytes": 0,
+   "unpark_seconds": 0.0,
+   "unparks": 0
+  },
+  "phase_tokens_per_second": {
+   "decode": 106.212,
+   "prefill": 420.729
+  },
+  "requests": {
+   "done": 4,
+   "rejected": 0,
+   "started": 3
+  },
+  "scheduler": {
+   "queue_deferred": 0,
+   "queue_waiting": 0,
+   "slots_busy": 0,
+   "slots_preempted": 0,
+   "slots_processing_prompt": 0,
+   "slots_total": 6,
+   "waited_kv": 0,
+   "waited_slot": 0
+  },
+  "schema_version": 2,
+  "seq": 18,
+  "sessions": {
+   "demotions": 0,
+   "disk_bytes": 0,
+   "io_bytes_read": 0,
+   "io_bytes_written": 0,
+   "n_disk": 0,
+   "n_gpu": 3,
+   "n_io": 0,
+   "n_ram": 3,
+   "prefetch_hits": 0,
+   "prefetches": 0,
+   "promotions": 0,
+   "ram_bytes": 512203312
+  },
+  "tokens": {
+   "accepted": 158,
+   "drafted": 313
+  }
+ },
+ "scheduler": {
+  "admitted_requests": 5,
+  "decode_ready": 0,
+  "delta_admitted_requests": 3,
+  "delta_queue_seconds": 0.017907,
+  "prefilling": 0,
+  "queue_seconds_total": 0.022825,
+  "rejected_overloaded": 0,
+  "rejected_queue_timeout": 0,
+  "running": 0,
+  "waiting": 0
+ },
+ "schema_version": 20,
+ "server_instance_id": "3fd82f3554e8f332",
+ "throughput_tokens_per_second": {
+  "decode": 53.618,
+  "prefill": 27.206
+ },
+ "timestamp_unix_ms": 1790746314600,
+ "tokens": {
+  "committed_decode": 270,
+  "computed_prefill": 137
+ }
+}

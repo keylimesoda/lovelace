@@ -1,0 +1,7 @@
+{"wall_s": 33.615, "prompt_tokens": 61500, "cached": 0, "prompt_n": 61500, "prompt_tps": 2156.6455472037455, "predicted_n": 512, "decode_tps": 101.92789329605684, "draft_n": 603, "draft_accepted": 310, "target": 64000, "rec_depth": 63948, "session": "2026-09-27T08-18-54_01a0e1f2.jsonl", "rep": 0}
+{"wall_s": 5.236, "prompt_tokens": 61500, "cached": 61496, "prompt_n": 4, "prompt_tps": 97.18172983479107, "predicted_n": 512, "decode_tps": 100.20409475895326, "draft_n": 603, "draft_accepted": 310, "target": 64000, "rec_depth": 63948, "session": "2026-09-27T08-18-54_01a0e1f2.jsonl", "rep": 1}
+{"wall_s": 5.151, "prompt_tokens": 61500, "cached": 61496, "prompt_n": 4, "prompt_tps": 110.72357858605992, "predicted_n": 512, "decode_tps": 101.85568703554505, "draft_n": 603, "draft_accepted": 310, "target": 64000, "rec_depth": 63948, "session": "2026-09-27T08-18-54_01a0e1f2.jsonl", "rep": 2}
+{"wall_s": 5.058, "prompt_tokens": 61500, "cached": 61496, "prompt_n": 4, "prompt_tps": 102.71422335207869, "predicted_n": 512, "decode_tps": 103.42400238340714, "draft_n": 603, "draft_accepted": 310, "target": 64000, "rec_depth": 63948, "session": "2026-09-27T08-18-54_01a0e1f2.jsonl", "rep": 3}
+
+single: target | prompt | cold prefill tok/s | warm decode tok/s (mean) | draft acceptance (warm)
+  64000 | 61500 | 2156.6455472037455 | 101.8 | 0.51

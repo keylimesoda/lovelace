@@ -1,7 +1,11 @@
-// GET /telemetry payload: a complete snapshot rather than a delta, which is what lets the
-// dashboard resynchronize after dropped stream records without replaying anything.
+// Modified from tensorninja/ninfer-4090 (f408990) by lovelace.
+// GET /telemetry payload, as built by HttpServer::handle_telemetry.
+//
+// This is a complete snapshot rather than a delta, which is what lets the dashboard resynchronize
+// after dropped stream records without replaying anything.
 
-import type { LoopSeconds, ServerStartRecord, VramBudget } from './records'
+import type { LovelaceTelemetry } from './lovelace'
+import type { AdapterInventory, ServerStartRecord, ThroughputRecord } from './records'
 
 export interface GpuTelemetry {
   available: boolean
@@ -11,13 +15,17 @@ export interface GpuTelemetry {
   driver_version?: string
   temperature_c?: number
   fan_percent?: number
-  /** NVML trailing-average board power. */
+  /** Driver-averaged over a trailing 1 s window, which is the right statistic at a 1 Hz poll. */
   power_watts?: number
   power_limit_watts?: number
-  /** False on boards with no cumulative energy counter. */
+  /** False on boards with no cumulative energy counter; every energy field is then null. */
   energy_available?: boolean
-  /** Board counter since driver load; only meaningful as a difference. */
+  /** Board energy since driver load. Only meaningful as a difference within one driver session. */
   energy_joules_total?: number | null
+  /** Board energy since this server started, accumulated by the interval reporter. */
+  server_energy_joules?: number | null
+  /** Board draw measured during intervals that ran no execution unit at all. */
+  idle_watts?: number | null
   utilization_gpu_percent?: number
   utilization_memory_percent?: number
   sm_clock_mhz?: number
@@ -25,168 +33,201 @@ export interface GpuTelemetry {
   memory_clock_mhz?: number
   memory_used_bytes?: number
   memory_total_bytes?: number
-  pstate?: number
+  pcie_rx_bytes_per_second?: number
+  pcie_tx_bytes_per_second?: number
   throttle_reasons?: string[]
 }
 
 // Boards report throttle reasons that are not faults. `gpu_idle` means there is nothing to run,
 // and `applications_clocks_setting` is a deliberate cap, so neither indicates a limit on work the
-// server wanted to do.
-const BENIGN_THROTTLES: Record<string, true> = {
-  gpu_idle: true,
-  applications_clocks_setting: true,
-}
+// engine wanted to do.
+const BENIGN_THROTTLES = new Set(['gpu_idle', 'applications_clocks_setting'])
 
 /** Throttle reasons that actually constrain achievable throughput. */
 export function activeThrottles(gpu: GpuTelemetry | undefined): string[] {
-  return (gpu?.throttle_reasons ?? []).filter((reason) => !BENIGN_THROTTLES[reason])
+  return (gpu?.throttle_reasons ?? []).filter((reason) => !BENIGN_THROTTLES.has(reason))
 }
-
-export interface EnergyTelemetry {
-  available: boolean
-  /** Since server start, split by loop phase time share; sums to `board`. */
-  joules: { board: number; prefill: number; decode: number; idle: number } | null
-  idle_watts: number | null
-  /** Mean board power over the last second, from counter deltas. */
-  board_watts_1s: number | null
-}
-
-export type LoopPhase = 'idle' | 'host' | 'prefill' | 'decode'
 
 export interface SchedulerTelemetry {
-  slots_total: number
-  slots_busy: number
-  slots_idle: number
-  slots_processing_prompt: number
-  slots_generating: number
-  queue_deferred: number
-  loop: {
-    /** Rolling window length, 10 s. */
-    window_seconds: number
-    /** Phase the server loop is in right now. */
-    phase: LoopPhase
-    seconds: LoopSeconds
-    /** seconds / window_seconds. */
-    fraction: LoopSeconds
+  running: number
+  prefilling: number
+  decode_ready: number
+  waiting: number
+  max_concurrency: number
+  max_pending_requests: number
+  admitted_requests: number
+  queue_seconds_total: number
+  rejected_overloaded: number
+  rejected_queue_timeout: number
+  decode_rounds: number
+  decode_row_rounds: number
+  /** Wall clock of the single execution thread, split by unit. These sum to its busy time. */
+  worker_seconds: {
+    decode: number
+    prefill: number
+    admission: number
+    publish: number
+    upkeep: number
   }
-  loop_totals_seconds: LoopSeconds
-  /** Cumulative since start; llama.cpp's own server metrics. */
-  totals: {
-    prompt_tokens: number
-    prompt_tokens_cached: number
-    predicted_tokens: number
-    prompt_seconds: number
-    predicted_seconds: number
-    n_decode: number
-    n_busy_slots_per_decode: number
-    drafted: number
-    accepted: number
-    requests_started: number
-    requests_done: number
-    requests_rejected: number
+  /** Decomposition of `worker_seconds.admission`, over the calls that entered the attempt. */
+  worker_admission: {
+    calls: number
+    plan_seconds: number
+    restore_seconds: number
+    commit_seconds: number
   }
+  worker_decode_rounds: number
+  worker_prefill_steps: number
 }
 
-export interface KvTelemetry {
-  cells_total: number
-  /** Sum of slot sequence lengths; idle slots keep their KV until evicted. */
-  cells_used: number
-  unified: boolean
-  n_ctx_slot: number
-  cache_type_k: string
-  cache_type_v: string
-}
-
-export interface PromptCacheTelemetry {
-  enabled: boolean
-  bytes_used: number
-  /** 0 means unlimited. */
-  bytes_limit: number
-  tokens: number
-  tokens_limit: number
+export interface CacheTierTelemetry {
   entries: number
+  bytes: number
+  capacity_bytes: number
+}
+
+/** Capacity-driven evictions from a tier. A TTL expiry is deliberately not counted as one. */
+export interface CacheTierEvictions {
+  evictions: number
+  evicted_bytes: number
+}
+
+export interface CacheTelemetry {
+  l1: CacheTierTelemetry & { evictions: number; demotions: number }
+  l2: CacheTierTelemetry & CacheTierEvictions
+  l3: CacheTierTelemetry & CacheTierEvictions
+  kv_growth: { attempts: number; forced_spills: number; curtailed: number }
+  restore_successes: number
+  restore_failures: number
+  restore_deferrals: number
+  lookup_hits: number
+  lookup_misses: number
+  publication_successes: number
+  publication_failures: number
+  persistence_successes: number
+  persistence_failures: number
+}
+
+export interface ArenaTelemetry {
+  capacity_bytes: number
+  used_bytes: number
+  peak_used_bytes: number
 }
 
 export interface MemoryTelemetry {
-  kv: KvTelemetry
-  prompt_cache: PromptCacheTelemetry
-  vram: VramBudget | null
+  device: number
+  max_context: number
+  kv_capacity: number
+  kv_capacity_page_groups: number
+  kv_capacity_max_page_groups: number
+  weights: ArenaTelemetry
+  sequence: ArenaTelemetry
+  workspace: ArenaTelemetry
+  request_transient: ArenaTelemetry
+  kv_payload_bytes: number
+  text_kv_bytes: number
+  mtp_kv_bytes: number
+  gdn_state_bytes: number
+  dflash_kv_bytes: number
+  replay_records_bytes: number
+  cuda_graph_observed_bytes: number
+  cuda_graph_allowance_bytes: number
+  available_after_startup_bytes: number
+  available_after_weights_bytes: number
+  /** Resident adapter bank, held outside the weights arena. */
+  lora_bank_bytes: number
 }
 
-export type SlotState =
-  'idle' | 'started' | 'processing_prompt' | 'done_prompt' | 'generating' | 'wait_other'
-
 export interface SlotTelemetry {
-  id: number
-  state: SlotState
-  is_processing: boolean
-  n_ctx: number
-  n_ctx_used: number
-  id_task: number | null
-  n_prompt_tokens: number
-  n_cached_tokens: number
-  n_prefill_tokens: number
-  n_decoded: number
-  speculative: boolean
+  processing: boolean
+  retained: boolean
+  prompt_tokens: number
+  cached_tokens: number
+  session_digest: string
+  checkpoints: number
 }
 
 export interface Telemetry {
   timestamp_unix_ms: number
   server_instance_id: string
   uptime_seconds: number
+  attached: boolean
   model_id: string
-  build_info: string
   gpu: GpuTelemetry
-  energy: EnergyTelemetry
   scheduler: SchedulerTelemetry
+  cache: CacheTelemetry
   memory: MemoryTelemetry
   slots: SlotTelemetry[]
-  events: {
-    jsonl_enabled: boolean
-    jsonl_path: string | null
-    subscribers: number
-    records_emitted: number
-    records_dropped: number
-  }
+  events: { jsonl_enabled: boolean; subscribers: number }
+  adapters: AdapterInventory
+  /** lovelace's extension (docs/observability-parity.md); absent on a ninfer server. */
+  lovelace?: LovelaceTelemetry
 }
 
 /**
- * What the Cache panel reads. Live, it is the `/telemetry` memory snapshot. In replay only the
- * configuration survives - occupancy is a level the log never records - so the KV capacity comes
- * from `server_start.config` and the occupancy fields read as null rather than as zero.
+ * Reconstructs the live cache view from a replayed log.
+ *
+ * A throughput record carries the same occupancy and cumulative counters the live snapshot
+ * reports, and the capacities they are measured against come from the log's own `server_start`.
+ * Together those are sufficient, so cache health is fully readable offline - unlike board
+ * telemetry and lane occupancy, which are never recorded.
  */
-export interface CacheView {
-  kv: Omit<KvTelemetry, 'cells_used'> & { cells_used: number | null }
-  promptCache: PromptCacheTelemetry | null
-  /** --cache-ram as configured: -1 unlimited, 0 disabled. Null when no server_start was seen. */
-  cacheRamMib: number | null
+export function cacheFromRecords(
+  sample: ThroughputRecord | null,
+  start: ServerStartRecord | null,
+): CacheTelemetry | undefined {
+  if (sample === null || start === null) return undefined
+  const occupancy = sample.continuation_cache.occupancy
+  const configured = start.engine.continuation_cache
+  const mib = 1024 * 1024
+  return {
+    l1: {
+      entries: occupancy.l1_entries,
+      bytes: occupancy.l1_bytes,
+      capacity_bytes: configured.l1_capacity_mib * mib,
+      evictions: occupancy.l1_evictions,
+      demotions: occupancy.l1_demotions,
+    },
+    l2: {
+      entries: occupancy.l2_entries,
+      bytes: occupancy.l2_bytes,
+      capacity_bytes: configured.l2_capacity_mib * mib,
+      evictions: occupancy.l2_evictions ?? 0,
+      evicted_bytes: occupancy.l2_evicted_bytes ?? 0,
+    },
+    l3: {
+      entries: occupancy.l3_entries,
+      bytes: occupancy.l3_bytes,
+      capacity_bytes: configured.l3_capacity_mib * mib,
+      evictions: occupancy.l3_evictions ?? 0,
+      evicted_bytes: occupancy.l3_evicted_bytes ?? 0,
+    },
+    kv_growth: {
+      attempts: occupancy.kv_growth_attempts,
+      forced_spills: occupancy.kv_growth_forced_spills,
+      curtailed: occupancy.kv_growth_curtailed,
+    },
+    restore_successes: sample.continuation_cache.restore_successes,
+    restore_failures: sample.continuation_cache.restore_failures,
+    restore_deferrals: sample.continuation_cache.restore_deferrals ?? 0,
+    lookup_hits: sample.continuation_cache.lookup_hits,
+    lookup_misses: sample.continuation_cache.lookup_misses,
+    publication_successes: sample.continuation_cache.publication_successes,
+    publication_failures: sample.continuation_cache.publication_failures,
+    persistence_successes: sample.continuation_cache.persistence_total.successes,
+    persistence_failures: sample.continuation_cache.persistence_total.failures,
+  }
 }
 
-export function cacheView(
-  telemetry: Telemetry | null,
-  start: ServerStartRecord | null,
-): CacheView | undefined {
-  if (telemetry !== null) {
-    return {
-      kv: telemetry.memory.kv,
-      promptCache: telemetry.memory.prompt_cache,
-      cacheRamMib: start?.config.cache_ram_mib ?? null,
-    }
+/** Prometheus text body from GET /metrics, flattened to a name→value map. */
+export function parsePrometheus(body: string): Map<string, number> {
+  const out = new Map<string, number>()
+  for (const line of body.split('\n')) {
+    if (line.length === 0 || line.startsWith('#')) continue
+    const split = line.lastIndexOf(' ')
+    if (split <= 0) continue
+    const value = Number(line.slice(split + 1))
+    if (Number.isFinite(value)) out.set(line.slice(0, split).trim(), value)
   }
-  if (start === null) return undefined
-  const config = start.config
-  return {
-    // llama.cpp sizes the KV cache at n_ctx cells in total: one stream of n_ctx when unified,
-    // otherwise n_parallel streams of n_ctx_slot each.
-    kv: {
-      cells_total: config.n_ctx,
-      cells_used: null,
-      unified: config.kv_unified,
-      n_ctx_slot: config.n_ctx_slot,
-      cache_type_k: config.cache_type_k,
-      cache_type_v: config.cache_type_v,
-    },
-    promptCache: null,
-    cacheRamMib: config.cache_ram_mib,
-  }
+  return out
 }
