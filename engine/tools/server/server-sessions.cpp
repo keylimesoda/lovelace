@@ -723,6 +723,18 @@ void server_session_store::park(server_session & s, std::list<common_prompt_chec
     // a checkpoint past the mirror belongs to tokens the mirror does not hold
     ckpts.remove_if([&](const common_prompt_checkpoint & c) { return c.n_tokens > s.n_kv || c.empty(); });
     s.checkpoints.splice(s.checkpoints.end(), ckpts);
+    // only the newest checkpoints stay (--session-ckpts): a restore starts at the recurrent snapshot, and the next
+    // turn rolls back to the end of the previous prompt, i.e. to the newest checkpoint; the older ones (~163 MiB
+    // each at 27B) would only serve an edit deep in the history, and cost arena room that keeps other mirrors off disk
+    if (params.n_ckpt > 0 && s.checkpoints.size() > params.n_ckpt) {
+        std::vector<int64_t> pos;
+        for (const auto & c : s.checkpoints) {
+            pos.push_back(c.n_tokens);
+        }
+        std::nth_element(pos.begin(), pos.begin() + (params.n_ckpt - 1), pos.end(), std::greater<int64_t>());
+        const int64_t lo = pos[params.n_ckpt - 1];
+        s.checkpoints.remove_if([&](const common_prompt_checkpoint & c) { return c.n_tokens < lo; });
+    }
     s.id_slot      = -1;
     s.stale        = false; // the cells the mirror lags are gone
     s.file_current = false;

@@ -156,6 +156,7 @@ struct server_session_store {
         size_t      disk_limit = 0;   // bytes, 0 = unlimited
         uint64_t    ttl_s      = 0;   // 0 = never expire
         size_t      reserve    = 0;   // bytes kept free in the arena for syncs and checkpoints
+        size_t      n_ckpt     = 0;   // context checkpoints a parked mirror keeps (the newest), 0 = all
     };
 
     // wake: called from the worker thread when a file job completes, to run the server loop
