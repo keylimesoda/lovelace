@@ -675,8 +675,9 @@ def main():
                     help="skip the lovelace-only checks (self-test of the checker on ninfer's own fixtures)")
     ap.add_argument("--out", type=Path)
     a = ap.parse_args()
-    if not a.ninfer.is_dir():
-        sys.exit(f"ninfer fixtures not found: {a.ninfer}")
+    if not a.ninfer.is_dir() or not any((a.ninfer / f).exists() for f in
+                                        JSON_FILES + METRICS_FILES + ["events.sse", "request-log.jsonl"]):
+        sys.exit(f"no ninfer fixtures in {a.ninfer} (bench/obs_capture_ninfer.sh)")
     if a.base_url:
         sys.path.insert(0, str(HERE))
         from obs_capture import capture  # noqa: E402
