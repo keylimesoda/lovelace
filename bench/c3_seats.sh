@@ -13,7 +13,7 @@ if [[ -s $OUT/$LABEL/requests.jsonl ]]; then echo "skip $LABEL"; exit 0; fi
 ( while :; do
     avail=$(awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo)
     used=$(docker stats --no-stream --format '{{.MemUsage}}' h2h 2>/dev/null || true)
-    echo "$(date +%T) avail_gib=$avail h2h=${used:-none}" >> "$OUT/$LABEL.mem.log"
+    echo "$(date +%T) avail_gib=$avail load=$(cut -d" " -f1 /proc/loadavg) h2h=${used:-none}" >> "$OUT/$LABEL.mem.log"
     if (( avail < 4 )); then echo "$(date +%T) GUARD: stopping h2h" >> "$OUT/$LABEL.mem.log"; docker rm -f h2h >/dev/null 2>&1; fi
     sleep 10
   done ) &
