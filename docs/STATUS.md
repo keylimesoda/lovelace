@@ -48,6 +48,9 @@ report regeneration.
 - Weights GPU-5 (ShapeLearn IQ4_XS-3.84bpw); KV q5_0; MTP n=3; E8 KV not ported (quality); DFlash2 rejected;
   shared-prefix pinning dropped (risk/benefit); GPU-4, ISTA IQ3_S and ninfer artifact all measured worse.
 
-## Next after the in-flight work
-1. Merge the three branches as they pass; rerun the acceptance script; redeploy (`deploy/serve.sh balanced`).
-2. Update CHARTER status rows B1/B2 and README results.
+## Open (paused 2026-09-30 ~01:30; user is using production)
+1. **C3, 92.4 -> ~107 t/s at 6 x 150k.** Seats decode ~79% of the time (bench/results/c3-seats, bench/seat_timeline.py).
+   Remaining levers: faster decode and prefill at 160k+ depth (kernels), or room for a third deep session in the pool.
+2. **Going public:** follow docs/GOING-PUBLIC.md (history scrub first).
+3. Old worktrees in ~/Work/lovelace-wt/ are merged or abandoned (feat/sched-v2 unmerged, superseded by c3-seats);
+   prune with `git worktree remove` when convenient.
