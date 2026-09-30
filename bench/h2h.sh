@@ -22,12 +22,13 @@ start_lovelace() {
   # the engine, not the desktop
   SD=$HOME/.cache/lovelace-bench/h2h-sessions; rm -rf "$SD"; mkdir -p "$SD"
   docker run -d --name h2h --gpus all --network host --ulimit memlock=-1:-1 --memory ${ENGINE_MEM:-34g} --memory-swap ${ENGINE_MEM:-34g} \
-    -v "$BIN:/e" -v "$HOME/models:/models:ro" \
+    -v "$BIN:/e" -v "$HOME/models:/models:ro" -v "$OUT:/out" \
     -v "$SD:/sessions" -v "$HERE/../deploy/draft-vocab:/draft-vocab:ro" lovelace-engine-runtime:cuda13.1 /e/llama-server \
     -m /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf -ngl 99 -np "$LANES" --kv-unified -c "${CTX:-327680}" -ctk q5_0 -ctv q5_0 \
     --spec-type draft-mtp --spec-draft-n-max 3 -ctkd q5_0 -ctvd q5_0 -fa on -ub 1024 -b 2048 --jinja --reasoning-preserve \
     --session-ram ${SESSION_RAM:-24576} --session-dir /sessions -ctxcp 8 --kv-budget --prefill-chunk-gen 1024 \
-    --alias qwen3.8-27b --telemetry --metrics --host 127.0.0.1 --port $PORT ${SERVER_ARGS:-} >/dev/null
+    --alias qwen3.8-27b --telemetry --metrics --request-log-jsonl "/out/$LABEL.requests.server.jsonl" \
+    --host 127.0.0.1 --port $PORT ${SERVER_ARGS:-} >/dev/null
 }
 start_ninfer() { # $1 = max context
   docker run -d --name h2h --gpus all --network host -v "$HOME/Work/ninfer-artifacts:/models:ro" ninfer-4090:hybrid \
@@ -63,4 +64,7 @@ case "$MODE" in
 esac
 docker logs h2h > "$OUT/$LABEL.server.log" 2>&1
 docker rm -f h2h >/dev/null
+# the server request log (sched_report.py, seat_timeline.py) goes next to requests.jsonl of the run
+[ -f "$OUT/$LABEL.requests.server.jsonl" ] && [ -d "$OUT/$LABEL" ] && mv "$OUT/$LABEL.requests.server.jsonl" "$OUT/$LABEL/requests.server.jsonl"
+true
 ' _ "$ENGINE" "$LANES" "$MODE" "$OUT" "$LABEL" "$HERE" "$BIN"

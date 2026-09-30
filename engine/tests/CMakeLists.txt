@@ -273,6 +273,10 @@ if (LLAMA_BUILD_TOOLS AND LLAMA_BUILD_SERVER)
     llama_build_and_test(test-server-wakeup.cpp)
     target_include_directories(test-server-wakeup PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
     target_link_libraries(test-server-wakeup PRIVATE server-context)
+    # the disk tier of the session store (server-sessions.cpp): queued sessions come back in order and stay
+    llama_build_and_test(test-server-session-tiers.cpp)
+    target_include_directories(test-server-session-tiers PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
+    target_link_libraries(test-server-session-tiers PRIVATE server-context)
 endif()
 llama_build_and_test(
     test-peg-parser.cpp
