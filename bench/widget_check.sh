@@ -20,8 +20,11 @@ curl -sf --max-time 5 127.0.0.1:8080/v1/models >/dev/null ||
   { echo "widget_check: 127.0.0.1:8080/v1/models does not answer" >&2; exit 1; }
 
 repo() {
+  local st; st=$(git -C "$W" status --porcelain)
   echo "HEAD $(git -C "$W" rev-parse HEAD)"
-  echo "git status --porcelain:"; git -C "$W" status --porcelain | sed 's/^/  /'
+  if [[ -z $st ]]; then echo "working tree clean"
+  else echo "working tree NOT clean (uncommitted changes of the checkout itself; what ran is hashed below):"
+       sed 's/^/  /' <<< "$st"; fi
   (cd "$W" && sha256sum Model.js ninfer-qwen)
 }
 before=$(repo)
