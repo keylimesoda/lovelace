@@ -107,53 +107,6 @@ int main() {
             fprintf(stderr, "FAIL: the new head was not promoted\n");
             rc = 1;
         }
-
-        // the old head changed (a turn ran) and is parked again, not queued; the arena has no room for another
-        // mirror: the store writes it ahead, it stays in the arena, and making room then needs no write
-        a.file_current = false;
-        for (int i = 0; i < 2000 && !a.file_current; i++) {
-            store.poll({ b.id });
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        if (!a.file_current || a.tier != SERVER_SESSION_RAM) {
-            fprintf(stderr, "FAIL: the next victim was not written ahead (tier %s)\n", server_session_tier_name(a.tier));
-            rc = 1;
-        }
-        if (!store.make_room(10, /* wait */ false) || a.tier != SERVER_SESSION_DISK) {
-            fprintf(stderr, "FAIL: making room waited for a write\n");
-            rc = 1;
-        }
-    }
-
-    // 6 x 150k replay with the fix above: the third in line was promoted into the arena reserve, and the reserve
-    // demoted it right away (it is not protected), every 0.75 s. Only the head and the next in line come back.
-    {
-        common_state_arena arena(20 * CHUNK, CHUNK);
-        server_session_store::params_t params;
-        params.dir     = dir.string();
-        params.reserve = 4 * CHUNK;
-        server_session_store store(arena, nullptr, nullptr, params, nullptr);
-
-        auto & c = store.create(13);
-        fill(arena, c, 6);
-        GGML_ASSERT(store.make_room(20, /* wait */ true));
-        GGML_ASSERT(wait_tier(store, c, SERVER_SESSION_DISK, {}));
-        auto & a = store.create(11);
-        auto & b = store.create(12);
-        fill(arena, a, 6);
-        fill(arena, b, 6);
-
-        const uint64_t n_promote0 = store.n_promote_total;
-        for (int i = 0; i < 500; i++) {
-            store.poll({ a.id, b.id, c.id });
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        const uint64_t n_promote = store.n_promote_total - n_promote0;
-        printf("third in line: %s, promotions: %llu\n", server_session_tier_name(c.tier), (unsigned long long) n_promote);
-        if (n_promote != 0 || a.tier != SERVER_SESSION_RAM || b.tier != SERVER_SESSION_RAM) {
-            fprintf(stderr, "FAIL: the third in line was read back (%llu promotions)\n", (unsigned long long) n_promote);
-            rc = 1;
-        }
     }
     std::filesystem::remove_all(dir);
 

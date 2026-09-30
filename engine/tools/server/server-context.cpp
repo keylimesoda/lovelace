@@ -6111,7 +6111,6 @@ public:
                 {"stale_syncs",      st.n_sync_stale},
                 {"prefetches",       st.n_prefetch},
                 {"prefetch_hits",    st.n_prefetch_hit},
-                {"write_aheads",     st.n_write_ahead},
                 {"syncs",            sched_stats.n_sync},
                 {"sync_bytes",       sched_stats.bytes_sync},
                 {"io_bytes_written", st.io_bytes_written},
