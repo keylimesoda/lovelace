@@ -39,18 +39,14 @@ def save_json(out, name, text):
     (out / name).write_text(json.dumps(json.loads(text), indent=1, sort_keys=True) + "\n")
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--base-url", required=True)
-    ap.add_argument("--model", default="qwen3.8-27b")
-    ap.add_argument("--out", required=True)
-    args = ap.parse_args()
-    base, out = args.base_url.rstrip("/"), Path(args.out)
+def capture(base, model, out):
+    """Run the workload against `base` (no trailing slash) and write every fixture into `out`."""
+    out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
 
     save_json(out, "health.json", get(base, "/health"))
     save_json(out, "models.json", get(base, "/v1/models"))
-    save_json(out, "model.json", get(base, "/v1/models/" + args.model))
+    save_json(out, "model.json", get(base, "/v1/models/" + model))
     save_json(out, "telemetry-idle.json", get(base, "/telemetry"))
 
     # raw SSE for the whole workload
@@ -75,7 +71,7 @@ def main():
     system = "You are a careful assistant. Answer concisely."
     turn1 = [{"role": "system", "content": system},
              {"role": "user", "content": "List five prime numbers and explain what a prime number is."}]
-    common = {"model": args.model, "temperature": 0.7, "top_p": 0.95, "prompt_cache_key": "obs-fixture-session",
+    common = {"model": model, "temperature": 0.7, "top_p": 0.95, "prompt_cache_key": "obs-fixture-session",
               "chat_template_kwargs": {"enable_thinking": False}}
     r1 = json.loads(post(base, "/v1/chat/completions", {**common, "messages": turn1, "max_tokens": 64}))
     turn2 = turn1 + [{"role": "assistant", "content": r1["choices"][0]["message"]["content"] or ""},
@@ -111,9 +107,9 @@ def main():
     turn3 = turn2 + [{"role": "assistant", "content": "".join(text)},
                      {"role": "user", "content": "Summarize that in one sentence."}]
     post(base, "/v1/chat/completions", {**common, "messages": turn3, "max_tokens": 48})
-    post(base, "/v1/messages", {"model": args.model, "max_tokens": 32,
+    post(base, "/v1/messages", {"model": model, "max_tokens": 32,
                                 "messages": [{"role": "user", "content": "Say hello in French."}]})
-    post(base, "/v1/responses", {"model": args.model, "max_output_tokens": 32, "input": "Say hello in German."})
+    post(base, "/v1/responses", {"model": model, "max_output_tokens": 32, "input": "Say hello in German."})
 
     time.sleep(7.0)  # let the last throughput interval close
     save_json(out, "telemetry-end.json", get(base, "/telemetry"))
@@ -133,6 +129,15 @@ def main():
     for name, rec in last.items():
         (out / f"{name}.json").write_text(json.dumps(rec, indent=1, sort_keys=True) + "\n")
     print("captured:", ", ".join(sorted(p.name for p in out.iterdir())))
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--base-url", required=True)
+    ap.add_argument("--model", default="qwen3.8-27b")
+    ap.add_argument("--out", required=True)
+    args = ap.parse_args()
+    capture(args.base_url.rstrip("/"), args.model, args.out)
 
 
 if __name__ == "__main__":
