@@ -25,11 +25,11 @@ faster for multi-user**. Benchmarks must be cheap, deterministic scripts; spend 
 | B2 | Multi-agent aggregate >= previous | bench/h2h.sh ENGINE N replay:6:60000:1200 on both engines | **PASS**: 153.6 t/s steady, TTFT p50/p90 8.7/16.7 s, 0 errors vs ninfer (best config that starts, 3 lanes) 41.0 t/s, 62/159 s |
 | C1 | >= 170k (target 262k) context per agent, never lost | 3 x 200k replay with swapping (bench/results/final) | **PASS**: 71 turns at >= 200k (max 220k) across 4 sessions, median 208k tokens from cache, 0 errors; per-agent limit 262k |
 | C2 | 4-6 agents without stalls or errors | bench/results/final 6 x 60k, 6 x 150k, 3 x 200k | **PASS**: 0 errors in all runs; lost wake-up stall found and fixed (fix/sched-wakeup, regression test) |
-| C3 | No aggregate collapse at depth; pausing agents OK, no starvation | 6 x 150k replay, steady after first contacts, vs 6 x 60k | **PARTIAL**: 66.3 t/s at 161k median depth (was 25.0), 43% of the 60k aggregate vs a 70% target. Limit: ~2 sessions fit the pool at that depth; RAM tier cycles via NVMe (698 demotions) |
+| C3 | No aggregate collapse at depth; pausing agents OK, no starvation | 6 x 150k replay (warm-up of every session), vs 6 x 60k (bench/results/c3-seats) | **PARTIAL**: 92.4 t/s at 162k median depth (was 25.0, then 64.9 on the current harness), vs a ~107 target; max queue wait 103-123 s; 0 errors. Seats decode ~79% of the time; the rest needs faster decode/prefill at depth or room for a third session in the pool |
 | D1 | DFlash2 considered | bake-off: acceptance 0.27 vs MTP 0.55 on agent traffic | done (MTP chosen) |
 | D2 | Exotic KV considered | KLD of q4/q5/q8 mixes; ninfer E8 measured in A1 (adds 0.0055 KL vs q5_0's 0.0008); KVarN not measured | done: q5_0 kept |
 | D3 | SM89 kernels | llama-bench tables (bench/results/main-gate) | done |
-| E1 | Observability without perf cost | overhead A/B < 0.5% | done |
+| E1 | Observability without perf cost; same API and dashboard as tensorninja/ninfer-4090 | bench/obs_overhead.sh A/B; bench/obs_conformance.py vs captured ninfer payloads | **PASS**: 6-agent step +0.39% (inside noise); conformance 0 failures (live, production profile); upstream dashboard + Sessions/Queue/KV panels (bench/results/obs-parity) |
 
 ## Working agreement (how this project is run)
 

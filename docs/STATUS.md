@@ -12,19 +12,19 @@ Updated: 2026-09-29 ~12:00 local.
   812043c2e; test-server-wakeup; bench/wakeup_repro.sh).
 
 ## Production
-- **Stopped 2026-09-29 ~12:10 for the C3 push** (user's choice). Last good build: main 812043c2e, image
-  lovelace-serve:latest; restart with `deploy/serve.sh balanced` (CTX 376832, 24 GiB arena, 34 GiB cap).
-  C3 work: feat/c3-seats (agent C3Seats): per-seat timeline attribution of the 6 x 150k run, then fixes (disk->RAM
-  promotion ahead of turn, smaller mirrors, sched-v2 run-to-completion), target >= ~107 t/s.
+- **Running** main 72da4555f since 2026-09-30 ~01:05: `deploy/serve.sh balanced` (engine :8090, capture proxy and
+  dashboard :8080), CTX 376832, 24 GiB arena, `--session-ckpts 2` (default), 34 GiB cap. Smoke: chat through :8080 OK,
+  live obs conformance 0 failures. Gates on this build: test-server-sched, -wakeup, -session-tiers, byte-exact restore.
+- The Omarchy widget (~/Work/omarchy-ninfer) reads the data fine, but its helper script still starts/stops the old
+  `ninfer-qwen` container (ninfer image, port 8080): its lifecycle controls don't manage lovelace.
   The old ninfer container `ninfer-qwen` is stopped and kept only for comparison.
 
 ## Acceptance (docs/CHARTER.md rows; evidence bench/results/final/REPORT.md)
 - A1 quality **PASS**; B1 single stream **PASS** (except cold prefill of a ~5k prompt, 2603 vs 3122 tok/s);
   B2 6 x 60k **PASS** 153.6 t/s vs ninfer 41.0; C1 >= 200k per agent **PASS**; C2 no stalls/errors **PASS**.
-- C3 no collapse at depth **PARTIAL**: 6 x 150k 66.3 t/s (was 25.0) = 43% of the 60k aggregate vs a 70% target.
-  Limits: ~2 sessions fit the pool at 161k median depth; the 24 GiB RAM tier cycles via NVMe (698 demotions,
-  prefetch 0/113). Candidates: feat/sched-v2 run-to-completion + prefetch on top of main, smaller mirrors
-  (checkpoints), or more pool.
+- C3 no collapse at depth **PARTIAL**: 6 x 150k 92.4 t/s (feat/c3-seats merged; was 64.9 on this harness) vs ~107
+  target. Seats decode ~79% of the time; remaining gap is per-step speed at depth (two ~160k decoders at 55-60 t/s)
+  or a third resident session. Tried and reverted: separate disk read/write workers + write-ahead (87.1 t/s).
 - TTFT p90 swings ~40-60 s run to run on an unchanged build; judge TTFT with 2 runs per side or by p50.
 
 ## In-flight engineering (worktrees in ~/Work/lovelace-wt/, branches not yet merged)
