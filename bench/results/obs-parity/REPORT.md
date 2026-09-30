@@ -51,8 +51,17 @@ and `format:check` pass. The screenshot is headless Chromium against the running
 
 ## Overhead A/B (E1)
 
-Not measured yet. The first attempt failed before measuring anything because the replay corpus was missing from
-the worktree (`bench/replay/corpus/sessions`, now symlinked, gitignored). `BIN=engine/build-sm89/bin bench/obs_overhead.sh`
-is queued on the GPU lock (telemetry OFF/ON/OFF/ON, same binary: (a) single stream at 64k via depth_sweep, (b) six
-sequences via step_drive, ON with a 1 Hz /telemetry poller, a 4 s /metrics scraper and an /events subscriber) and
-writes `overhead/RESULTS.md`. Pass = |ON−OFF| ≤ run-to-run spread (≤ 0.5%).
+**PASS** ([overhead/RESULTS.md](overhead/RESULTS.md)). `BIN=engine/build-sm89/bin bench/obs_overhead.sh`: telemetry
+OFF/ON/OFF/ON, same binary; (a) single stream at 64k via depth_sweep, (b) six sequences via step_drive; ON runs had a
+1 Hz /telemetry poller, a 4 s /metrics scraper and an /events subscriber (202 polls, 51 scrapes, 0 errors). The desktop
+was in normal use (a browser game rendering on the CPU), so throughput figures swing 2-10% run to run.
+
+| figure | OFF median | ON median | ON vs OFF | spread (OFF / ON) |
+|---|---:|---:|---:|---:|
+| 6-sequence step ms | 50.80 | 50.99 | +0.39% | 0.24% / 3.81% |
+| single decode tok/s | 100.91 | 103.75 | +2.81% | 1.87% / 2.65% |
+| 6-sequence aggregate tok/s | 309.75 | 297.45 | −3.97% | 10.23% / 4.67% |
+
+The step time, the least noisy figure, moves +0.39% (≤ 0.5%), inside the ON spread; the other differences are inside
+their spreads, in both directions. Also: conformance against the real ninfer fixtures (captured from the hybrid image
+at f408990) has 0 failures ([conformance-ninfer-fixtures.md](conformance-ninfer-fixtures.md)).
