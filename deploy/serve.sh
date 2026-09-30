@@ -105,7 +105,7 @@ status() {
     fi
     printf 'Telemetry summary:\n'
     if telemetry=$(curl -fsS http://127.0.0.1:8090/telemetry); then
-        printf '%s\n' "$telemetry" | python3 -c 'import json,sys; d=json.load(sys.stdin); s=d.get("scheduler",{}); k=d.get("memory",{}).get("kv",{}); t=s.get("kv_budget",{}).get("totals",{}); e=d.get("energy",{}).get("joules") or {}; print("  model:",d.get("model_id","unknown")); print("  uptime seconds:",d.get("uptime_seconds","unknown")); print("  slots busy/total: {}/{}".format(s.get("slots_busy",0),s.get("slots_total",0))); print("  queue waiting:",s.get("queue_deferred",0)); print("  KV cells used/total: {}/{}".format(k.get("cells_used",0),k.get("cells_total",0))); print("  sessions parked/unparked: {}/{}".format(t.get("parks",0),t.get("unparks",0))); print("  board energy joules:",e.get("board","unavailable"))'
+        printf '%s\n' "$telemetry" | python3 -c 'import json,sys; d=json.load(sys.stdin); l=d.get("lovelace") or {}; s=l.get("scheduler") or {}; k=l.get("kv") or {}; t=(s.get("kv_budget") or {}).get("totals") or {}; e=(l.get("energy") or {}).get("joules") or {}; print("  model:",d.get("model_id","unknown")); print("  uptime seconds:",d.get("uptime_seconds","unknown")); print("  slots busy/total: {}/{}".format(s.get("slots_busy",0),s.get("slots_total",0))); print("  queue waiting:",s.get("queue_deferred",0)); print("  KV cells used/total: {}/{}".format(k.get("cells_used",0),k.get("cells_total",0))); print("  sessions parked/unparked: {}/{}".format(t.get("parks",0),t.get("unparks",0))); print("  board energy joules:",e.get("board","unavailable"))'
     else
         printf '  unavailable\n'
         failed=1
