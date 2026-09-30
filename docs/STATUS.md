@@ -12,8 +12,10 @@ Updated: 2026-09-29 ~12:00 local.
   812043c2e; test-server-wakeup; bench/wakeup_repro.sh).
 
 ## Production
-- **Running** main 812043c2e: `deploy/serve.sh balanced` (engine :8090, capture proxy :8080), CTX 376832, 6 slots,
-  24 GiB pinned session arena, container capped at 34 GiB. Smoke-tested through the proxy 2026-09-29 ~11:55.
+- **Stopped 2026-09-29 ~12:10 for the C3 push** (user's choice). Last good build: main 812043c2e, image
+  lovelace-serve:latest; restart with `deploy/serve.sh balanced` (CTX 376832, 24 GiB arena, 34 GiB cap).
+  C3 work: feat/c3-seats (agent C3Seats): per-seat timeline attribution of the 6 x 150k run, then fixes (disk->RAM
+  promotion ahead of turn, smaller mirrors, sched-v2 run-to-completion), target >= ~107 t/s.
   The old ninfer container `ninfer-qwen` is stopped and kept only for comparison.
 
 ## Acceptance (docs/CHARTER.md rows; evidence bench/results/final/REPORT.md)
