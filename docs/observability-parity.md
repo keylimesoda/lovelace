@@ -43,7 +43,7 @@ Observability must cost nothing measurable on the decode/prefill path (CHARTER E
 | `GET /telemetry` | live snapshot | superset, below; requires `--telemetry` (or `--request-log-jsonl`) |
 | `GET /events` | SSE: `retry: 2000`, then `event: <record.event>\ndata: <record>\n\n` frames; keepalive `: keepalive` | same framing; lovelace also sends `lovelace_sched` frames (ignored by ninfer consumers) |
 | `GET /metrics` | Prometheus text: `llamacpp:*` + `ninfer:*` | llama.cpp's `llamacpp:*` + every `ninfer:*` name + `lovelace:*`; requires `--metrics` |
-| `GET /slots` | array of `{id, is_processing, retained, session_digest, checkpoints:[{frontier, session_digest}], n_ctx, n_prompt_tokens, n_prompt_tokens_cache, speculative}` | llama.cpp's slot objects plus the ninfer keys; requires `--slots` |
+| `GET /slots` | array of `{id, is_processing, retained, session_digest, checkpoints:[{frontier, session_digest}], n_ctx, n_prompt_tokens, n_prompt_tokens_cache, speculative}` | the ninfer keys (`n_prompt_tokens` = cells the slot holds, `checkpoints` = context checkpoints, `frontier` = tokens covered) plus llama.cpp's `id_task`, `n_prompt_tokens_processed`, `params`, `next_token`, `prompt` for a slot that ran a task; llama.cpp's `generated` is not reported (built from the snapshot, off the loop); requires `--slots` |
 | `POST /slots/{id}?action=save\|restore\|erase` | session persistence | llama.cpp's (same actions) |
 | `--request-log-jsonl` | the `/events` records, one per line | same (byte-identical to the `data:` payloads) |
 
@@ -131,8 +131,8 @@ which it reports).
 | field | type | lovelace |
 |---|---|---|
 | `request_id` | number | mapped: task id |
-| `x_request_id` | string | mapped: `X-Request-Id` header is not tracked: the task id as a string |
-| `protocol` | string | mapped: `openai_chat`, `openai_completions`, `openai_responses`, `anthropic_messages`, `native`, `infill`, `embeddings`, `rerank` |
+| `x_request_id` | string | mapped: the task id as a string (lovelace does not issue an `x-request-id` header) |
+| `protocol` | string | same names where the endpoint exists: `openai_chat_completions`, `openai_responses`, `anthropic_messages`; lovelace-only: `openai_completions`, `openai_embeddings`, `openai_transcriptions`, `native`, `infill`, `embeddings`, `rerank` |
 | `model` | string | mapped: the served model id |
 | `stream` | bool | same |
 | `message_count`, `tool_count` | number | N/A 0 (the loop sees the rendered prompt only) |
@@ -143,7 +143,7 @@ which it reports).
 | `enable_thinking`, `preserve_thinking` | bool | mapped: reasoning on for the request; `--reasoning-preserve` |
 | `adapter` | string | N/A `""` |
 | `prompt_cache_key_digest` | string | mapped: the lovelace session id as 16 hex chars (the agent session the prompt was routed to); `""` without a session store |
-| `sampling` | `{temperature, top_p, top_k, min_p, presence_penalty, frequency_penalty, seed}` | same (resolved) |
+| `sampling` | `{temperature, top_p, top_k, min_p, presence_penalty, frequency_penalty, seed}` | same; `seed` is the requested seed (4294967295 = random), not the resolved one |
 
 `request_start.lovelace`: `{schema_version, seq, id_task, id_slot, id_parent, task_type, endpoint, n_prompt_tokens,
 n_predict, n_ctx_slot, queue_wait_ms, wait_reason: "none"|"slot"|"kv", n_unparked_tokens}`.
@@ -222,8 +222,8 @@ error_type, n_prompt_tokens, queue_wait_ms|null}`.
 | `continuation_cache.aliases.stable_prefix_restores` (+ `delta_`) | number | N/A 0 |
 | `continuation_cache.miss_reasons.no_alias` (+ `delta_`) | number | mapped: new sessions |
 | `continuation_cache.miss_reasons.*` (others) | number | N/A 0 |
-| `continuation_cache.latency_microseconds.l3_restore_total` (+ `_delta`, `_operations_*`) | number | mapped: NVMe read time / promotions |
-| `continuation_cache.latency_microseconds.l2_restore_total` (+ …) | number | mapped: RAM → VRAM restore device time / restores |
+| `continuation_cache.latency_microseconds.l3_restore_total` (+ `_delta`, `_operations_*`) | number | mapped: restore device time of requests whose session came from NVMe (the file read is in `lovelace.sessions.io_read_s`) |
+| `continuation_cache.latency_microseconds.l2_restore_total` (+ …) | number | mapped: restore device time of requests whose session came from RAM |
 | `continuation_cache.latency_microseconds.l3_persistence_total` (+ …) | number | mapped: NVMe write time / demotions |
 | `continuation_cache.latency_microseconds.*` (lookup, preflight, admission, export) | number | N/A 0 |
 | `continuation_cache.occupancy.l1_entries`, `l1_bytes` | number | mapped: GPU-resident sessions, their KV cells × bytes per cell |
@@ -241,8 +241,8 @@ error_type, n_prompt_tokens, queue_wait_ms|null}`.
 
 ## `lovelace_sched` (lovelace-only record, one per state transfer between VRAM and host memory)
 
-Envelope plus `lovelace: {schema_version, seq, action: "park"|"unpark"|"preempt"|"resume", id_slot, id_task|null,
-n_tokens, bytes, ms, host_ms, gbps}`.
+Envelope plus `lovelace: {schema_version, seq, action: "park"|"unpark"|"preempt"|"resume"|"sync", id_slot, id_task|null,
+n_tokens, bytes, ms, host_ms, gbps}` (`sync`: a session mirror update after a request).
 
 ## `GET /telemetry`
 
@@ -250,7 +250,7 @@ n_tokens, bytes, ms, host_ms, gbps}`.
 |---|---|---|
 | `timestamp_unix_ms`, `server_instance_id`, `uptime_seconds`, `model_id` | | same |
 | `attached` | bool | mapped: model loaded (always true once the endpoint answers) |
-| `gpu.*` | | same NVML fields: `available, error?, name, uuid, driver_version, temperature_c, fan_percent, power_watts, power_limit_watts, energy_available, energy_joules_total, server_energy_joules, idle_watts, utilization_gpu_percent, utilization_memory_percent, sm_clock_mhz, sm_clock_max_mhz, memory_clock_mhz, memory_used_bytes, memory_total_bytes, pcie_rx_bytes_per_second, pcie_tx_bytes_per_second, throttle_reasons` |
+| `gpu.*` | | same NVML fields: `available, error?, name, uuid, driver_version, temperature_c, fan_percent, power_watts, power_limit_watts, energy_available, energy_joules_total, server_energy_joules, idle_watts, utilization_gpu_percent, utilization_memory_percent, sm_clock_mhz, sm_clock_max_mhz, memory_clock_mhz, memory_used_bytes, memory_total_bytes, throttle_reasons`; `pcie_rx_bytes_per_second`, `pcie_tx_bytes_per_second` N/A 0 (NVML's PCIe throughput query stalls ~20 ms and slowed decode; never called) |
 | `scheduler.running`, `prefilling`, `decode_ready`, `waiting`, `admitted_requests`, `queue_seconds_total`, `rejected_*` | | as in `throughput.scheduler` |
 | `scheduler.max_concurrency`, `max_pending_requests` | number | as in `server_start.engine` |
 | `scheduler.decode_rounds`, `decode_row_rounds` | number | as in `throughput.decode_batch` (cumulative) |
