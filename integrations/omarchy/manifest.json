@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "keylimesoda.lovelace",
+  "name": "lovelace",
+  "version": "2.0.0",
+  "author": "Ric Lewis",
+  "description": "Desktop monitor for a local lovelace (or ninfer) inference server: on/off, model and runtime at a glance, live throughput, GPU and context-cache panel, vision toggle",
+  "license": "MIT",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "lovelace",
+    "description": "Monitor, start or stop the local lovelace inference server",
+    "category": "AI",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

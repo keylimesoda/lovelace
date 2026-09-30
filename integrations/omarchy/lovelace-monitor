@@ -1,0 +1,557 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# lovelace-monitor: data plane of the lovelace Omarchy widget
+# (integrations/omarchy in github.com/keylimesoda/lovelace). The widget runs
+# the copy next to its manifest; `install.sh` also links it onto PATH.
+#
+# Both engines serve the same API on 127.0.0.1:8080; `container` (the one
+# whose lifecycle status/info report) is chosen by the engine below.
+api=http://127.0.0.1:8080
+web=http://127.0.0.1:8080/
+action=${1:-status}
+
+# Data contract: the OpenAI-compatible /v1/models, the llama.cpp-compatible
+# /metrics plus the ninfer_* counters, and the /telemetry JSON (context-cache
+# state, NVML GPU block; lovelace adds a `lovelace` block with the KV cache
+# types). lovelace serves it through its proxy on :8080; so does
+# keylimesoda/ninfer-4090-lin-hybrid, the ninfer fallback engine. Other ninfer
+# builds (e.g. tensorninja/ninfer-4090) expose the same /metrics names but not
+# the /telemetry context-cache schema, so those panel sections read empty.
+
+# ninfer serving configuration, kept in sync with the launch arguments below
+# (lovelace reads its facts from the API and the running container's args).
+kv_dtype=rk4v4-e8
+image=ninfer-4090:hybrid
+# Context ceiling per (spec, vision) combination, baked into the launch line
+# (the runtime budgets VRAM exactly, so each combo has a fixed ceiling):
+#   dflash2, vision off  -> 176128  (production profile, ~134 MiB slack)
+#   dflash2, vision on   -> 139264  (budget estimate: vision costs ~0.6 GiB
+#                                    ~= 36K tokens of E8 KV; untested, kept
+#                                    on the safe side)
+#   mtp,     vision off  -> 262144  (full native context, 1.37 GiB slack)
+#   mtp,     vision on   -> 262144  (8K scratchpad default, 780 MiB slack)
+spec_context() {
+  # $1 = spec mode (dflash2|mtp), $2 = vision (on|off)
+  if [[ "$1" == mtp ]]; then printf '262144\n'
+  elif [[ "$2" == on ]]; then printf '139264\n'
+  else printf '176128\n'; fi
+}
+# The model artifact is bind-mounted into the container (read-only). The
+# pinned v2 artifact carries Text+MTP+Vision+DFlash2, so every spec/vision
+# combo runs from this one file.
+model_artifact="${NINFER_MODEL_ARTIFACT:-$HOME/Work/ninfer-artifacts/qwen3_8_27b_dflash2.ninfer}"
+# Vision is opt-in: the persisted flag decides whether start_model passes --vision.
+state_dir="${XDG_CONFIG_HOME:-$HOME/.config}/lovelace-monitor"
+vision_file="$state_dir/vision"
+# Spec-decode mode: dflash2 (default) or mtp (MTP3 fallback).
+spec_file="$state_dir/spec"
+
+# Engine: lovelace (default) or ninfer, from LOVELACE_MONITOR_ENGINE or the
+# engine file (`lovelace-monitor engine lovelace|ninfer`).
+#   lovelace -> $LOVELACE_DIR/deploy/serve.sh runs containers `lovelace`
+#               (engine :8090) and `lovelace-proxy` (API :8080); profile
+#               `vision` when the vision toggle is on, else `balanced`.
+#               LOVELACE_DIR defaults to the checkout this helper lives in.
+#   ninfer   -> the `ninfer-qwen` container launched by start_model below.
+engine_file="$state_dir/engine"
+self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
+lovelace_dir="${LOVELACE_DIR:-$self_dir/../..}"
+lovelace_serve="$lovelace_dir/deploy/serve.sh"
+engine=${LOVELACE_MONITOR_ENGINE:-}
+if [[ -z "$engine" && -f "$engine_file" ]]; then
+  engine=$(<"$engine_file")
+  engine=${engine//[[:space:]]/}
+fi
+engine=${engine:-lovelace}
+case "$engine" in
+  lovelace)
+    container=lovelace
+    other_containers=(ninfer-qwen)
+    ;;
+  ninfer)
+    container=ninfer-qwen
+    other_containers=(lovelace lovelace-proxy)
+    ;;
+  *)
+    if [[ "$action" != engine ]]; then
+      printf 'error: unknown engine "%s"; run: lovelace-monitor engine lovelace|ninfer\n' "$engine" >&2
+      exit 2
+    fi
+    ;;
+esac
+
+read_vision() {
+  if [[ -f "$vision_file" ]] && grep -qx on "$vision_file" 2>/dev/null; then
+    printf 'on\n'
+  else
+    printf 'off\n'
+  fi
+}
+
+set_vision() {
+  mkdir -p "$state_dir"
+  printf '%s\n' "$1" >"$vision_file"
+}
+
+read_spec() {
+  if [[ -f "$spec_file" ]] && grep -qx mtp "$spec_file" 2>/dev/null; then
+    printf 'mtp\n'
+  else
+    printf 'dflash2\n'
+  fi
+}
+
+set_spec() {
+  mkdir -p "$state_dir"
+  printf '%s\n' "$1" >"$spec_file"
+}
+
+exists() {
+  docker container inspect "$container" >/dev/null 2>&1
+}
+
+running() {
+  container_running "$container"
+}
+
+container_running() {
+  [[ $(docker container inspect --format '{{.State.Running}}' "$1" 2>/dev/null || true) == true ]]
+}
+
+# Never start one engine while the other holds 127.0.0.1:8080.
+guard_other() {
+  local c
+  for c in "${other_containers[@]}"; do
+    if container_running "$c"; then
+      printf 'error: container %s (the other engine) is running and holds 127.0.0.1:8080; stop it first (engine=%s)\n' \
+        "$c" "$engine" >&2
+      return 1
+    fi
+  done
+}
+
+# lovelace: deploy/serve.sh drives both containers; its chatter goes to stderr
+# so stdout stays the one-word state the panel expects.
+lovelace_profile() {
+  if [[ "$(read_vision)" == on ]]; then printf 'vision\n'; else printf 'balanced\n'; fi
+}
+
+serve() {
+  [[ -x "$lovelace_serve" ]] || {
+    printf 'error: lovelace deploy script not found: %s (set LOVELACE_DIR)\n' "$lovelace_serve" >&2
+    return 1
+  }
+  "$lovelace_serve" "$@" >&2
+}
+
+start_model() {
+  guard_other || return 1
+  if [[ "$engine" == lovelace ]]; then
+    # serve.sh PROFILE replaces both containers, so only call it when needed.
+    if running && container_running lovelace-proxy; then return 0; fi
+    serve "$(lovelace_profile)"
+    return
+  fi
+  local vision_args=()
+  [[ "$(read_vision)" == on ]] && vision_args=(--vision)
+  local spec_mode spec_args ctx
+  spec_mode=$(read_spec)
+  if [[ "$spec_mode" == mtp ]]; then
+    spec_args=(--spec mtp --draft-tokens 3 --lm-head-draft)
+  else
+    spec_args=(--spec dflash2 --draft-tokens 7 --lm-head-draft)
+  fi
+  ctx=$(spec_context "$spec_mode" "$(read_vision)")
+  if exists; then
+    if ! running; then docker start "$container" >/dev/null; fi
+  else
+    [[ -f "$model_artifact" ]] || {
+      printf 'error: model artifact not found: %s\n' "$model_artifact" >&2
+      return 1
+    }
+    docker run --detach --restart unless-stopped --gpus all --name "$container" \
+      --publish 127.0.0.1:8080:8080 \
+      --mount "type=bind,src=$model_artifact,dst=/models/qwen3_8_27b.ninfer,ro" \
+      --volume ninfer-continuations:/var/cache/ninfer \
+      "$image" \
+      ninfer-serve /models/qwen3_8_27b.ninfer \
+      --model-id qwen3.8-27b \
+      --host 0.0.0.0 --port 8080 \
+      --max-context "$ctx" --kv-capacity "$ctx" \
+      --max-concurrency 1 --max-pending-requests 16 \
+      --pending-timeout-ms 600000 --prefill-chunk 1024 \
+      --kv-dtype rk4v4-e8 "${spec_args[@]}" \
+      --preserve-thinking \
+      --request-log-jsonl /var/cache/ninfer/request-log.jsonl \
+      --web-dir /opt/ninfer/web \
+      "${vision_args[@]}" >/dev/null
+  fi
+}
+
+stop_model() {
+  if [[ "$engine" == lovelace ]]; then
+    serve stop
+    return
+  fi
+  if exists && running; then docker stop --time 30 "$container" >/dev/null; fi
+}
+
+# Launch arguments are baked into the container, so a config change needs a
+# full recreate rather than docker start.
+recreate_model() {
+  guard_other || return 1
+  if [[ "$engine" == lovelace ]]; then
+    serve stop && serve "$(lovelace_profile)"
+    return
+  fi
+  if exists; then
+    docker stop --time 30 "$container" >/dev/null
+    docker rm "$container" >/dev/null 2>&1
+  fi
+  start_model
+}
+
+vision_cmd() {
+  local want="${1:-toggle}"
+  if [[ "$want" != on && "$want" != off ]]; then
+    if [[ "$(read_vision)" == on ]]; then want=off; else want=on; fi
+  fi
+  set_vision "$want"
+  if exists && running; then
+    recreate_model || return 1
+    printf 'restarting\n'
+  else
+    printf '%s\n' "$want"
+  fi
+}
+
+spec_cmd() {
+  if [[ "$engine" == lovelace ]]; then
+    printf 'error: spec toggle (DFlash2/MTP) is ninfer-only; lovelace profiles pin MTP decoding\n' >&2
+    return 1
+  fi
+  local want="${1:-toggle}"
+  if [[ "$want" != on && "$want" != off ]]; then
+    if [[ "$(read_spec)" == mtp ]]; then want=on; else want=off; fi
+  fi
+  set_spec "$([[ "$want" == on ]] && printf dflash2 || printf mtp)"
+  if exists && running; then
+    recreate_model || return 1
+    printf 'restarting\n'
+  else
+    printf '%s\n' "$want"
+  fi
+}
+
+# engine [lovelace|ninfer]: show or persist the engine. Switching does not
+# touch containers; stop the current engine first, then start the new one.
+engine_cmd() {
+  if [[ -z "${1:-}" ]]; then
+    printf '%s\n' "$engine"
+    return
+  fi
+  if [[ "$1" != lovelace && "$1" != ninfer ]]; then
+    printf 'error: engine must be lovelace or ninfer\n' >&2
+    return 1
+  fi
+  mkdir -p "$state_dir"
+  printf '%s\n' "$1" >"$engine_file"
+  printf '%s\n' "$1"
+}
+
+status() {
+  if ! exists; then
+    printf 'off\n'
+    return
+  fi
+  if ! running; then
+    local ec
+    ec=$(docker inspect --format '{{.State.ExitCode}}' "$container" 2>/dev/null || printf '0')
+    # serve.sh stop sends SIGTERM (exit 143): a clean stop for lovelace.
+    if [[ "$engine" == lovelace && "$ec" == 143 ]]; then ec=0; fi
+    if [[ "$ec" =~ ^[0-9]+$ ]] && (( ec != 0 )); then
+      printf 'failed\n'
+    else
+      printf 'off\n'
+    fi
+    return
+  fi
+  if curl --silent --fail --max-time 3 "$api/v1/models" >/dev/null 2>&1; then
+    printf 'ready\n'
+  else
+    printf 'starting\n'
+  fi
+}
+
+# metric METRICS_TEXT NAME -> value (empty when absent)
+metric() {
+  printf '%s\n' "$1" | awk -v k="$2" '$1 == k { v = $2 } END { if (v != "") print v }'
+}
+
+# arg_value ARGS_LINES FLAG -> the argument following FLAG (empty when absent)
+arg_value() {
+  printf '%s\n' "$1" | awk -v f="$2" 'p { print; exit } $0 == f { p = 1 }'
+}
+
+# telemetry TELEMETRY_JSON -> shell lines for the context-cache section.
+# The hybrid runtime reports the new paged-KV context cache: device page
+# groups (capacity => tokens), host spill bytes, state slots, and a pressure
+# block. Emits nothing when /telemetry is unavailable (e.g. model still
+# loading), which the panel renders as dashes.
+_cache_py=$(cat <<'PYEOF'
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+c = d.get("cache") or {}
+p = c.get("pressure") or {}
+groups = c.get("kv_capacity_page_groups") or 0
+occupied = c.get("device_main_kv_occupied_pages") or 0
+capacity = c.get("kv_capacity") or 0
+if groups:
+    print(f"ctx_device_tokens={int(occupied * capacity / groups)}")
+    print(f"ctx_device_capacity={capacity}")
+print(f"ctx_host_bytes={c.get('host_kv_occupied_bytes', 0)}")
+print(f"ctx_host_capacity={c.get('host_kv_capacity_bytes', 0)}")
+print(f"ctx_state_device={c.get('device_state_occupied_slots', 0)}")
+print(f"ctx_state_host={c.get('host_state_occupied_slots', 0)}")
+print(f"ctx_state_host_capacity={c.get('host_state_capacity_slots', 0)}")
+print(f"ctx_dropped={p.get('checkpoints_dropped', 0)}")
+print(f"ctx_degraded={p.get('private_owners_degraded', 0) + p.get('shared_owners_degraded', 0)}")
+print(f"ctx_evicted={p.get('private_owners_evicted', 0) + p.get('shared_owners_evicted', 0)}")
+print(f"ctx_spill={p.get('spill_pages', 0)}")
+PYEOF
+)
+
+telemetry_cache_lines() {
+  python3 -c "$_cache_py" <<<"$1" 2>/dev/null || true
+}
+
+# telemetry TELEMETRY_JSON -> shell lines for the GPU block (NVML via the
+# runtime). Used in preference to nvidia-smi when available.
+_gpu_py=$(cat <<'PYEOF'
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+g = d.get("gpu") or {}
+if not g.get("available"):
+    sys.exit(0)
+name = g.get("name", "")
+for prefix in ("NVIDIA GeForce ", "NVIDIA "):
+    if name.startswith(prefix):
+        name = name[len(prefix):]
+print(f"gpu_name={name or 'GPU'}")
+print(f"vram_used={g.get('memory_used_bytes', 0)}")
+print(f"vram_total={g.get('memory_total_bytes', 0)}")
+print(f"power_watts={g.get('power_watts', 0)}")
+PYEOF
+)
+
+telemetry_gpu_lines() {
+  python3 -c "$_gpu_py" <<<"$1" 2>/dev/null || true
+}
+
+# telemetry TELEMETRY_JSON -> runtime=... and kv=... lines. lovelace names
+# itself (and its KV cache types) in a `lovelace` block; a runtime without
+# one emits nothing and is reported as the selected engine.
+_runtime_py=$(cat <<'PYEOF'
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+lv = d.get("lovelace") if isinstance(d, dict) else None
+if not isinstance(lv, dict):
+    sys.exit(0)
+print("runtime=lovelace")
+kv = lv.get("kv") or {}
+k, v = kv.get("cache_type_k") or "", kv.get("cache_type_v") or ""
+if k:
+    print(f"kv={k if not v or v == k else k + '/' + v}")
+PYEOF
+)
+
+telemetry_runtime_lines() {
+  python3 -c "$_runtime_py" <<<"$1" 2>/dev/null || true
+}
+
+info() {
+  local state
+  state=$(status)
+  printf 'state=%s\n' "$state"
+
+  # Model facts come from the live API when it is up, else from the engine
+  # container's launch args, so a stopped engine still names its model.
+  local model_id= model_ctx= vision= telemetry=
+  if [[ "$state" == "ready" ]]; then
+    local models parsed
+    models=$(curl -s --max-time 3 "$api/v1/models" 2>/dev/null || true)
+    if [[ -n "$models" ]]; then
+      parsed=$(printf '%s' "$models" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)["data"][0]
+    m = d.get("modalities") or {}
+    print(d.get("id", ""), d.get("context_window", ""), "on" if m.get("vision") else "off")
+except Exception:
+    pass' 2>/dev/null || true)
+      if [[ -n "$parsed" ]]; then
+        read -r model_id model_ctx vision <<<"$parsed"
+      fi
+    fi
+    telemetry=$(curl -s --max-time 5 "$api/telemetry" 2>/dev/null || true)
+  fi
+  [[ -n "$vision" ]] || vision=$(read_vision)
+
+  local runtime=$engine api_kv= k v
+  while IFS='=' read -r k v; do
+    case "$k" in
+      runtime) runtime=$v ;;
+      kv) api_kv=$v ;;
+    esac
+  done < <(telemetry_runtime_lines "$telemetry")
+
+  local args spec_mode ctx_fallback kv=$kv_dtype draft img=$image
+  args=$(docker container inspect --format '{{range .Args}}{{println .}}{{end}}' "$container" 2>/dev/null || true)
+  if [[ "$engine" == lovelace ]]; then
+    # Serving facts the API does not expose come from the engine container's
+    # launch args (the serve.sh profile), e.g. --spec-type draft-mtp.
+    local ctk ctv
+    ctk=$(arg_value "$args" -ctk)
+    ctv=$(arg_value "$args" -ctv)
+    if [[ "$ctk" == "$ctv" ]]; then kv=$ctk; else kv="$ctk/$ctv"; fi
+    spec_mode=$(arg_value "$args" --spec-type)
+    spec_mode=${spec_mode#draft-}
+    draft=$(arg_value "$args" --spec-draft-n-max)
+    ctx_fallback=$(arg_value "$args" -c)
+    img=$(docker container inspect --format '{{.Config.Image}}' "$container" 2>/dev/null || true)
+    [[ -n "$model_id" ]] || model_id=$(arg_value "$args" --alias)
+  else
+    spec_mode=$(read_spec)
+    ctx_fallback=$(spec_context "$spec_mode" "$vision")
+    if [[ "$spec_mode" == mtp ]]; then draft=3; else draft=7; fi
+    [[ -n "$model_id" ]] || model_id=$(arg_value "$args" --model-id)
+  fi
+  [[ -z "$api_kv" ]] || kv=$api_kv
+
+  printf 'engine=%s\n' "$engine"
+  printf 'runtime=%s\n' "$runtime"
+  printf 'model_id=%s\n' "$model_id"
+  printf 'context_window=%s\n' "${model_ctx:-$ctx_fallback}"
+  printf 'kv_dtype=%s\n' "$kv"
+  printf 'spec=%s\n' "$spec_mode"
+  printf 'draft_tokens=%s\n' "$draft"
+  printf 'vision=%s\n' "$vision"
+  printf 'endpoint=127.0.0.1:8080\n'
+  printf 'web=%s\n' "$web"
+  printf 'image=%s\n' "$img"
+
+  # GPU facts from the runtime's /telemetry NVML block, with nvidia-smi as a
+  # fallback (e.g. while the model is still loading and /telemetry is quiet).
+  local gname= gused= gtotal= gpower=
+  while IFS='=' read -r k v; do
+    case "$k" in
+      gpu_name) gname=$v ;;
+      vram_used) gused=$v ;;
+      vram_total) gtotal=$v ;;
+      power_watts) gpower=$v ;;
+    esac
+  done < <(telemetry_gpu_lines "$telemetry")
+  if [[ -z "${gname:-}" && "$(command -v nvidia-smi >/dev/null 2>&1 && printf y)" == "y" ]]; then
+    local gpu_line
+    gpu_line=$(nvidia-smi --query-gpu=name,memory.used,memory.total,power.draw --format=csv,noheader,nounits 2>/dev/null | head -1 || true)
+    # nvidia-smi CSV puts a space after each comma; trim fields afterwards.
+    if [[ -n "$gpu_line" && "$gpu_line" =~ ^[^,]+,[[:space:]]*[0-9]+,[[:space:]]*[0-9]+,[[:space:]]*[0-9.]+$ ]]; then
+      IFS=',' read -r gname gused gtotal gpower <<<"$gpu_line"
+      gused=${gused// /}; gtotal=${gtotal// /}; gpower=${gpower// /}
+      gname=${gname#NVIDIA }
+      gname=${gname#GeForce }
+      # nvidia-smi reports MiB; the panel treats the value as bytes-ish —
+      # scale so both sources agree.
+      gused=$((gused * 1024 * 1024))
+      gtotal=$((gtotal * 1024 * 1024))
+    fi
+  fi
+  printf 'gpu_name=%s\n' "${gname:-GPU}"
+  printf 'vram_used=%s\n' "${gused:-0}"
+  printf 'vram_total=%s\n' "${gtotal:-0}"
+  printf 'power_watts=%s\n' "${gpower:-0}"
+
+  if [[ "$state" == "ready" || "$state" == "starting" ]]; then
+    local started_at= epoch=0
+    started_at=$(docker inspect --format '{{.State.StartedAt}}' "$container" 2>/dev/null || true)
+    if [[ -n "$started_at" ]]; then
+      epoch=$(date -d "$started_at" +%s 2>/dev/null || printf '0')
+    fi
+    printf 'epoch=%s\n' "$epoch"
+
+    if [[ "$state" == "ready" ]]; then
+      local metrics
+      metrics=$(curl -s --max-time 5 "$api/metrics" 2>/dev/null || true)
+      printf 'prompt_tokens=%s\n'    "$(metric "$metrics" llamacpp:prompt_tokens_total)"
+      printf 'prompt_seconds=%s\n'   "$(metric "$metrics" llamacpp:prompt_seconds_total)"
+      printf 'predicted_tokens=%s\n' "$(metric "$metrics" llamacpp:tokens_predicted_total)"
+      printf 'predicted_seconds=%s\n' "$(metric "$metrics" llamacpp:tokens_predicted_seconds_total)"
+      printf 'requests_processing=%s\n'  "$(metric "$metrics" llamacpp:requests_processing)"
+      printf 'requests_deferred=%s\n'    "$(metric "$metrics" llamacpp:requests_deferred)"
+      printf 'requests_total=%s\n'       "$(metric "$metrics" ninfer:requests_total)"
+      printf 'prefix_hit_tokens=%s\n'    "$(metric "$metrics" ninfer:prefix_cache_hit_tokens_total)"
+      printf 'draft_total=%s\n'          "$(metric "$metrics" ninfer:draft_tokens_total)"
+      printf 'draft_accepted=%s\n'       "$(metric "$metrics" ninfer:draft_accepted_tokens_total)"
+
+      # Context-cache state from /telemetry (the paged-KV cache keys of the
+      # hybrid runtime, which lovelace serves as well).
+      telemetry_cache_lines "$telemetry"
+    fi
+  fi
+}
+
+case "$action" in
+  on|enable|start)
+    start_model || exit 1
+    printf 'starting\n'
+    ;;
+  off|disable|stop)
+    stop_model
+    printf 'off\n'
+    ;;
+  toggle)
+    if running; then
+      stop_model
+      printf 'off\n'
+    else
+      start_model || exit 1
+      printf 'starting\n'
+    fi
+    ;;
+  restart|recreate)
+    recreate_model || exit 1
+    printf 'starting\n'
+    ;;
+  status)
+    status
+    ;;
+  info)
+    info
+    ;;
+  logs)
+    exec docker logs --follow --tail 200 "$container"
+    ;;
+  vision)
+    vision_cmd "${2:-toggle}" || exit 1
+    ;;
+  spec)
+    spec_cmd "${2:-toggle}" || exit 1
+    ;;
+  engine)
+    engine_cmd "${2:-}" || exit 2
+    ;;
+  *)
+    printf 'Usage: lovelace-monitor {status|info|on|off|toggle|restart|logs|vision [on|off|toggle]|spec [on|off|toggle]|engine [lovelace|ninfer]}\n' >&2
+    exit 2
+    ;;
+esac

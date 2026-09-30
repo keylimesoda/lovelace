@@ -96,6 +96,7 @@ including React and React DOM (MIT) and Apache ECharts (Apache-2.0); see `apps/w
 |---|---|---|
 | `bench/replay/corpus/chat_template.jinja` | Qwen3.8-27B's chat template, taken from the NInfer artifact | part of the model distribution; follows the model's license |
 | `bench/replay/corpus/system_prompt.txt`, `tools.json` | system prompt and tool schemas of the [oh-my-pi](https://github.com/can1357/oh-my-pi) agent harness | reconstructed from recorded sessions for replay; redistribution terms not verified |
+| `integrations/omarchy/assets/qwen.png` | the Qwen mark, monochromized from the Qwen brand artwork for the Omarchy widget's status icon | trademark of its owner (Qwen team, Alibaba Cloud); not covered by lovelace's MIT license |
 
 ## Apache License, Version 2.0 (applies to the files listed in section 2)
 

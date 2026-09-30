@@ -15,8 +15,8 @@ Updated: 2026-09-29 ~12:00 local.
 - **Running** main 72da4555f since 2026-09-30 ~01:05: `deploy/serve.sh balanced` (engine :8090, capture proxy and
   dashboard :8080), CTX 376832, 24 GiB arena, `--session-ckpts 2` (default), 34 GiB cap. Smoke: chat through :8080 OK,
   live obs conformance 0 failures. Gates on this build: test-server-sched, -wakeup, -session-tiers, byte-exact restore.
-- The Omarchy widget (~/Work/omarchy-ninfer) reads the data fine, but its helper script still starts/stops the old
-  `ninfer-qwen` container (ninfer image, port 8080): its lifecycle controls don't manage lovelace.
+- The Omarchy widget now lives in `integrations/omarchy` (plugin `keylimesoda.lovelace`, helper `lovelace-monitor`)
+  and drives lovelace through `deploy/serve.sh` (profile `balanced`, or `vision` with its vision toggle on).
   The old ninfer container `ninfer-qwen` is stopped and kept only for comparison.
 
 ## Acceptance (docs/CHARTER.md rows; evidence bench/results/final/REPORT.md)
