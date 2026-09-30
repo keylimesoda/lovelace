@@ -1,8 +1,8 @@
-// Transport to a running llama-server, plus the equivalent offline path for a JSONL file.
+// Transport to a running ninfer-serve, plus the equivalent offline path for a JSONL file.
 //
-// Two channels with different jobs. GET /events carries the record stream, which is append-only
-// history: throughput samples and request lifecycles. GET /telemetry is polled for instantaneous
-// state - board sensors, scheduler occupancy, KV and prompt-cache fill, slots - because those are
+// Two channels with different jobs. GET /events carries the schema-20 record stream, which is
+// append-only history: throughput samples and completed requests. GET /telemetry is polled for
+// instantaneous state - board sensors, scheduler occupancy, VRAM, cache fill - because those are
 // levels rather than events and a snapshot cannot be reconstructed by replaying deltas.
 //
 // Because the stream is lossy under backpressure, nothing derived from it is treated as
@@ -12,7 +12,6 @@ import {
   parseRecordLine,
   type EngineRecord,
   type RequestDoneRecord,
-  type RequestRejectedRecord,
   type RequestStartRecord,
   type ServerStartRecord,
   type ThroughputRecord,
@@ -42,12 +41,9 @@ export interface EngineState {
   serverStart: ServerStartRecord | null
   throughput: ThroughputRecord[]
   requests: RequestDoneRecord[]
-  rejected: RequestRejectedRecord[]
-  /** Requests a slot picked up that have not been released or rejected yet. */
   active: RequestStartRecord[]
   gpu: GpuSample[]
-  /** Replay only: earlier server instances in the file that were discarded. */
-  droppedInstances: number
+  droppedRecords: number
 }
 
 export const initialEngineState: EngineState = {
@@ -59,17 +55,15 @@ export const initialEngineState: EngineState = {
   serverStart: null,
   throughput: [],
   requests: [],
-  rejected: [],
   active: [],
   gpu: [],
-  droppedInstances: 0,
+  droppedRecords: 0,
 }
 
-// Retention. Throughput covers an hour at the default 5 s reporting interval; the GPU ring covers
-// ten minutes at the 1 s poll. All are bounded so an overnight session cannot grow without limit.
+// Retention. Throughput covers an hour at the default 5s reporting interval; the GPU ring covers
+// ten minutes at the 1s poll. Both are bounded so an overnight session cannot grow without limit.
 const MAX_THROUGHPUT = 720
 const MAX_REQUESTS = 500
-const MAX_REJECTED = 200
 const MAX_GPU = 600
 const TELEMETRY_INTERVAL_MS = 1000
 
@@ -79,59 +73,12 @@ function ring<T>(items: readonly T[], next: T, limit: number): T[] {
   return out
 }
 
-/**
- * Parses a `--request-log-jsonl` file. The server opens the log in append mode, so one file can
- * hold several server instances; only the last is kept, because mixing two configurations on one
- * axis would misattribute every derived figure.
- */
-export function parseRecordLog(text: string): {
-  records: EngineRecord[]
-  droppedInstances: number
-} {
-  const records: EngineRecord[] = []
-  for (const line of text.split('\n')) {
-    const record = parseRecordLine(line)
-    if (record !== null) records.push(record)
-  }
-  if (records.length === 0) return { records, droppedInstances: 0 }
-  const lastInstance = records[records.length - 1]!.server_instance_id
-  const instances = new Set(records.map((record) => record.server_instance_id))
-  return {
-    records: records.filter((record) => record.server_instance_id === lastInstance),
-    droppedInstances: instances.size - 1,
-  }
-}
-
-/** The replay state a loaded file produces. Pure, so the file loader and its tests share it. */
-export function replayState(name: string, text: string): EngineState {
-  const { records, droppedInstances } = parseRecordLog(text)
-  return {
-    ...initialEngineState,
-    connection: 'replay',
-    source: 'file',
-    fileName: name,
-    serverStart:
-      (records.find((record) => record.event === 'server_start') as
-        ServerStartRecord | undefined) ?? null,
-    throughput: records.filter((r): r is ThroughputRecord => r.event === 'throughput'),
-    requests: records.filter((r): r is RequestDoneRecord => r.event === 'request_done'),
-    rejected: records.filter((r): r is RequestRejectedRecord => r.event === 'request_rejected'),
-    droppedInstances,
-    error: records.length === 0 ? `${name} contains no server records` : null,
-  }
-}
-
 export class EngineClient {
   private state: EngineState = initialEngineState
   private readonly notify: (state: EngineState) => void
   private events: EventSource | null = null
   private poll: ReturnType<typeof setInterval> | null = null
   private stopped = false
-  // Stream position. A reconnecting EventSource is sent the retained server_start and the replay
-  // backlog again, so anything at or below the last applied seq of the same instance is a
-  // duplicate and must not be counted twice.
-  private instance: string | null = null
-  private lastSeq = -1
 
   constructor(notify: (state: EngineState) => void) {
     this.notify = notify
@@ -179,7 +126,7 @@ export class EngineClient {
       if (!response.ok) throw new Error(`/telemetry responded ${response.status}`)
       const telemetry = (await response.json()) as Telemetry
       // Re-check after awaiting: a file may have been loaded while this request was in flight,
-      // and merging a live snapshot into replay state would show the running server's board and
+      // and merging a live snapshot into replay state would show the running engine's board and
       // slots beside a historical log.
       if (this.discardPoll()) return
       const gpu = telemetry.gpu
@@ -213,15 +160,22 @@ export class EngineClient {
     this.events?.close()
     const source = new EventSource('/events')
     this.events = source
-    // Frames are unnamed `data:` lines carrying one record each, so they all arrive as `message`
-    // and the record's own `event` field discriminates them. Keepalives are SSE comments and
-    // never reach this handler.
-    source.onmessage = (message: MessageEvent<string>) => {
-      const record = parseRecordLine(message.data)
-      if (record !== null) this.ingest(record)
+    // The server names each frame after the record's own `event` field, so one listener per
+    // record type replaces a discriminating switch on the client.
+    for (const name of [
+      'server_start',
+      'request_start',
+      'request_done',
+      'request_error',
+      'throughput',
+    ]) {
+      source.addEventListener(name, (message) => {
+        const record = parseRecordLine((message as MessageEvent<string>).data)
+        if (record !== null) this.ingest(record)
+      })
     }
-    // EventSource reconnects on its own; the poll is what decides whether the dashboard reads as
-    // live, so an error here only records the transition.
+    // EventSource reconnects on its own using the server's `retry` hint; the poll is what decides
+    // whether the dashboard reads as live, so an error here only records the transition.
     source.onerror = () => {
       if (this.stopped) return
       if (this.state.connection === 'live') this.update({ connection: 'connecting' })
@@ -229,28 +183,17 @@ export class EngineClient {
   }
 
   private ingest(record: EngineRecord): void {
-    if (record.server_instance_id !== this.instance) {
-      // A new instance id means the server restarted underneath us: history from the previous
-      // process describes a different configuration and must not share an axis with this one.
-      if (this.instance !== null) {
-        this.state = {
-          ...this.state,
-          serverStart: null,
-          throughput: [],
-          requests: [],
-          rejected: [],
-          active: [],
-          gpu: [],
-        }
-      }
-      this.instance = record.server_instance_id
-      this.lastSeq = -1
-    }
-    if (record.seq <= this.lastSeq) return
-    this.lastSeq = record.seq
-
     switch (record.event) {
       case 'server_start':
+        // A new instance id means the engine restarted underneath us: history from the previous
+        // process describes a different configuration and must not share an axis with this one.
+        if (
+          this.state.serverStart !== null &&
+          this.state.serverStart.server_instance_id !== record.server_instance_id
+        ) {
+          this.update({ serverStart: record, throughput: [], requests: [], active: [], gpu: [] })
+          return
+        }
         this.update({ serverStart: record })
         return
       case 'throughput':
@@ -263,36 +206,56 @@ export class EngineClient {
         this.update({
           requests: ring(this.state.requests, record, MAX_REQUESTS),
           active: this.state.active.filter(
-            (started) => started.request.id_task !== record.request.id_task,
+            (started) => started.request.request_id !== record.request.request_id,
           ),
         })
         return
-      case 'request_rejected': {
-        // An http-stage rejection never had a task id; one rejected at launch or prompt stage
-        // may already have been reported as started.
-        const task = record.request.id_task
+      case 'request_error':
         this.update({
-          rejected: ring(this.state.rejected, record, MAX_REJECTED),
-          active:
-            task === null
-              ? this.state.active
-              : this.state.active.filter((started) => started.request.id_task !== task),
+          active: this.state.active.filter(
+            (started) => started.request.request_id !== record.request.request_id,
+          ),
         })
         return
-      }
     }
   }
 
-  /** Replaces live state with a parsed JSONL file. */
+  /**
+   * Replaces live state with a parsed JSONL file. Records from more than one server instance can
+   * share a file (it is opened in append mode), so only the last instance is kept: mixing two
+   * configurations on one axis would misattribute every derived figure.
+   */
   loadFile(name: string, text: string): void {
     this.stop()
-    this.instance = null
-    this.lastSeq = -1
-    this.state = replayState(name, text)
+    const records: EngineRecord[] = []
+    for (const line of text.split('\n')) {
+      const record = parseRecordLine(line)
+      if (record !== null) records.push(record)
+    }
+    const instances = records.map((record) => record.server_instance_id)
+    const lastInstance = instances.length === 0 ? null : instances[instances.length - 1]!
+    const scoped = records.filter((record) => record.server_instance_id === lastInstance)
+
+    const droppedInstances = new Set(instances).size - 1
+    this.state = {
+      ...initialEngineState,
+      connection: 'replay',
+      source: 'file',
+      fileName: name,
+      serverStart:
+        (scoped.find((record) => record.event === 'server_start') as
+          ServerStartRecord | undefined) ?? null,
+      throughput: scoped.filter((r): r is ThroughputRecord => r.event === 'throughput'),
+      requests: scoped.filter((r): r is RequestDoneRecord => r.event === 'request_done'),
+      droppedRecords: droppedInstances,
+      // `lastInstance` is taken from a record that exists, so an empty scope means nothing parsed
+      // at all rather than a run that was filtered out.
+      error: scoped.length === 0 ? `${name} contains no engine records` : null,
+    }
     this.notify(this.state)
   }
 
-  /** Leaves replay and reconnects to the server. */
+  /** Leaves replay and reconnects to the engine. */
   resumeLive(): void {
     this.state = { ...initialEngineState }
     this.notify(this.state)

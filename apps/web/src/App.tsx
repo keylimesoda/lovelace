@@ -1,20 +1,23 @@
 import { useMemo, useRef } from 'react'
 
 import { Pill, StatusDot, type Tone } from './components/ui'
-import { summarizeRejections, summarizeRequests } from './lib/derive'
+import { summarizeRequests } from './lib/derive'
 import { duration } from './lib/format'
-import { cacheView } from './lib/telemetry'
+import { latest } from './lib/series'
+import { cacheFromRecords } from './lib/telemetry'
 import { useEngine } from './lib/use-engine'
+import { AdaptersPanel } from './panels/AdaptersPanel'
 import { CachePanel } from './panels/CachePanel'
+import { ChurnPanel } from './panels/ChurnPanel'
 import { EnergyPanel } from './panels/EnergyPanel'
 import { GpuPanel } from './panels/GpuPanel'
 import { Headline } from './panels/Headline'
 import { LatencyPanel } from './panels/LatencyPanel'
+import { MemoryPanel } from './panels/MemoryPanel'
 import { RequestsPanel } from './panels/RequestsPanel'
 import { SchedulerPanel } from './panels/SchedulerPanel'
 import { SlotsPanel } from './panels/SlotsPanel'
 import { ThroughputPanel } from './panels/ThroughputPanel'
-import { VramPanel } from './panels/VramPanel'
 
 const CONNECTION_TONE: Record<string, Tone> = {
   live: 'accent',
@@ -30,57 +33,45 @@ export function App() {
   // Summaries are pure over the retained record window; recomputing them on every 1 Hz telemetry
   // poll would be wasted work on a list that only changes when a request completes.
   const summary = useMemo(() => summarizeRequests(state.requests), [state.requests])
-  const rejections = useMemo(() => summarizeRejections(state.rejected), [state.rejected])
 
-  const start = state.serverStart
-  const config = start?.config
+  const engine = state.serverStart?.engine
+  const server = state.serverStart?.server
   const replay = state.source === 'file'
-  const slots = state.telemetry?.scheduler.slots_total ?? config?.n_parallel
 
-  // Live telemetry wins; a replayed log reconstructs the configured capacities from server_start.
+  // Live inventory wins; a replayed log carries the same block on its own server_start, so a
+  // registered-but-unused adapter is still named offline.
+  const adapters = state.telemetry?.adapters ?? state.serverStart?.adapters
+  const lanes = state.telemetry?.scheduler.max_concurrency ?? engine?.max_concurrency
+
+  // Live telemetry wins; a replayed log reconstructs the same cache view from its own records.
   const cache = useMemo(
-    () => cacheView(state.telemetry, state.serverStart),
-    [state.telemetry, state.serverStart],
+    () => state.telemetry?.cache ?? cacheFromRecords(latest(state.throughput), state.serverStart),
+    [state.telemetry, state.throughput, state.serverStart],
   )
-  const vram = state.telemetry ? state.telemetry.memory.vram : start?.vram
-
-  const modelName = state.telemetry?.model_id ?? start?.model.name ?? 'llama-server'
-  const speculative =
-    config && config.speculative.types !== 'none' ? config.speculative.types : null
 
   return (
     <div className="console">
       <header className="topbar">
         <div className="topbar__identity">
           <StatusDot tone={CONNECTION_TONE[state.connection]} />
-          <strong>{modelName}</strong>
-          {config ? (
+          <strong>{state.telemetry?.model_id ?? server?.public_model_id ?? 'ninfer'}</strong>
+          {engine ? (
             <span className="topbar__config">
-              {start?.model.ftype} · {config.n_parallel} slots ·{' '}
-              {config.n_ctx.toLocaleString('en-US')} ctx{config.kv_unified ? ' unified' : ''} · kv{' '}
-              {config.cache_type_k}/{config.cache_type_v} · fa {config.flash_attn}
-              {speculative ? ` · spec ${speculative}` : ''}
+              {engine.kv_cache} · {engine.max_concurrency} lanes ·{' '}
+              {engine.max_context.toLocaleString('en-US')} ctx
+              {engine.speculative_backend !== 'none' ? ` · ${engine.speculative_backend}` : ''}
+              {engine.cuda_graph ? ' · graphs' : ''}
             </span>
           ) : null}
         </div>
 
         <div className="topbar__actions">
           {replay ? (
-            <Pill tone="warning">
-              replay · {state.fileName}
-              {state.droppedInstances > 0
-                ? ` · ${state.droppedInstances} earlier instance${state.droppedInstances === 1 ? '' : 's'} skipped`
-                : ''}
-            </Pill>
+            <Pill tone="warning">replay · {state.fileName}</Pill>
           ) : state.telemetry ? (
-            <span className="topbar__config">
-              up {duration(state.telemetry.uptime_seconds)}
-              {state.telemetry.events.records_dropped > 0
-                ? ` · ${state.telemetry.events.records_dropped} stream records dropped`
-                : ''}
-            </span>
+            <span className="topbar__config">up {duration(state.telemetry.uptime_seconds)}</span>
           ) : null}
-          {state.error ? <Pill tone="danger">{state.error}</Pill> : null}
+          {state.error && !replay ? <Pill tone="danger">{state.error}</Pill> : null}
           <input
             ref={filePicker}
             type="file"
@@ -107,34 +98,25 @@ export function App() {
         telemetry={state.telemetry}
         records={state.throughput}
         summary={summary}
-        slotsConfigured={config?.n_parallel}
+        engine={engine}
       />
 
       <main className="grid">
-        <ThroughputPanel records={state.throughput} slots={slots} />
-        <SchedulerPanel
-          telemetry={state.telemetry}
-          records={state.throughput}
-          slotsConfigured={config?.n_parallel}
-        />
+        <ThroughputPanel records={state.throughput} lanes={lanes} />
+        <SchedulerPanel telemetry={state.telemetry} records={state.throughput} engine={engine} />
+        <GpuPanel gpu={state.telemetry?.gpu} history={state.gpu} replay={replay} />
+        <EnergyPanel records={state.throughput} gpu={state.telemetry?.gpu} replay={replay} />
+        <MemoryPanel memory={state.telemetry?.memory} gpu={state.telemetry?.gpu} replay={replay} />
+        <CachePanel cache={cache} summary={summary} replay={replay} />
+        <ChurnPanel records={state.throughput} summary={summary} replay={replay} />
         <LatencyPanel summary={summary} />
-        <EnergyPanel
-          records={state.throughput}
-          summary={summary}
-          gpu={state.telemetry?.gpu}
-          energyAvailable={state.telemetry?.energy.available ?? start?.gpu.energy_available}
+        <SlotsPanel
+          slots={state.telemetry?.slots}
+          maxContext={state.telemetry?.memory.max_context ?? 0}
           replay={replay}
         />
-        <GpuPanel gpu={state.telemetry?.gpu} history={state.gpu} replay={replay} />
-        <CachePanel cache={cache} summary={summary} replay={replay} />
-        <VramPanel vram={vram} gpu={state.telemetry?.gpu} replay={replay} />
-        <SlotsPanel slots={state.telemetry?.slots} replay={replay} />
-        <RequestsPanel
-          requests={state.requests}
-          rejected={state.rejected}
-          rejections={rejections}
-          active={state.active}
-        />
+        <RequestsPanel requests={state.requests} active={state.active} />
+        <AdaptersPanel inventory={adapters} requests={state.requests} />
       </main>
     </div>
   )

@@ -1,205 +1,177 @@
-import { Legend, StackedBar } from '../components/charts'
+import { Legend, SampleChart, StackedBar } from '../components/charts'
 import { CHART } from '../components/echart'
-import { Term } from '../components/tooltip'
-import { Empty, Meter, Panel, Pill, Stat, type Tone } from '../components/ui'
-import { summarizeLoop } from '../lib/derive'
+import { Info, Term } from '../components/tooltip'
+import { Empty, Meter, Panel, Stat } from '../components/ui'
 import { count, percent, seconds } from '../lib/format'
 import { GLOSSARY } from '../lib/glossary'
-import type { LoopSeconds, ThroughputRecord } from '../lib/records'
-import { latest } from '../lib/series'
-import type { LoopPhase, Telemetry } from '../lib/telemetry'
+import type { ServerStartRecord, ThroughputRecord } from '../lib/records'
+import { latest, samples } from '../lib/series'
+import type { Telemetry } from '../lib/telemetry'
 
-const LOOP_PHASES = [
-  { key: 'prefill', color: CHART.violet, hint: GLOSSARY.loopPrefill.body },
-  { key: 'decode', color: CHART.accent, hint: GLOSSARY.loopDecode.body },
-  { key: 'host', color: CHART.blue, hint: GLOSSARY.loopHost.body },
-  { key: 'idle', color: CHART.line, hint: GLOSSARY.loopIdle.body },
+const WORKER_UNITS = [
+  { key: 'decode', label: 'decode', color: CHART.accent, hint: GLOSSARY.workerDecode.body },
+  { key: 'prefill', label: 'prefill', color: CHART.violet, hint: GLOSSARY.workerPrefill.body },
+  { key: 'admission', label: 'admission', color: CHART.blue, hint: GLOSSARY.workerAdmission.body },
+  { key: 'publish', label: 'publish', color: CHART.warning, hint: GLOSSARY.workerPublish.body },
+  { key: 'upkeep', label: 'upkeep', color: CHART.dim, hint: GLOSSARY.workerUpkeep.body },
 ] as const
-
-const PHASE_TONE: Record<LoopPhase, Tone> = {
-  prefill: 'accent',
-  decode: 'accent',
-  host: 'warning',
-  idle: 'neutral',
-}
-
-function LoopBar({ loop, total }: { loop: LoopSeconds; total: number }) {
-  return (
-    <>
-      <StackedBar
-        height={10}
-        segments={LOOP_PHASES.map((phase) => ({
-          label: phase.key,
-          value: loop[phase.key],
-          color: phase.color,
-          hint: phase.hint,
-          display: `${seconds(loop[phase.key])} · ${percent(loop[phase.key] / total, 1)} of loop time`,
-        }))}
-      />
-      <Legend
-        items={LOOP_PHASES.map((phase) => ({
-          label: `${phase.key} ${percent(loop[phase.key] / total)}`,
-          color: phase.color,
-          hint: phase.hint,
-        }))}
-      />
-    </>
-  )
-}
 
 export function SchedulerPanel({
   telemetry,
   records,
-  slotsConfigured,
+  engine,
 }: {
   telemetry: Telemetry | null
   records: ThroughputRecord[]
-  /** n_parallel from server_start, used when no live telemetry is attached. */
-  slotsConfigured: number | undefined
+  /** Configuration from the log's own server_start, used when no live telemetry is attached. */
+  engine: ServerStartRecord['engine'] | undefined
 }) {
   const scheduler = telemetry?.scheduler
   const sample = latest(records)
-  const snapshot = scheduler ?? sample?.scheduler
-  const slots = snapshot?.slots_total ?? slotsConfigured ?? 0
-  const busy = snapshot?.slots_busy ?? 0
-  const processingPrompt = snapshot?.slots_processing_prompt ?? 0
-  const deferred = snapshot?.queue_deferred ?? 0
+  const running = scheduler?.running ?? sample?.scheduler.running ?? 0
+  const waiting = scheduler?.waiting ?? sample?.scheduler.waiting ?? 0
+  const lanes = scheduler?.max_concurrency ?? engine?.max_concurrency ?? 1
+  const pending = scheduler?.max_pending_requests ?? engine?.max_pending_requests ?? 0
 
-  // Live, the split is the server's own rolling window. In replay the same quantity is summed
-  // from the throughput intervals, which cover the whole retained log rather than 10 s.
-  const windowLoop = scheduler?.loop.seconds ?? summarizeLoop(records)
-  const windowTotal = scheduler
-    ? scheduler.loop.window_seconds
-    : windowLoop.prefill + windowLoop.decode + windowLoop.host + windowLoop.idle
-  const windowLabel = scheduler
-    ? `last ${seconds(scheduler.loop.window_seconds)}`
-    : `${records.length} intervals · ${seconds(windowTotal)}`
+  // Both the live snapshot and a throughput record carry the cumulative queue totals, so the mean
+  // queue delay survives replay even though the live worker split does not.
+  const queueTotals = scheduler ?? sample?.scheduler
+  const meanQueue =
+    queueTotals && queueTotals.admitted_requests > 0
+      ? queueTotals.queue_seconds_total / queueTotals.admitted_requests
+      : 0
 
-  const lifetime = scheduler?.loop_totals_seconds
-  const lifetimeTotal = lifetime
-    ? lifetime.prefill + lifetime.decode + lifetime.host + lifetime.idle
-    : 0
+  const worker = scheduler?.worker_seconds
+  const admission = scheduler?.worker_admission
+  const workerTotal = worker ? WORKER_UNITS.reduce((total, unit) => total + worker[unit.key], 0) : 0
 
-  // Totals: the cumulative server counters when live, the interval deltas summed in replay.
-  let started = 0
-  let done = 0
-  let rejected = 0
-  let decodeCalls = 0
-  for (const record of records) {
-    started += record.requests.started
-    done += record.requests.done
-    rejected += record.requests.rejected
-    decodeCalls += record.batch.decode_calls
-  }
-  const totals = scheduler?.totals
-  const rows: Array<[string, string]> = totals
-    ? [
-        ['requests started', count(totals.requests_started)],
-        ['requests done', count(totals.requests_done)],
-        ['requests rejected', count(totals.requests_rejected)],
-        ['llama_decode calls', count(totals.n_decode)],
-        ['busy slots / decode', totals.n_busy_slots_per_decode.toFixed(2)],
-        [
-          'prompt tokens',
-          `${count(totals.prompt_tokens)} (${count(totals.prompt_tokens_cached)} cached)`,
-        ],
-        ['predicted tokens', count(totals.predicted_tokens)],
-        ['drafted / accepted', `${count(totals.drafted)} / ${count(totals.accepted)}`],
-      ]
-    : [
-        ['requests started', count(started)],
-        ['requests done', count(done)],
-        ['requests rejected', count(rejected)],
-        ['llama_decode calls', count(decodeCalls)],
-      ]
-
-  if (!snapshot && records.length === 0) {
-    return (
-      <Panel title="Scheduler" hint="loopSplit">
-        <Empty>no scheduler data yet</Empty>
-      </Panel>
-    )
-  }
+  const rejected =
+    (queueTotals?.rejected_overloaded ?? 0) + (queueTotals?.rejected_queue_timeout ?? 0)
 
   return (
     <Panel
       title="Scheduler"
-      hint="loopSplit"
-      note={
-        scheduler ? (
-          <Term k="loopPhase">
-            <Pill tone={PHASE_TONE[scheduler.loop.phase]}>{scheduler.loop.phase}</Pill>
-          </Term>
-        ) : (
-          `${slots} slot${slots === 1 ? '' : 's'} · last report`
-        )
-      }
+      note={`${lanes} lane${lanes === 1 ? '' : 's'} · ${pending} pending slots`}
     >
       <div className="stat-row">
         <Stat
-          value={`${busy}/${slots}`}
-          label="busy"
-          hint="slots"
-          tone={slots > 0 && busy >= slots ? 'warning' : 'accent'}
+          value={`${running}/${lanes}`}
+          label="running"
+          hint="lanes"
+          tone={running >= lanes ? 'warning' : 'accent'}
         />
-        <Stat value={count(processingPrompt)} label="prompt" hint="processingPrompt" />
-        {scheduler ? (
-          <Stat value={count(scheduler.slots_generating)} label="generating" hint="slots" />
-        ) : null}
         <Stat
-          value={count(deferred)}
-          label="deferred"
-          hint="queueDeferred"
-          tone={deferred > 0 ? 'warning' : 'neutral'}
+          value={`${waiting}`}
+          label="waiting"
+          hint="queued"
+          tone={waiting >= pending ? 'danger' : waiting > 0 ? 'warning' : 'neutral'}
+        />
+        <Stat
+          value={seconds(meanQueue)}
+          label="mean queue"
+          hint="meanQueue"
+          tone={meanQueue > 1 ? 'warning' : 'neutral'}
+        />
+        <Stat
+          value={count(sample?.decode_batch.average_size ?? 0)}
+          label="decode batch"
+          hint="decodeBatch"
+        />
+        <Stat
+          value={count(rejected)}
+          label="rejected"
+          hint="rejected"
+          tone={rejected > 0 ? 'danger' : 'neutral'}
         />
       </div>
 
       <div className="scheduler__occupancy">
         <div className="eyebrow">
-          <Term k="slots">slot occupancy</Term>
+          <Term k="laneOccupancy">lane occupancy</Term>
         </div>
-        <Meter fraction={slots === 0 ? 0 : busy / slots} />
-      </div>
-
-      <div className="scheduler__worker">
+        <Meter fraction={lanes === 0 ? 0 : running / lanes} />
         <div className="eyebrow">
-          <Term k="loopSplit">server loop wall clock</Term> · {windowLabel}
+          <Term k="ingressQueue">ingress queue</Term>
         </div>
-        {windowTotal > 0 ? (
-          <LoopBar loop={windowLoop} total={windowTotal} />
-        ) : (
-          <Empty>no loop time recorded</Empty>
-        )}
-        {lifetime && lifetimeTotal > 0 ? (
-          <p className="panel__footnote">
-            Since start ({seconds(lifetimeTotal)}):{' '}
-            {LOOP_PHASES.map(
-              (phase) => `${phase.key} ${percent(lifetime[phase.key] / lifetimeTotal, 1)}`,
-            ).join(' · ')}
-            . Host time is the loop busy outside llama_decode; a rising host share with steady
-            compute is bookkeeping, sampling, or cache save/restore, not model speed.
-          </p>
-        ) : null}
+        <Meter
+          fraction={pending === 0 ? 0 : waiting / pending}
+          color={waiting >= pending ? 'var(--danger)' : 'var(--warning)'}
+        />
       </div>
 
-      <table className="table">
-        <thead>
-          <tr>
-            <th>
-              <Term k="schedulerTotals">{totals ? 'since start' : 'over the log'}</Term>
-            </th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(([label, value]) => (
-            <tr key={label}>
-              <td>{label}</td>
-              <td className="numeric emphasis">{value}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {records.length === 0 ? (
+        <Empty>no scheduler samples yet</Empty>
+      ) : (
+        <SampleChart
+          label="Running requests and queue depth at each report"
+          series={[
+            {
+              name: 'waiting',
+              samples: samples(records, (record) => record.scheduler.waiting),
+              color: CHART.warning,
+            },
+            {
+              name: 'running',
+              samples: samples(records, (record) => record.scheduler.running),
+              color: CHART.blue,
+            },
+          ]}
+          ceiling={lanes}
+          legend={
+            <Legend
+              items={[
+                { label: 'running', color: CHART.blue, hint: GLOSSARY.lanes.body },
+                { label: 'waiting', color: CHART.warning, hint: GLOSSARY.queued.body },
+              ]}
+            />
+          }
+          caption={
+            <>
+              snapshots, not interval means <Info k="snapshotSeries" />
+            </>
+          }
+        />
+      )}
+
+      {worker && workerTotal > 0 ? (
+        <div className="scheduler__worker">
+          <div className="eyebrow">
+            <Term k="workerSplit">execution thread wall clock</Term>
+          </div>
+          <StackedBar
+            segments={WORKER_UNITS.map((unit) => ({
+              label: unit.label,
+              value: worker[unit.key],
+              color: unit.color,
+              hint: unit.hint,
+              display: `${seconds(worker[unit.key])} · ${percent(worker[unit.key] / workerTotal)} of thread time`,
+            }))}
+          />
+          <Legend
+            items={WORKER_UNITS.map((unit) => ({
+              label: unit.label,
+              color: unit.color,
+              hint: unit.hint,
+            }))}
+          />
+          <p className="panel__footnote">
+            One mutex serializes these units, so a second spent in any of them is a second no other
+            resident lane advances. Prefill share rising against decode is what starves a decoding
+            request.{' '}
+            {WORKER_UNITS.map(
+              (unit) => `${unit.label} ${percent(worker[unit.key] / workerTotal)}`,
+            ).join(' · ')}
+          </p>
+          {admission && admission.calls > 0 ? (
+            <p className="panel__footnote">
+              <Term k="admissionSplit">Admission</Term> over {count(admission.calls)} calls: plan{' '}
+              {seconds(admission.plan_seconds)} · restore {seconds(admission.restore_seconds)} ·
+              commit {seconds(admission.commit_seconds)} — most calls admit nothing, so this is{' '}
+              {seconds(worker.admission / admission.calls)} per call.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
     </Panel>
   )
 }

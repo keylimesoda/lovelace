@@ -20,8 +20,8 @@ export function GpuPanel({
     return (
       <Panel title="GPU" hint={replay ? 'replayMode' : 'gpuUtil'} note="NVML">
         {/* Utilization, clocks, temperature and throttle reasons are sampled live and are not part
-            of the record stream, so a replayed file genuinely cannot supply them. Energy is the
-            one board reading the records do carry; the Energy panel works on a replay. */}
+            of the record schema, so a replayed file genuinely cannot supply them. Energy is the
+            one board reading the record does carry; the Energy panel works on a replay. */}
         <Empty>
           {replay
             ? 'live only — a request log carries board energy but no live board telemetry'
@@ -47,7 +47,6 @@ export function GpuPanel({
       note={
         <>
           {gpu.name}
-          {gpu.pstate === undefined ? null : ` · P${gpu.pstate}`}
           {throttles.length > 0 ? (
             <>
               {' '}
@@ -130,8 +129,8 @@ export function GpuPanel({
         />
       )}
       <p className="panel__footnote">
-        Sustained prefill can throttle the board and be misread as a kernel regression. Red rules
-        mark samples with an active non-idle throttle reason.
+        Sustained prefill on a 24 GB board can throttle and be misread as a kernel regression. Red
+        rules mark samples with an active non-idle throttle reason.
       </p>
     </Panel>
   )

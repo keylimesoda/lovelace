@@ -1,7 +1,7 @@
 import { Stat, type Tone } from '../components/ui'
 import { summarizeEnergy, type RequestSummary } from '../lib/derive'
 import { count, joulesPerToken, percent, rate, seconds } from '../lib/format'
-import type { ThroughputRecord } from '../lib/records'
+import type { ServerStartRecord, ThroughputRecord } from '../lib/records'
 import { latest } from '../lib/series'
 import type { Telemetry } from '../lib/telemetry'
 
@@ -14,41 +14,46 @@ export function Headline({
   telemetry,
   records,
   summary,
-  slotsConfigured,
+  engine,
 }: {
   telemetry: Telemetry | null
   records: ThroughputRecord[]
   summary: RequestSummary
-  /** n_parallel from server_start, for a replay with no live snapshot. */
-  slotsConfigured: number | undefined
+  engine: ServerStartRecord['engine'] | undefined
 }) {
   const sample = latest(records)
   const scheduler = telemetry?.scheduler
   const gpu = telemetry?.gpu
 
-  // A replayed log has no live snapshot, but each throughput record carries the scheduler
-  // snapshot taken when it was emitted.
-  const busy = scheduler?.slots_busy ?? sample?.scheduler.slots_busy ?? 0
-  const slots = scheduler?.slots_total ?? sample?.scheduler.slots_total ?? slotsConfigured ?? 0
-  const deferred = scheduler?.queue_deferred ?? sample?.scheduler.queue_deferred ?? 0
-  const deferredTone: Tone = deferred > 0 ? 'warning' : 'neutral'
+  // A replayed log has no live snapshot, but its records and server_start carry the same
+  // scheduler configuration and cumulative queue totals.
+  const running = scheduler?.running ?? sample?.scheduler.running ?? 0
+  const lanes = scheduler?.max_concurrency ?? engine?.max_concurrency ?? 0
+  const waiting = scheduler?.waiting ?? sample?.scheduler.waiting ?? 0
+  const pending = scheduler?.max_pending_requests ?? engine?.max_pending_requests ?? 0
+  const waitingTone: Tone =
+    waiting >= pending && pending > 0 ? 'danger' : waiting > 0 ? 'warning' : 'neutral'
+
+  const queueTotals = scheduler ?? sample?.scheduler
+  const meanQueue =
+    queueTotals && queueTotals.admitted_requests > 0
+      ? queueTotals.queue_seconds_total / queueTotals.admitted_requests
+      : 0
 
   // Board readings are live-only. Reporting 0 for an unavailable sensor would be a measurement
   // that was never taken, so they read as absent instead.
   const board = gpu?.available === true
-  const watts = telemetry?.energy.board_watts_1s ?? null
 
-  // Energy is carried in the throughput record, so it survives a replay. Served rather than
-  // active, because the glance row should show what the work costs.
+  // Energy is the exception: it is carried in the throughput record, so it survives a replay.
+  // Served rather than active, because the glance row should show what the work costs.
   const energy = summarizeEnergy(records)
-  const accept = summary.speculative.acceptRate
 
   return (
     <div className="headline">
       <Stat
         value={rate(sample?.throughput_tokens_per_second.decode ?? 0)}
         unit="tok/s"
-        label="decode · all slots"
+        label="decode · all lanes"
         hint="decodeRate"
         tone="accent"
       />
@@ -59,42 +64,36 @@ export function Headline({
         hint="prefillRate"
       />
       <Stat
-        value={`${busy}/${slots}`}
-        label="slots busy"
-        hint="slots"
-        tone={slots > 0 && busy >= slots ? 'warning' : 'neutral'}
+        value={`${running}/${lanes}`}
+        label="lanes"
+        hint="lanes"
+        tone={lanes > 0 && running >= lanes ? 'warning' : 'neutral'}
       />
-      <Stat value={count(deferred)} label="deferred" hint="queueDeferred" tone={deferredTone} />
+      <Stat value={count(waiting)} label="queued" hint="queued" tone={waitingTone} />
       <Stat
-        value={seconds(summary.queueWait.p50)}
-        label="queue p50"
-        hint="queueWait"
-        tone={summary.queueWait.p50 > 1 ? 'warning' : 'neutral'}
+        value={seconds(meanQueue)}
+        label="mean queue"
+        hint="meanQueue"
+        tone={meanQueue > 1 ? 'warning' : 'neutral'}
       />
       <Stat value={seconds(summary.ttft.p50)} label="ttft p50" hint="ttft" />
       <Stat
-        value={percent(summary.cacheReuse)}
-        label="cache reuse"
-        hint="cacheReuse"
-        tone={summary.cacheReuse > 0.5 ? 'accent' : 'neutral'}
+        value={percent(summary.prefillAvoided)}
+        label="prefill avoided"
+        hint="prefillAvoided"
+        tone={summary.prefillAvoided > 0.5 ? 'accent' : 'neutral'}
       />
       <Stat
-        value={accept === null ? '—' : percent(accept)}
-        label="draft accept"
-        hint="draftAccept"
-        tone={accept !== null && accept > 0.5 ? 'accent' : 'neutral'}
+        value={percent(summary.speculative.acceptRate)}
+        label="mtp accept"
+        hint="mtpAccept"
+        tone={summary.speculative.acceptRate > 0.5 ? 'accent' : 'neutral'}
       />
       <Stat
         value={energy.available ? joulesPerToken(energy.servedJoulesPerToken) : '—'}
         unit={energy.available && energy.servedJoulesPerToken !== null ? 'J/tok' : undefined}
         label="energy"
         hint="energyServed"
-      />
-      <Stat
-        value={watts === null ? '—' : watts.toFixed(0)}
-        unit={watts === null ? undefined : 'W'}
-        label="board"
-        hint="boardPower"
       />
       <Stat
         value={board ? `${gpu.utilization_gpu_percent ?? 0}` : '—'}

@@ -1,29 +1,29 @@
 import { Term, Tooltip } from '../components/tooltip'
-import { Empty, Meter, Panel, StatusDot, type Tone } from '../components/ui'
+import { Empty, Meter, Panel, StatusDot } from '../components/ui'
 import { count, percent } from '../lib/format'
-import { GLOSSARY } from '../lib/glossary'
-import type { SlotState, SlotTelemetry } from '../lib/telemetry'
+import type { SlotTelemetry } from '../lib/telemetry'
 
-const STATE_TONE: Record<SlotState, Tone> = {
-  idle: 'neutral',
-  started: 'warning',
-  processing_prompt: 'warning',
-  done_prompt: 'accent',
-  generating: 'accent',
-  wait_other: 'warning',
-}
+const STATE_HINT = {
+  busy: 'Executing a request right now.',
+  retained: 'Idle but still holding a resident session in VRAM, reusable with no import at all.',
+  idle: 'Empty and immediately available to the next admitted request.',
+} as const
 
 export function SlotsPanel({
   slots,
+  maxContext,
   replay,
 }: {
   slots: SlotTelemetry[] | undefined
+  maxContext: number
   replay: boolean
 }) {
   if (!slots || slots.length === 0) {
     return (
-      <Panel title="Slots" hint={replay ? 'replayMode' : 'slots'}>
-        <Empty>{replay ? 'live only — slot state is not recorded' : 'server not attached'}</Empty>
+      <Panel title="Slots" hint={replay ? 'replayMode' : 'lanes'}>
+        <Empty>
+          {replay ? 'live only — lane occupancy is not recorded' : 'engine not attached'}
+        </Empty>
       </Panel>
     )
   }
@@ -31,77 +31,76 @@ export function SlotsPanel({
   return (
     <Panel
       title="Slots"
-      hint="slots"
-      note={`${slots.filter((slot) => slot.is_processing).length} busy of ${slots.length}`}
+      hint="lanes"
+      note={`${slots.filter((slot) => slot.processing).length} busy of ${slots.length}`}
     >
       <table className="table">
         <thead>
           <tr>
             <th />
-            <th>
-              <Term k="slotState">slot</Term>
-            </th>
+            <th>slot</th>
             <th className="numeric">prompt</th>
             <th className="numeric">
-              <Term k="slotCached">cached</Term>
+              <Term k="slotReused">reused</Term>
             </th>
-            <th className="numeric">gen</th>
-            <th className="numeric">used</th>
-            <th className="numeric" style={{ width: 72 }}>
-              <Term k="slotCtx">ctx</Term>
+            <th className="numeric">
+              <Tooltip
+                title="Context fill"
+                body="Resident prompt tokens against the model's maximum context."
+                className="tip--term"
+              >
+                ctx
+              </Tooltip>
+            </th>
+            <th>
+              <Term k="sessionDigest">session</Term>
+            </th>
+            <th className="numeric">
+              <Term k="checkpoints">ckpt</Term>
             </th>
           </tr>
         </thead>
         <tbody>
-          {slots.map((slot) => {
-            const fill = slot.n_ctx === 0 ? 0 : slot.n_ctx_used / slot.n_ctx
+          {slots.map((slot, index) => {
+            const fill = maxContext === 0 ? 0 : slot.prompt_tokens / maxContext
+            const state = slot.processing ? 'busy' : slot.retained ? 'retained' : 'idle'
             return (
-              <tr key={slot.id}>
+              <tr key={index}>
                 <td>
-                  <StatusDot tone={STATE_TONE[slot.state] ?? 'neutral'} />
+                  <StatusDot
+                    tone={slot.processing ? 'accent' : slot.retained ? 'warning' : 'neutral'}
+                  />
                 </td>
                 <td className="emphasis">
-                  {slot.id}
+                  {index}
                   <Tooltip
-                    title={slot.state}
-                    body={
-                      slot.speculative
-                        ? `Speculative decoding is active on this slot. ${GLOSSARY.slotState.body}`
-                        : GLOSSARY.slotState.body
-                    }
+                    title={state}
+                    body={STATE_HINT[state]}
                     className="slots__state tip--term"
                   >
-                    {slot.state.replace('_', ' ')}
-                    {slot.speculative ? ' · spec' : ''}
+                    {state}
                   </Tooltip>
                 </td>
-                <td className="numeric emphasis">{count(slot.n_prompt_tokens)}</td>
+                <td className="numeric emphasis">{count(slot.prompt_tokens)}</td>
                 <td className="numeric">
-                  {slot.n_prompt_tokens === 0
+                  {slot.prompt_tokens === 0
                     ? '—'
-                    : percent(slot.n_cached_tokens / slot.n_prompt_tokens)}
+                    : percent(slot.cached_tokens / slot.prompt_tokens)}
                 </td>
-                <td className="numeric">{count(slot.n_decoded)}</td>
-                <td className="numeric">{count(slot.n_ctx_used)}</td>
-                <td className="numeric">
-                  <Tooltip
-                    title={`slot ${slot.id}${slot.id_task === null ? '' : ` · task ${slot.id_task}`}`}
-                    body={`${count(slot.n_ctx_used)} of ${count(slot.n_ctx)} cells (${percent(fill)}) · ${count(slot.n_prefill_tokens)} prompt tokens computed`}
-                    className="tip--term"
-                  >
-                    <Meter fraction={fill} color={fill > 0.9 ? 'var(--warning)' : 'var(--blue)'} />
-                  </Tooltip>
+                <td className="numeric" style={{ width: 72 }}>
+                  <Meter fraction={fill} color={fill > 0.9 ? 'var(--warning)' : 'var(--blue)'} />
                 </td>
+                <td className="slots__digest">{slot.session_digest || '—'}</td>
+                <td className="numeric">{slot.checkpoints || '—'}</td>
               </tr>
             )
           })}
         </tbody>
       </table>
       <p className="panel__footnote">
-        An idle slot keeps its KV, so <Term k="slotCtx">ctx</Term> stays filled after a request
-        finishes: a follow-up prompt that shares the prefix is assigned back to it and reuses those
-        cells without compute. <Term k="slotCached">cached</Term> is the share of the current prompt
-        served from that reuse or from the prompt cache.
+        A <Term k="retainedLane">retained lane</Term> holds a resident session in VRAM (L1) that a
+        matching prompt can reuse without any import. <Term k="slotReused">reused</Term> is the
+        share of the prompt served from resident prefix.
       </p>
     </Panel>
   )

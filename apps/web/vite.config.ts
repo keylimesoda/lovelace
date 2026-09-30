@@ -2,29 +2,28 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-// Origin of the llama-server instance the development server proxies to. Validated rather than
-// trusted, so a malformed value fails the config instead of silently pointing at the wrong server.
+// Origin of the ninfer-serve instance the development server proxies to. Required and validated
+// rather than defaulted, so a dev session can never silently point at the wrong engine.
 function engineOrigin() {
-  const configured = process.env.LOVELACE_BASE_URL ?? 'http://127.0.0.1:8080'
+  const configured = process.env.NINFER_BASE_URL ?? 'http://127.0.0.1:8080'
   let url: URL
   try {
     url = new URL(configured)
   } catch {
-    throw new Error('LOVELACE_BASE_URL is invalid')
+    throw new Error('NINFER_BASE_URL is invalid')
   }
   if (!['http:', 'https:'].includes(url.protocol) || !url.hostname) {
-    throw new Error('LOVELACE_BASE_URL must be an HTTP or HTTPS origin')
+    throw new Error('NINFER_BASE_URL must be an HTTP or HTTPS origin')
   }
   if ((url.pathname && url.pathname !== '/') || url.search || url.hash) {
-    throw new Error('LOVELACE_BASE_URL must contain only the server origin')
+    throw new Error('NINFER_BASE_URL must contain only the engine origin')
   }
   return url.origin
 }
 
-// Every path the server owns that the dashboard or an operator touches. In production the
-// dashboard is same-origin behind `llama-server --web-dir`, so these are proxied only to make
-// `bun run dev` behave identically without enabling CORS on the server.
-const enginePaths = ['/telemetry', '/events', '/metrics', '/slots', '/health', '/v1', '/props']
+// Every path the engine owns. In production the dashboard is same-origin behind --web-dir, so
+// these are proxied only to make `bun run dev` behave identically without requiring --cors.
+const enginePaths = ['/telemetry', '/events', '/metrics', '/slots', '/health', '/v1']
 
 export default defineConfig(({ command, mode }) => {
   const developmentServer = command === 'serve' && mode === 'development'
@@ -59,8 +58,8 @@ export default defineConfig(({ command, mode }) => {
       sourcemap: false,
       reportCompressedSize: true,
       modulePreload: { polyfill: false },
-      // ECharts dominates the bundle and changes only when the dependency does. Isolating it in
-      // its own content-hashed chunk means editing a panel does not invalidate a cached copy.
+      // ECharts dominates the bundle and changes only when the dependency does. --web-dir serves
+      // /assets/ immutable, so isolating it means editing a panel does not invalidate it.
       rolldownOptions: {
         output: {
           codeSplitting: {
