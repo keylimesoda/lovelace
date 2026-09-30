@@ -1,0 +1,270 @@
+{
+ "adapters": {
+  "count": 0,
+  "device_bytes": 0,
+  "file_bytes": 0,
+  "names": [],
+  "rank": 0,
+  "slots": 0
+ },
+ "argv": [
+  "/e/llama-server",
+  "-m",
+  "/models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf",
+  "-ngl",
+  "99",
+  "-np",
+  "6",
+  "--kv-unified",
+  "-c",
+  "376832",
+  "-ctk",
+  "q5_0",
+  "-ctv",
+  "q5_0",
+  "--spec-type",
+  "draft-mtp",
+  "--spec-draft-n-max",
+  "3",
+  "--spec-draft-vocab",
+  "/opt/lovelace/draft-vocab/qwen3.8-27b.txt",
+  "-ctkd",
+  "q5_0",
+  "-ctvd",
+  "q5_0",
+  "-fa",
+  "on",
+  "-ub",
+  "1024",
+  "-b",
+  "2048",
+  "--jinja",
+  "--reasoning-preserve",
+  "--session-ram",
+  "24576",
+  "--session-dir",
+  "/var/lib/lovelace/sessions",
+  "-ctxcp",
+  "8",
+  "--kv-budget",
+  "--prefill-chunk-gen",
+  "1024",
+  "--host",
+  "127.0.0.1",
+  "--port",
+  "8080",
+  "--telemetry",
+  "--request-log-jsonl",
+  "/var/log/lovelace/requests.jsonl",
+  "--web-dir",
+  "/opt/lovelace/web",
+  "--metrics",
+  "--slots",
+  "--alias",
+  "qwen3.8-27b"
+ ],
+ "artifact": {
+  "bytes_read": 13072057344,
+  "host_to_device_bytes": 12396633088,
+  "load_seconds": 8.77,
+  "path": "/models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf",
+  "peak_staging_bytes": 0,
+  "resource_count": 0,
+  "size_bytes": 13083052416,
+  "target": "qwen35",
+  "tensor_count": 866,
+  "upload_seconds": 0.0,
+  "weights_id": "qwen35 27B (guessed) all F32"
+ },
+ "artifact_type": "ninfer_serve_request_log",
+ "engine": {
+  "continuation_cache": {
+   "directory": "/var/lib/lovelace/sessions",
+   "filesystem_reserve_mib": 0,
+   "l1_capacity_mib": 9075,
+   "l1_idle_ttl_seconds": 0,
+   "l2_capacity_mib": 24576,
+   "l2_idle_ttl_seconds": 86400,
+   "l3_capacity_mib": 0,
+   "l3_idle_ttl_seconds": 86400,
+   "namespace": "",
+   "persist_interval_seconds": 0,
+   "persist_min_tokens": 0,
+   "policy": "session-store",
+   "prefix_checkpoint_history": 8,
+   "tiers": "l1-l2-l3"
+  },
+  "cuda_graph": true,
+  "device": 0,
+  "kv_cache": "q5_0",
+  "kv_capacity": 376832,
+  "kv_capacity_max_page_groups": 376832,
+  "kv_capacity_mode": "explicit",
+  "kv_capacity_page_groups": 376832,
+  "log_stats_interval_ms": 5000,
+  "max_concurrency": 6,
+  "max_context": 262144,
+  "max_pending_requests": 0,
+  "pending_timeout_ms": 0,
+  "prefill_chunk": 2048,
+  "prefix_checkpoint_policy": "ctx-checkpoints:8",
+  "prefix_reuse": true,
+  "proposal_head": "full",
+  "speculative_backend": "mtp",
+  "speculative_draft_window": 3,
+  "vision": false
+ },
+ "environment": {
+  "compute_capability_major": 8,
+  "compute_capability_minor": 9,
+  "cuda_compile_version": "",
+  "cuda_driver_version": "13.3",
+  "cuda_runtime_version": "",
+  "device": 0,
+  "gpu_name": "NVIDIA GeForce RTX 4090",
+  "gpu_uuid": "GPU-594fd862-7952-37ca-5fb9-c849e3330141",
+  "total_device_memory_bytes": 25757220864
+ },
+ "event": "server_start",
+ "lovelace": {
+  "build_info": "b0-unknown",
+  "config": {
+   "cache_ram_mib": 8192,
+   "cache_type_k": "q5_0",
+   "cache_type_v": "q5_0",
+   "energy_sample_hz": 10,
+   "flash_attn": "enabled",
+   "kv_unified": true,
+   "n_batch": 2048,
+   "n_ctx": 376832,
+   "n_ctx_slot": 262144,
+   "n_gpu_layers": 99,
+   "n_parallel": 6,
+   "n_ubatch": 1024,
+   "request_log_jsonl": "/var/log/lovelace/requests.jsonl",
+   "speculative": {
+    "n_max": 3,
+    "n_min": 0,
+    "types": "none,draft-mtp"
+   },
+   "throughput_interval_ms": 5000
+  },
+  "gpu": {
+   "available": true,
+   "driver_version": "610.57.04",
+   "energy_available": true,
+   "memory_total_bytes": 25757220864,
+   "name": "NVIDIA GeForce RTX 4090",
+   "power_limit_watts": 450.0,
+   "sm_clock_max_mhz": 3120,
+   "uuid": "GPU-594fd862-7952-37ca-5fb9-c849e3330141"
+  },
+  "model": {
+   "ftype": "(guessed) all F32",
+   "n_ctx_train": 262144,
+   "n_params": 27320697856,
+   "name": "qwen35 27B (guessed) all F32",
+   "path": "/models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf",
+   "size_bytes": 13072057344
+  },
+  "schema_version": 2,
+  "seq": 0,
+  "vram": {
+   "devices": [
+    {
+     "compute_bytes": 1055138560,
+     "context_bytes": 9516007424,
+     "description": "NVIDIA GeForce RTX 4090",
+     "free_bytes": 451936256,
+     "model_bytes": 12396633088,
+     "name": "CUDA0",
+     "total_bytes": 25271402496,
+     "unaccounted_bytes": 1851687168
+    }
+   ],
+   "host": {
+    "compute_bytes": 815599936,
+    "context_bytes": 0,
+    "model_bytes": 675430400
+   }
+  }
+ },
+ "memory": {
+  "available_after_startup_bytes": 451936256,
+  "available_after_weights_bytes": 12874769408,
+  "cuda_graph_allowance_bytes": 0,
+  "cuda_graph_observed_bytes": 0,
+  "kv_capacity_headroom_bytes": 0,
+  "kv_capacity_increment_bytes": 0,
+  "kv_payload_bytes": 9516007424,
+  "lora_bank_bytes": 0,
+  "minimum_runtime_reservation_bytes": 0,
+  "planned_slack_bytes": 0,
+  "request_transient": {
+   "capacity_bytes": 0,
+   "peak_used_bytes": 0,
+   "used_bytes": 0
+  },
+  "runtime_reservation_bytes": 0,
+  "sequence": {
+   "capacity_bytes": 10046586880,
+   "peak_used_bytes": 10046586880,
+   "used_bytes": 10046586880
+  },
+  "weights": {
+   "capacity_bytes": 12396633088,
+   "peak_used_bytes": 12396633088,
+   "used_bytes": 12396633088
+  },
+  "workspace": {
+   "capacity_bytes": 1055138560,
+   "peak_used_bytes": 1055138560,
+   "used_bytes": 1055138560
+  }
+ },
+ "sampling_defaults": {
+  "greedy": false,
+  "non_thinking": {
+   "frequency_penalty": 0.0,
+   "min_p": 0.05000000074505806,
+   "presence_penalty": 0.0,
+   "temperature": 1.0,
+   "top_k": 20,
+   "top_p": 0.949999988079071
+  },
+  "omitted_seed": "random",
+  "server_overrides": {
+   "frequency_penalty": null,
+   "min_p": null,
+   "presence_penalty": null,
+   "seed": null,
+   "temperature": null,
+   "top_k": null,
+   "top_p": null
+  },
+  "thinking": {
+   "frequency_penalty": 0.0,
+   "min_p": 0.05000000074505806,
+   "presence_penalty": 0.0,
+   "temperature": 1.0,
+   "top_k": 20,
+   "top_p": 0.949999988079071
+  }
+ },
+ "schema_version": 20,
+ "server": {
+  "api_key_configured": false,
+  "cors_enabled": true,
+  "default_output_tokens": -1,
+  "default_preserve_thinking": true,
+  "default_thinking": true,
+  "host": "127.0.0.1",
+  "max_request_bytes": 0,
+  "port": 8080,
+  "public_model_id": "qwen3.8-27b",
+  "request_log_jsonl": "/var/log/lovelace/requests.jsonl",
+  "slot_save_path": ""
+ },
+ "server_instance_id": "3fd82f3554e8f332",
+ "timestamp_unix_ms": 1790746299349
+}

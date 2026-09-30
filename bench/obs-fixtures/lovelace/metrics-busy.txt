@@ -1,0 +1,366 @@
+# HELP llamacpp:prompt_tokens_total Number of prompt tokens processed, excluding cached tokens
+# TYPE llamacpp:prompt_tokens_total counter
+llamacpp:prompt_tokens_total 78
+# HELP llamacpp:prompt_tokens_cached_total Number of prompt tokens reused from the cache
+# TYPE llamacpp:prompt_tokens_cached_total counter
+llamacpp:prompt_tokens_cached_total 103
+# HELP llamacpp:prompt_seconds_total Total time spent processing prompts
+# TYPE llamacpp:prompt_seconds_total counter
+llamacpp:prompt_seconds_total 0.294878
+# HELP llamacpp:tokens_predicted_total Number of generation tokens processed
+# TYPE llamacpp:tokens_predicted_total counter
+llamacpp:tokens_predicted_total 64
+# HELP llamacpp:tokens_predicted_seconds_total Total time spent generating tokens
+# TYPE llamacpp:tokens_predicted_seconds_total counter
+llamacpp:tokens_predicted_seconds_total 0.50378
+# HELP llamacpp:n_decode_total Total number of llama_decode() calls, excluding speculative decoding and multimodal decoding
+# TYPE llamacpp:n_decode_total counter
+llamacpp:n_decode_total 153
+# HELP llamacpp:n_tokens_max Largest observed sequence length (prompt + generation)
+# TYPE llamacpp:n_tokens_max counter
+llamacpp:n_tokens_max 424
+# HELP llamacpp:spec_decode_num_draft_tokens_total Speculative: Total draft tokens generated
+# TYPE llamacpp:spec_decode_num_draft_tokens_total counter
+llamacpp:spec_decode_num_draft_tokens_total 62
+# HELP llamacpp:spec_decode_num_accepted_tokens_total Speculative: Total draft tokens accepted by the target model
+# TYPE llamacpp:spec_decode_num_accepted_tokens_total counter
+llamacpp:spec_decode_num_accepted_tokens_total 42
+# HELP llamacpp:spec_decode_num_drafts_total Speculative: Total speculative decoding verification steps
+# TYPE llamacpp:spec_decode_num_drafts_total counter
+llamacpp:spec_decode_num_drafts_total 21
+# HELP llamacpp:prompt_tokens_seconds Average prompt throughput in tokens/s
+# TYPE llamacpp:prompt_tokens_seconds gauge
+llamacpp:prompt_tokens_seconds 264.516
+# HELP llamacpp:predicted_tokens_seconds Average generation throughput in tokens/s
+# TYPE llamacpp:predicted_tokens_seconds gauge
+llamacpp:predicted_tokens_seconds 125.055
+# HELP llamacpp:requests_processing Number of requests processing
+# TYPE llamacpp:requests_processing gauge
+llamacpp:requests_processing 1
+# HELP llamacpp:requests_deferred Number of requests deferred
+# TYPE llamacpp:requests_deferred gauge
+llamacpp:requests_deferred 0
+# HELP llamacpp:n_busy_slots_per_decode Average number of busy slots per llama_decode() call
+# TYPE llamacpp:n_busy_slots_per_decode gauge
+llamacpp:n_busy_slots_per_decode 1
+# TYPE ninfer:requests_total counter
+ninfer:requests_total 1
+# TYPE ninfer:prefix_cache_hit_tokens_total counter
+ninfer:prefix_cache_hit_tokens_total 0
+# TYPE ninfer:draft_tokens_total counter
+ninfer:draft_tokens_total 62
+# TYPE ninfer:draft_accepted_tokens_total counter
+ninfer:draft_accepted_tokens_total 42
+# TYPE ninfer:continuation_lookup_hits_total counter
+ninfer:continuation_lookup_hits_total 0
+# TYPE ninfer:continuation_lookup_misses_total counter
+ninfer:continuation_lookup_misses_total 1
+# TYPE ninfer:continuation_preflight_candidate_rejections_total counter
+ninfer:continuation_preflight_candidate_rejections_total 0
+# TYPE ninfer:continuation_preparation_hits_total counter
+ninfer:continuation_preparation_hits_total 0
+# TYPE ninfer:continuation_preparation_decoded_total counter
+ninfer:continuation_preparation_decoded_total 0
+# TYPE ninfer:continuation_preparation_inline_total counter
+ninfer:continuation_preparation_inline_total 0
+# TYPE ninfer:continuation_restore_successes_total counter
+ninfer:continuation_restore_successes_total 0
+# TYPE ninfer:continuation_restore_failures_total counter
+ninfer:continuation_restore_failures_total 0
+# TYPE ninfer:continuation_restore_deferrals_total counter
+ninfer:continuation_restore_deferrals_total 0
+# TYPE ninfer:continuation_publication_successes_total counter
+ninfer:continuation_publication_successes_total 1
+# TYPE ninfer:continuation_publication_failures_total counter
+ninfer:continuation_publication_failures_total 0
+# TYPE ninfer:continuation_publication_superseded_total counter
+ninfer:continuation_publication_superseded_total 0
+# TYPE ninfer:continuation_publication_coalesced_total counter
+ninfer:continuation_publication_coalesced_total 0
+# TYPE ninfer:continuation_publication_failed_capacity_total counter
+ninfer:continuation_publication_failed_capacity_total 0
+# TYPE ninfer:continuation_publication_failed_evicted_total counter
+ninfer:continuation_publication_failed_evicted_total 0
+# TYPE ninfer:continuation_publication_failed_alias_moved_total counter
+ninfer:continuation_publication_failed_alias_moved_total 0
+# TYPE ninfer:continuation_publication_failed_lineage_total counter
+ninfer:continuation_publication_failed_lineage_total 0
+# TYPE ninfer:continuation_publication_failed_error_total counter
+ninfer:continuation_publication_failed_error_total 0
+# TYPE ninfer:continuation_restored_tokens_total counter
+ninfer:continuation_restored_tokens_total 0
+# TYPE ninfer:continuation_restored_bytes_total counter
+ninfer:continuation_restored_bytes_total 0
+# TYPE ninfer:continuation_l1_restore_successes_total counter
+ninfer:continuation_l1_restore_successes_total 0
+# TYPE ninfer:continuation_l2_restore_successes_total counter
+ninfer:continuation_l2_restore_successes_total 0
+# TYPE ninfer:continuation_l3_restore_successes_total counter
+ninfer:continuation_l3_restore_successes_total 0
+# TYPE ninfer:continuation_l1_restored_tokens_total counter
+ninfer:continuation_l1_restored_tokens_total 0
+# TYPE ninfer:continuation_l2_restored_tokens_total counter
+ninfer:continuation_l2_restored_tokens_total 0
+# TYPE ninfer:continuation_l3_restored_tokens_total counter
+ninfer:continuation_l3_restored_tokens_total 0
+# TYPE ninfer:continuation_l1_restored_bytes_total counter
+ninfer:continuation_l1_restored_bytes_total 0
+# TYPE ninfer:continuation_l2_restored_bytes_total counter
+ninfer:continuation_l2_restored_bytes_total 0
+# TYPE ninfer:continuation_l3_restored_bytes_total counter
+ninfer:continuation_l3_restored_bytes_total 0
+# TYPE ninfer:continuation_session_restores_total counter
+ninfer:continuation_session_restores_total 0
+# TYPE ninfer:continuation_stable_prefix_restores_total counter
+ninfer:continuation_stable_prefix_restores_total 0
+# TYPE ninfer:continuation_miss_disabled_total counter
+ninfer:continuation_miss_disabled_total 0
+# TYPE ninfer:continuation_miss_no_alias_total counter
+ninfer:continuation_miss_no_alias_total 1
+# TYPE ninfer:continuation_miss_not_attempted_total counter
+ninfer:continuation_miss_not_attempted_total 0
+# TYPE ninfer:continuation_miss_entry_unavailable_or_corrupt_total counter
+ninfer:continuation_miss_entry_unavailable_or_corrupt_total 0
+# TYPE ninfer:continuation_miss_not_deeper_total counter
+ninfer:continuation_miss_not_deeper_total 0
+# TYPE ninfer:continuation_miss_preflight_rejected_total counter
+ninfer:continuation_miss_preflight_rejected_total 0
+# TYPE ninfer:continuation_miss_rollback_conflict_total counter
+ninfer:continuation_miss_rollback_conflict_total 0
+# TYPE ninfer:continuation_miss_no_lane_total counter
+ninfer:continuation_miss_no_lane_total 0
+# TYPE ninfer:continuation_miss_restore_failed_total counter
+ninfer:continuation_miss_restore_failed_total 0
+# TYPE ninfer:continuation_restore_failed_kv_reservation_total counter
+ninfer:continuation_restore_failed_kv_reservation_total 0
+# TYPE ninfer:continuation_restore_failed_verify_depth_total counter
+ninfer:continuation_restore_failed_verify_depth_total 0
+# TYPE ninfer:continuation_restore_failed_inventory_total counter
+ninfer:continuation_restore_failed_inventory_total 0
+# TYPE ninfer:continuation_restore_failed_metadata_total counter
+ninfer:continuation_restore_failed_metadata_total 0
+# TYPE ninfer:continuation_restore_failed_decode_total counter
+ninfer:continuation_restore_failed_decode_total 0
+# TYPE ninfer:continuation_restore_failed_lane_total counter
+ninfer:continuation_restore_failed_lane_total 0
+# TYPE ninfer:admission_rejected_overloaded_total counter
+ninfer:admission_rejected_overloaded_total 0
+# TYPE ninfer:admission_rejected_queue_timeout_total counter
+ninfer:admission_rejected_queue_timeout_total 0
+# TYPE ninfer:admitted_requests_total counter
+ninfer:admitted_requests_total 2
+# TYPE ninfer:queue_seconds_total counter
+ninfer:queue_seconds_total 0.004918
+# TYPE ninfer:worker_decode_seconds_total counter
+ninfer:worker_decode_seconds_total 3.290248
+# TYPE ninfer:worker_prefill_seconds_total counter
+ninfer:worker_prefill_seconds_total 0.290466
+# TYPE ninfer:worker_admission_seconds_total counter
+ninfer:worker_admission_seconds_total 0.000000
+# TYPE ninfer:worker_admission_calls_total counter
+ninfer:worker_admission_calls_total 2
+# TYPE ninfer:worker_admission_plan_seconds_total counter
+ninfer:worker_admission_plan_seconds_total 0.000000
+# TYPE ninfer:worker_admission_restore_seconds_total counter
+ninfer:worker_admission_restore_seconds_total 0.000000
+# TYPE ninfer:worker_admission_commit_seconds_total counter
+ninfer:worker_admission_commit_seconds_total 0.000000
+# TYPE ninfer:worker_publish_seconds_total counter
+ninfer:worker_publish_seconds_total 0.000000
+# TYPE ninfer:worker_upkeep_seconds_total counter
+ninfer:worker_upkeep_seconds_total 0.111448
+# TYPE ninfer:worker_decode_rounds_total counter
+ninfer:worker_decode_rounds_total 145
+# TYPE ninfer:worker_prefill_steps_total counter
+ninfer:worker_prefill_steps_total 8
+# TYPE ninfer:continuation_l2_lookup_microseconds_total counter
+ninfer:continuation_l2_lookup_microseconds_total 0
+# TYPE ninfer:continuation_l2_lookup_operations_total counter
+ninfer:continuation_l2_lookup_operations_total 0
+# TYPE ninfer:continuation_l3_lookup_microseconds_total counter
+ninfer:continuation_l3_lookup_microseconds_total 0
+# TYPE ninfer:continuation_l3_lookup_operations_total counter
+ninfer:continuation_l3_lookup_operations_total 0
+# TYPE ninfer:continuation_preflight_microseconds_total counter
+ninfer:continuation_preflight_microseconds_total 0
+# TYPE ninfer:continuation_preflight_operations_total counter
+ninfer:continuation_preflight_operations_total 0
+# TYPE ninfer:continuation_l2_restore_microseconds_total counter
+ninfer:continuation_l2_restore_microseconds_total 0
+# TYPE ninfer:continuation_l2_restore_operations_total counter
+ninfer:continuation_l2_restore_operations_total 0
+# TYPE ninfer:continuation_l3_restore_microseconds_total counter
+ninfer:continuation_l3_restore_microseconds_total 0
+# TYPE ninfer:continuation_l3_restore_operations_total counter
+ninfer:continuation_l3_restore_operations_total 0
+# TYPE ninfer:continuation_l2_admission_microseconds_total counter
+ninfer:continuation_l2_admission_microseconds_total 0
+# TYPE ninfer:continuation_l2_admission_operations_total counter
+ninfer:continuation_l2_admission_operations_total 0
+# TYPE ninfer:continuation_export_microseconds_total counter
+ninfer:continuation_export_microseconds_total 0
+# TYPE ninfer:continuation_export_operations_total counter
+ninfer:continuation_export_operations_total 0
+# TYPE ninfer:continuation_l3_persistence_microseconds_total counter
+ninfer:continuation_l3_persistence_microseconds_total 0
+# TYPE ninfer:continuation_l3_persistence_operations_total counter
+ninfer:continuation_l3_persistence_operations_total 0
+# TYPE ninfer:continuation_persistence_queued_total counter
+ninfer:continuation_persistence_queued_total 0
+# TYPE ninfer:continuation_persistence_coalesced_total counter
+ninfer:continuation_persistence_coalesced_total 0
+# TYPE ninfer:continuation_persistence_successes_total counter
+ninfer:continuation_persistence_successes_total 0
+# TYPE ninfer:continuation_persistence_failures_total counter
+ninfer:continuation_persistence_failures_total 0
+# TYPE ninfer:continuation_l2_entries gauge
+ninfer:continuation_l2_entries 1
+# TYPE ninfer:continuation_l2_bytes gauge
+ninfer:continuation_l2_bytes 170038096
+# TYPE ninfer:continuation_l3_entries gauge
+ninfer:continuation_l3_entries 0
+# TYPE ninfer:continuation_l3_bytes gauge
+ninfer:continuation_l3_bytes 0
+# TYPE ninfer:continuation_l2_evictions_total counter
+ninfer:continuation_l2_evictions_total 0
+# TYPE ninfer:continuation_l2_evicted_bytes_total counter
+ninfer:continuation_l2_evicted_bytes_total 0
+# TYPE ninfer:continuation_l3_evictions_total counter
+ninfer:continuation_l3_evictions_total 0
+# TYPE ninfer:continuation_l3_evicted_bytes_total counter
+ninfer:continuation_l3_evicted_bytes_total 0
+# TYPE ninfer:l1_evictions_total counter
+ninfer:l1_evictions_total 0
+# TYPE ninfer:l1_demotions_total counter
+ninfer:l1_demotions_total 0
+# TYPE ninfer:kv_restore_reclaimed_lanes_total counter
+ninfer:kv_restore_reclaimed_lanes_total 0
+# TYPE ninfer:kv_growth_attempts_total counter
+ninfer:kv_growth_attempts_total 0
+# TYPE ninfer:kv_growth_forced_spills_total counter
+ninfer:kv_growth_forced_spills_total 0
+# TYPE ninfer:kv_growth_curtailed_total counter
+ninfer:kv_growth_curtailed_total 0
+# TYPE ninfer:l1_resident_entries gauge
+ninfer:l1_resident_entries 1
+# TYPE ninfer:l1_resident_bytes gauge
+ninfer:l1_resident_bytes 10707125
+# TYPE ninfer:board_energy_joules_total counter
+ninfer:board_energy_joules_total 1414.451000
+# TYPE ninfer:board_idle_watts gauge
+ninfer:board_idle_watts 68.685876
+# TYPE ninfer:prefill_energy_joules_total counter
+ninfer:prefill_energy_joules_total 46.463631
+# TYPE ninfer:decode_energy_joules_total counter
+ninfer:decode_energy_joules_total 1202.580900
+# TYPE ninfer:energy_accounted_seconds_total counter
+ninfer:energy_accounted_seconds_total 3.692163
+# TYPE ninfer:energy_samples_total counter
+ninfer:energy_samples_total 57
+# HELP lovelace:loop_seconds_total Server loop wall clock by phase
+# TYPE lovelace:loop_seconds_total counter
+lovelace:loop_seconds_total{phase="idle"} 2.4733
+lovelace:loop_seconds_total{phase="host"} 0.111448
+lovelace:loop_seconds_total{phase="prefill"} 0.290466
+lovelace:loop_seconds_total{phase="decode"} 3.29025
+# HELP lovelace:energy_joules_total GPU board energy attributed to the server loop phase
+# TYPE lovelace:energy_joules_total counter
+lovelace:energy_joules_total{phase="prefill"} 46.4636
+lovelace:energy_joules_total{phase="decode"} 1202.58
+lovelace:energy_joules_total{phase="idle"} 165.406
+# HELP lovelace:board_power_watts GPU board power, mean over the last second
+# TYPE lovelace:board_power_watts gauge
+lovelace:board_power_watts 378.307
+# HELP lovelace:kv_cells_total KV cells of the unified cache
+# TYPE lovelace:kv_cells_total gauge
+lovelace:kv_cells_total 376832
+# HELP lovelace:kv_cells_used KV cells held by all slots
+# TYPE lovelace:kv_cells_used gauge
+lovelace:kv_cells_used 424
+# HELP lovelace:kv_cells_reserved KV cells held or reserved by running requests (KV budget)
+# TYPE lovelace:kv_cells_reserved gauge
+lovelace:kv_cells_reserved 1045
+# HELP lovelace:sched_waiting Requests waiting for admission (KV budget)
+# TYPE lovelace:sched_waiting gauge
+lovelace:sched_waiting 0
+# HELP lovelace:sched_preempted Slots paused to host memory (KV budget)
+# TYPE lovelace:sched_preempted gauge
+lovelace:sched_preempted 0
+# HELP lovelace:sessions_parked Sessions held in the host prompt cache
+# TYPE lovelace:sessions_parked gauge
+lovelace:sessions_parked 0
+# HELP lovelace:sched_parks_total Idle sessions moved from VRAM to host memory
+# TYPE lovelace:sched_parks_total counter
+lovelace:sched_parks_total 0
+# HELP lovelace:sched_park_drops_total Idle sessions evicted without a new host copy
+# TYPE lovelace:sched_park_drops_total counter
+lovelace:sched_park_drops_total 0
+# HELP lovelace:sched_unparks_total Sessions restored from host memory
+# TYPE lovelace:sched_unparks_total counter
+lovelace:sched_unparks_total 0
+# HELP lovelace:sched_preempts_total Generating slots paused to host memory
+# TYPE lovelace:sched_preempts_total counter
+lovelace:sched_preempts_total 0
+# HELP lovelace:sched_resumes_total Paused slots resumed
+# TYPE lovelace:sched_resumes_total counter
+lovelace:sched_resumes_total 0
+# HELP lovelace:sched_grows_total KV reservations extended in flight
+# TYPE lovelace:sched_grows_total counter
+lovelace:sched_grows_total 0
+# HELP lovelace:sched_park_bytes_total Bytes copied device to host by parking
+# TYPE lovelace:sched_park_bytes_total counter
+lovelace:sched_park_bytes_total 0
+# HELP lovelace:sched_unpark_bytes_total Bytes copied host to device by unparking
+# TYPE lovelace:sched_unpark_bytes_total counter
+lovelace:sched_unpark_bytes_total 0
+# HELP lovelace:sched_park_seconds_total Time spent parking
+# TYPE lovelace:sched_park_seconds_total counter
+lovelace:sched_park_seconds_total 0
+# HELP lovelace:sched_unpark_seconds_total Time spent unparking
+# TYPE lovelace:sched_unpark_seconds_total counter
+lovelace:sched_unpark_seconds_total 0
+# HELP lovelace:sched_wait_slot_total Requests that waited for a free slot
+# TYPE lovelace:sched_wait_slot_total counter
+lovelace:sched_wait_slot_total 0
+# HELP lovelace:sched_wait_kv_total Requests that waited for KV cells
+# TYPE lovelace:sched_wait_kv_total counter
+lovelace:sched_wait_kv_total 0
+# HELP lovelace:sched_rollback_fallbacks_total Sequence truncations the memory refused (recovered)
+# TYPE lovelace:sched_rollback_fallbacks_total counter
+lovelace:sched_rollback_fallbacks_total 0
+# HELP lovelace:sched_recompute_tokens_total Tokens re-prefilled to recover a sequence
+# TYPE lovelace:sched_recompute_tokens_total counter
+lovelace:sched_recompute_tokens_total 0
+# HELP lovelace:sched_kv_overflows_total Decodes that found no free KV cells
+# TYPE lovelace:sched_kv_overflows_total counter
+lovelace:sched_kv_overflows_total 0
+# HELP lovelace:sessions Sessions in the session store
+# TYPE lovelace:sessions gauge
+lovelace:sessions 1
+# HELP lovelace:sessions_gpu Sessions resident in VRAM
+# TYPE lovelace:sessions_gpu gauge
+lovelace:sessions_gpu 1
+# HELP lovelace:sessions_ram Sessions with a mirror in the RAM arena
+# TYPE lovelace:sessions_ram gauge
+lovelace:sessions_ram 1
+# HELP lovelace:sessions_disk Sessions only on disk
+# TYPE lovelace:sessions_disk gauge
+lovelace:sessions_disk 0
+# HELP lovelace:sessions_ram_bytes Bytes of session mirrors in the RAM arena
+# TYPE lovelace:sessions_ram_bytes gauge
+lovelace:sessions_ram_bytes 1.70038e+08
+# HELP lovelace:sessions_disk_bytes Bytes of session files on disk
+# TYPE lovelace:sessions_disk_bytes gauge
+lovelace:sessions_disk_bytes 0
+# HELP lovelace:sessions_demotions_total Session mirrors written to disk and freed
+# TYPE lovelace:sessions_demotions_total counter
+lovelace:sessions_demotions_total 0
+# HELP lovelace:sessions_promotions_total Session mirrors read back from disk
+# TYPE lovelace:sessions_promotions_total counter
+lovelace:sessions_promotions_total 0
+# HELP lovelace:sessions_prefetches_total Session restores started while the request queued
+# TYPE lovelace:sessions_prefetches_total counter
+lovelace:sessions_prefetches_total 0
+# HELP lovelace:sessions_prefetch_hits_total Prefetched restores used by their request
+# TYPE lovelace:sessions_prefetch_hits_total counter
+lovelace:sessions_prefetch_hits_total 0

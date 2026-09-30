@@ -45,7 +45,10 @@ def capture(base, model, out):
     out.mkdir(parents=True, exist_ok=True)
 
     save_json(out, "health.json", get(base, "/health"))
-    save_json(out, "models.json", get(base, "/v1/models"))
+    models = get(base, "/v1/models")
+    save_json(out, "models.json", models)
+    # ninfer-serve takes a top-level enable_thinking and rejects it inside chat_template_kwargs; llama-server the reverse
+    is_ninfer = json.loads(models)["data"][0].get("owned_by") == "ninfer"
     save_json(out, "model.json", get(base, "/v1/models/" + model))
     save_json(out, "telemetry-idle.json", get(base, "/telemetry"))
 
@@ -72,7 +75,7 @@ def capture(base, model, out):
     turn1 = [{"role": "system", "content": system},
              {"role": "user", "content": "List five prime numbers and explain what a prime number is."}]
     common = {"model": model, "temperature": 0.7, "top_p": 0.95, "prompt_cache_key": "obs-fixture-session",
-              "chat_template_kwargs": {"enable_thinking": False}}
+              **({"enable_thinking": False} if is_ninfer else {"chat_template_kwargs": {"enable_thinking": False}})}
     r1 = json.loads(post(base, "/v1/chat/completions", {**common, "messages": turn1, "max_tokens": 64}))
     turn2 = turn1 + [{"role": "assistant", "content": r1["choices"][0]["message"]["content"] or ""},
                      {"role": "user", "content": "Now write a long, detailed essay (at least 900 words) on the history of prime numbers."}]
@@ -107,9 +110,14 @@ def capture(base, model, out):
     turn3 = turn2 + [{"role": "assistant", "content": "".join(text)},
                      {"role": "user", "content": "Summarize that in one sentence."}]
     post(base, "/v1/chat/completions", {**common, "messages": turn3, "max_tokens": 48})
-    post(base, "/v1/messages", {"model": model, "max_tokens": 32,
-                                "messages": [{"role": "user", "content": "Say hello in French."}]})
-    post(base, "/v1/responses", {"model": model, "max_output_tokens": 32, "input": "Say hello in German."})
+    # one request per other protocol; a rejection is reported, not fatal (it does not change any payload shape)
+    for path, body in (("/v1/messages", {"model": model, "max_tokens": 32,
+                                         "messages": [{"role": "user", "content": "Say hello in French."}]}),
+                       ("/v1/responses", {"model": model, "max_output_tokens": 32, "input": "Say hello in German."})):
+        try:
+            post(base, path, body)
+        except urllib.error.HTTPError as e:
+            print(f"warning: {path} -> HTTP {e.code}: {e.read()[:200]!r}")
 
     time.sleep(7.0)  # let the last throughput interval close
     save_json(out, "telemetry-end.json", get(base, "/telemetry"))

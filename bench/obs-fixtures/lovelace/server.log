@@ -1,0 +1,88 @@
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.1.2
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+0.00.053.861 I srv  llama_server: initializing ...
+0.00.053.888 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.054.036 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.056.437 I srv    load_model: loading model '/models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf'
+0.00.811.472 W common_fit_params: failed to fit params to free device memory: n_gpu_layers already set by user to 99, abort
+0.02.070.815 W llama_context: n_ctx_seq (376832) > n_ctx_train (262144) -- possible training context overflow
+0.02.240.621 I cmn          init: llama threadpool init, n_threads = 16
+0.02.302.676 I common_speculative_init_result: creating MTP draft context against the target model '/models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf'
+0.02.302.704 W llama_context: n_ctx_seq (376832) > n_ctx_train (262144) -- possible training context overflow
+0.02.393.830 W srv    load_model: the slot context (376832) exceeds the training context of the model (262144) - capping
+0.02.393.839 I srv    load_model: initializing, n_slots = 6, n_ctx_slot = 262144, kv_unified = 'true'
+0.08.765.772 I srv    load_model: session store: 24576 MiB of pinned host memory in 2048 chunks of 12288 KiB (6.4 s)
+0.08.765.776 I srv    load_model: session store: --cache-ram is superseded by --session-ram
+0.08.765.953 I srv    load_model: session store: directory '/var/lib/lovelace/sessions', disk max unlimited, TTL 86400 s, 0 sessions on disk
+0.08.765.959 I srv    load_model: KV budget: 376832 cells shared by 6 slots, reserving up to 8192 generated tokens per request, headroom 256 cells
+0.08.765.959 I srv    load_model: KV budget: --cache-idle-slots is superseded, idle slots are parked on demand
+0.08.787.936 I srv  server_obser: telemetry: NVML attached to NVIDIA GeForce RTX 4090, energy counter available
+0.08.827.015 I srv      obs_init: telemetry enabled: GET /telemetry, GET /events, request log: /var/log/lovelace/requests.jsonl
+0.08.827.060 I srv  llama_server: model loaded
+0.08.827.064 I srv  llama_server: listening on http://127.0.0.1:8080
+0.08.827.065 W srv  llama_server: notice: server default port will be changed to :9931 in a future release (ref: https://github.com/ggml-org/llama.cpp/pull/26508)
+0.11.243.896 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.11.920.034 I slot print_timing: id  0 | task 0 | prompt eval time =     172.31 ms /    40 tokens (    4.31 ms per token,   232.14 tokens per second)
+0.11.920.039 I slot print_timing: id  0 | task 0 |        eval time =     503.78 ms /    64 tokens (    8.00 ms per token,   125.05 tokens per second)
+0.11.920.040 I slot print_timing: id  0 | task 0 |       total time =     676.09 ms /   104 tokens
+0.11.920.045 I slot print_timing: id  0 | task 0 |    graphs reused =         19
+0.11.920.051 I slot print_timing: id  0 | task 0 | draft acceptance = 0.67742 (   42 accepted /    62 generated), mean len =  3.00
+0.11.920.117 I slot      release: id  0 | task 0 | stop processing: n_tokens = 103, truncated = 0
+0.11.929.446 I slot sched_finish: id  0 | task -1 | sync session: 103 tokens, 162.2 MiB in 9.3 ms (18.27 GB/s), done 9.3 ms after issue, host 9.2 ms
+0.11.929.594 I slot launch_slot_: id  0 | task 26 | processing task, is_child = 0
+0.15.055.977 I slot print_timing: id  0 | task 26 | n_gen =    301, tg =  99.96 t/s, tg_3s = 100.30 t/s
+0.18.066.459 I slot print_timing: id  0 | task 26 | n_gen =    630, tg = 104.63 t/s, tg_3s = 109.28 t/s
+0.20.472.482 I slot print_timing: id  0 | task 26 | prompt eval time =     125.23 ms /    38 tokens (    3.30 ms per token,   303.43 tokens per second)
+0.20.472.485 I slot print_timing: id  0 | task 26 |        eval time =    8417.62 ms /   900 tokens (    9.36 ms per token,   106.80 tokens per second)
+0.20.472.485 I slot print_timing: id  0 | task 26 |       total time =    8542.86 ms /   938 tokens
+0.20.472.486 I slot print_timing: id  0 | task 26 |    graphs reused =        374
+0.20.472.489 I slot print_timing: id  0 | task 26 | draft acceptance = 0.49769 (  538 accepted /  1081 generated), mean len =  2.49
+0.20.472.515 I slot      release: id  0 | task 26 | stop processing: n_tokens = 1040, truncated = 0
+0.20.480.668 I slot sched_finish: id  0 | task -1 | sync session: 1040 tokens, 177.8 MiB in 8.1 ms (22.89 GB/s), done 8.1 ms after issue, host 8.1 ms
+0.20.480.728 I slot launch_slot_: id  0 | task 392 | processing task, is_child = 0
+0.20.572.311 W slot create_check: id  0 | task 392 | erasing old context checkpoint (pos_min = 15, pos_max = 15, n_tokens = 16, size = 163.197 MiB)
+0.21.082.485 I slot print_timing: id  0 | task 392 | prompt eval time =     120.32 ms /    23 tokens (    5.23 ms per token,   191.15 tokens per second)
+0.21.082.488 I slot print_timing: id  0 | task 392 |        eval time =     481.42 ms /    48 tokens (   10.24 ms per token,    97.63 tokens per second)
+0.21.082.488 I slot print_timing: id  0 | task 392 |       total time =     601.74 ms /    71 tokens
+0.21.082.489 I slot print_timing: id  0 | task 392 |    graphs reused =        391
+0.21.082.496 I slot print_timing: id  0 | task 392 | draft acceptance = 0.48214 (   27 accepted /    56 generated), mean len =  2.42
+0.21.082.565 I slot      release: id  0 | task 392 | stop processing: n_tokens = 1110, truncated = 0
+0.21.090.406 I slot sched_finish: id  0 | task -1 | sync session: 1110 tokens, 154.6 MiB in 7.8 ms (20.70 GB/s), done 7.8 ms after issue, host 7.8 ms
+0.21.090.471 I slot launch_slot_: id  1 | task 417 | processing task, is_child = 0
+0.21.532.508 I slot print_timing: id  1 | task 417 | prompt eval time =     110.68 ms /    57 tokens (    1.94 ms per token,   514.99 tokens per second)
+0.21.532.513 I slot print_timing: id  1 | task 417 |        eval time =     331.33 ms /    32 tokens (   10.69 ms per token,    93.56 tokens per second)
+0.21.532.513 I slot print_timing: id  1 | task 417 |       total time =     442.01 ms /    89 tokens
+0.21.532.514 I slot print_timing: id  1 | task 417 |    graphs reused =        402
+0.21.532.518 I slot print_timing: id  1 | task 417 | draft acceptance = 0.44737 (   17 accepted /    38 generated), mean len =  2.31
+0.21.532.550 I slot      release: id  1 | task 417 | stop processing: n_tokens = 88, truncated = 0
+0.21.539.968 I slot sched_finish: id  1 | task -1 | sync session: 88 tokens, 155.0 MiB in 7.4 ms (21.94 GB/s), done 7.4 ms after issue, host 7.4 ms
+0.21.540.040 I slot launch_slot_: id  2 | task 435 | processing task, is_child = 0
+0.21.956.698 I slot print_timing: id  2 | task 435 | prompt eval time =     103.37 ms /    57 tokens (    1.81 ms per token,   551.41 tokens per second)
+0.21.956.702 I slot print_timing: id  2 | task 435 |        eval time =     313.26 ms /    32 tokens (   10.11 ms per token,    98.96 tokens per second)
+0.21.956.703 I slot print_timing: id  2 | task 435 |       total time =     416.63 ms /    89 tokens
+0.21.956.704 I slot print_timing: id  2 | task 435 |    graphs reused =        411
+0.21.956.707 I slot print_timing: id  2 | task 435 | draft acceptance = 0.51429 (   18 accepted /    35 generated), mean len =  2.50
+0.21.956.737 I slot      release: id  2 | task 435 | stop processing: n_tokens = 88, truncated = 0
+0.21.964.270 I slot sched_finish: id  2 | task -1 | sync session: 88 tokens, 155.0 MiB in 7.5 ms (21.61 GB/s), done 7.5 ms after issue, host 7.5 ms
+0.39.090.557 I slot launch_slot_: id  3 | task 452 | processing task, is_child = 0
+0.42.185.801 I slot print_timing: id  3 | task 452 | n_gen =    237, tg =  78.66 t/s, tg_3s =  78.99 t/s
+0.43.869.726 I slot print_timing: id  3 | task 452 | prompt eval time =      94.99 ms /    22 tokens (    4.32 ms per token,   231.60 tokens per second)
+0.43.869.729 I slot print_timing: id  3 | task 452 |        eval time =    4684.16 ms /   400 tokens (   11.74 ms per token,    85.18 tokens per second)
+0.43.869.729 I slot print_timing: id  3 | task 452 |       total time =    4779.15 ms /   422 tokens
+0.43.869.730 I slot print_timing: id  3 | task 452 |    graphs reused =        610
+0.43.869.734 I slot print_timing: id  3 | task 452 | draft acceptance = 0.32450 (  196 accepted /   604 generated), mean len =  1.97
+0.43.869.758 I slot      release: id  3 | task 452 | stop processing: n_tokens = 421, truncated = 0
+0.43.877.457 I slot sched_finish: id  3 | task -1 | sync session: 421 tokens, 162.6 MiB in 7.7 ms (22.18 GB/s), done 7.7 ms after issue, host 7.7 ms

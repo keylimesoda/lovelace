@@ -1,0 +1,19 @@
+{
+ "artifact_type": "ninfer_serve_request_log",
+ "event": "lovelace_sched",
+ "lovelace": {
+  "action": "sync",
+  "bytes": 162563584,
+  "gbps": 21.606,
+  "host_ms": 7.498,
+  "id_slot": 2,
+  "id_task": null,
+  "ms": 7.524,
+  "n_tokens": 88,
+  "schema_version": 2,
+  "seq": 17
+ },
+ "schema_version": 20,
+ "server_instance_id": "3fd82f3554e8f332",
+ "timestamp_unix_ms": 1790746312543
+}

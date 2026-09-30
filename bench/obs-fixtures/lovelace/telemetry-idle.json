@@ -1,0 +1,485 @@
+{
+ "adapters": {
+  "count": 0,
+  "device_bytes": 0,
+  "file_bytes": 0,
+  "model_ids": [],
+  "names": [],
+  "rank": 0,
+  "slots": 0
+ },
+ "attached": true,
+ "cache": {
+  "device_backend_kv_occupied_pages": 0,
+  "device_main_kv_occupied_pages": 0,
+  "device_state_occupied_slots": 0,
+  "host_kv_capacity_bytes": 25769803776,
+  "host_kv_occupied_bytes": 0,
+  "host_state_capacity_slots": 0,
+  "host_state_occupied_slots": 0,
+  "kv_capacity": 376832,
+  "kv_capacity_max_page_groups": 376832,
+  "kv_capacity_page_groups": 376832,
+  "kv_growth": {
+   "attempts": 0,
+   "curtailed": 0,
+   "forced_spills": 0
+  },
+  "kv_restore_reclaimed_lanes": 0,
+  "l1": {
+   "bytes": 0,
+   "capacity_bytes": 9516007424,
+   "demotions": 0,
+   "entries": 0,
+   "evictions": 0
+  },
+  "l2": {
+   "bytes": 0,
+   "capacity_bytes": 25769803776,
+   "entries": 0,
+   "evicted_bytes": 0,
+   "evictions": 0
+  },
+  "l3": {
+   "bytes": 0,
+   "capacity_bytes": 0,
+   "entries": 0,
+   "evicted_bytes": 0,
+   "evictions": 0
+  },
+  "lookup_hits": 0,
+  "lookup_misses": 0,
+  "persistence_failures": 0,
+  "persistence_successes": 0,
+  "pressure": {
+   "checkpoints_dropped": 0,
+   "maximal_fallback_selections": 0,
+   "partial_tail_cow_pages": 0,
+   "private_owners_degraded": 0,
+   "private_owners_evicted": 0,
+   "search_budget_exhaustions": 0,
+   "searches": 0,
+   "shared_owners_degraded": 0,
+   "shared_owners_evicted": 0,
+   "spill_pages": 0
+  },
+  "publication_failures": 0,
+  "publication_successes": 0,
+  "restore_deferrals": 0,
+  "restore_failures": 0,
+  "restore_successes": 0
+ },
+ "events": {
+  "jsonl_enabled": true,
+  "subscribers": 0
+ },
+ "gpu": {
+  "available": true,
+  "driver_version": "610.57.04",
+  "energy_available": true,
+  "energy_joules_total": 6993453.454,
+  "fan_percent": 63,
+  "idle_watts": 0.0,
+  "memory_clock_mhz": 10501,
+  "memory_total_bytes": 25757220864,
+  "memory_used_bytes": 25305284608,
+  "name": "NVIDIA GeForce RTX 4090",
+  "pcie_rx_bytes_per_second": 0,
+  "pcie_tx_bytes_per_second": 0,
+  "power_limit_watts": 450.0,
+  "power_watts": 80.423,
+  "server_energy_joules": 93.466,
+  "sm_clock_max_mhz": 3120,
+  "sm_clock_mhz": 2535,
+  "temperature_c": 43,
+  "throttle_reasons": [],
+  "utilization_gpu_percent": 11,
+  "utilization_memory_percent": 1,
+  "uuid": "GPU-594fd862-7952-37ca-5fb9-c849e3330141"
+ },
+ "lovelace": {
+  "build_info": "b0-unknown",
+  "energy": {
+   "available": true,
+   "board_watts_1s": 68.779,
+   "idle_watts": null,
+   "joules": {
+    "board": 93.466,
+    "decode": 0.0,
+    "idle": 93.466,
+    "prefill": 0.0
+   }
+  },
+  "events": {
+   "jsonl_path": "/var/log/lovelace/requests.jsonl",
+   "records_dropped": 0,
+   "records_emitted": 1
+  },
+  "gpu": {
+   "pstate": 0
+  },
+  "kv": {
+   "cache_type_k": "q5_0",
+   "cache_type_v": "q5_0",
+   "cells_reserved": 0,
+   "cells_total": 376832,
+   "cells_used": 0,
+   "n_ctx_slot": 262144,
+   "unified": true
+  },
+  "loop": {
+   "fraction": {
+    "decode": 0.0,
+    "host": 0.0,
+    "idle": 1.0,
+    "prefill": 0.0
+   },
+   "phase": "idle",
+   "seconds": {
+    "decode": 0.0,
+    "host": 0.0,
+    "idle": 1.413716,
+    "prefill": 0.0
+   },
+   "window_seconds": 1.413716
+  },
+  "loop_totals_seconds": {
+   "decode": 0.0,
+   "host": 0.0,
+   "idle": 1.466269,
+   "prefill": 0.0
+  },
+  "prompt_cache": {
+   "bytes_limit": 0,
+   "bytes_used": 0,
+   "enabled": false,
+   "entries": 0,
+   "tokens": 0,
+   "tokens_limit": 0
+  },
+  "scheduler": {
+   "kv_budget": {
+    "enabled": true,
+    "gen_reserve": 8192,
+    "headroom": 256,
+    "prefill_chunk_gen": 1024,
+    "queue_waiting": 0,
+    "slots_preempted": 0,
+    "timeslice": 0.0,
+    "totals": {
+     "grows": 0,
+     "kv_overflows": 0,
+     "park_bytes": 0,
+     "park_drops": 0,
+     "park_gbps": 0.0,
+     "park_host_seconds": 0.0,
+     "park_seconds": 0.0,
+     "parks": 0,
+     "preempts": 0,
+     "recompute_tokens": 0,
+     "resumes": 0,
+     "rollback_fallbacks": 0,
+     "unpark_bytes": 0,
+     "unpark_gbps": 0.0,
+     "unpark_host_seconds": 0.0,
+     "unpark_seconds": 0.0,
+     "unparks": 0,
+     "waited_kv": 0,
+     "waited_slot": 0
+    }
+   },
+   "queue_deferred": 0,
+   "slots_busy": 0,
+   "slots_generating": 0,
+   "slots_idle": 6,
+   "slots_processing_prompt": 0,
+   "slots_total": 6,
+   "totals": {
+    "accepted": 0,
+    "drafted": 0,
+    "n_busy_slots_per_decode": 0.0,
+    "n_decode": 0,
+    "predicted_seconds": 0.0,
+    "predicted_tokens": 0,
+    "prompt_seconds": 0.0,
+    "prompt_tokens": 0,
+    "prompt_tokens_cached": 0,
+    "requests_done": 0,
+    "requests_rejected": 0,
+    "requests_started": 0
+   }
+  },
+  "schema_version": 2,
+  "sessions": {
+   "arena_bytes": 25769803776,
+   "arena_free_bytes": 25769803776,
+   "deleted": 0,
+   "demotions": 0,
+   "disk_bytes": 0,
+   "disk_limit_bytes": 0,
+   "io_bytes_read": 0,
+   "io_bytes_written": 0,
+   "io_read_s": 0.0,
+   "io_write_s": 0.0,
+   "n_disk": 0,
+   "n_gpu": 0,
+   "n_io": 0,
+   "n_ram": 0,
+   "n_sessions": 0,
+   "prefetch_hits": 0,
+   "prefetches": 0,
+   "promotions": 0,
+   "ram_bytes": 0,
+   "sessions": [],
+   "stale_syncs": 0,
+   "sync_bytes": 0,
+   "syncs": 0
+  },
+  "sleeping": false,
+  "slots": [
+   {
+    "id": 0,
+    "id_task": null,
+    "is_processing": false,
+    "n_cached_tokens": 0,
+    "n_ctx": 262144,
+    "n_ctx_used": 0,
+    "n_decoded": 0,
+    "n_prefill_tokens": 0,
+    "n_prompt_tokens": 0,
+    "n_reserved": 0,
+    "n_unparked_tokens": 0,
+    "session_id": null,
+    "speculative": true,
+    "state": "idle",
+    "wait_reason": null
+   },
+   {
+    "id": 1,
+    "id_task": null,
+    "is_processing": false,
+    "n_cached_tokens": 0,
+    "n_ctx": 262144,
+    "n_ctx_used": 0,
+    "n_decoded": 0,
+    "n_prefill_tokens": 0,
+    "n_prompt_tokens": 0,
+    "n_reserved": 0,
+    "n_unparked_tokens": 0,
+    "session_id": null,
+    "speculative": true,
+    "state": "idle",
+    "wait_reason": null
+   },
+   {
+    "id": 2,
+    "id_task": null,
+    "is_processing": false,
+    "n_cached_tokens": 0,
+    "n_ctx": 262144,
+    "n_ctx_used": 0,
+    "n_decoded": 0,
+    "n_prefill_tokens": 0,
+    "n_prompt_tokens": 0,
+    "n_reserved": 0,
+    "n_unparked_tokens": 0,
+    "session_id": null,
+    "speculative": true,
+    "state": "idle",
+    "wait_reason": null
+   },
+   {
+    "id": 3,
+    "id_task": null,
+    "is_processing": false,
+    "n_cached_tokens": 0,
+    "n_ctx": 262144,
+    "n_ctx_used": 0,
+    "n_decoded": 0,
+    "n_prefill_tokens": 0,
+    "n_prompt_tokens": 0,
+    "n_reserved": 0,
+    "n_unparked_tokens": 0,
+    "session_id": null,
+    "speculative": true,
+    "state": "idle",
+    "wait_reason": null
+   },
+   {
+    "id": 4,
+    "id_task": null,
+    "is_processing": false,
+    "n_cached_tokens": 0,
+    "n_ctx": 262144,
+    "n_ctx_used": 0,
+    "n_decoded": 0,
+    "n_prefill_tokens": 0,
+    "n_prompt_tokens": 0,
+    "n_reserved": 0,
+    "n_unparked_tokens": 0,
+    "session_id": null,
+    "speculative": true,
+    "state": "idle",
+    "wait_reason": null
+   },
+   {
+    "id": 5,
+    "id_task": null,
+    "is_processing": false,
+    "n_cached_tokens": 0,
+    "n_ctx": 262144,
+    "n_ctx_used": 0,
+    "n_decoded": 0,
+    "n_prefill_tokens": 0,
+    "n_prompt_tokens": 0,
+    "n_reserved": 0,
+    "n_unparked_tokens": 0,
+    "session_id": null,
+    "speculative": true,
+    "state": "idle",
+    "wait_reason": null
+   }
+  ],
+  "vram": {
+   "devices": [
+    {
+     "compute_bytes": 1055138560,
+     "context_bytes": 9516007424,
+     "description": "NVIDIA GeForce RTX 4090",
+     "free_bytes": 451936256,
+     "model_bytes": 12396633088,
+     "name": "CUDA0",
+     "total_bytes": 25271402496,
+     "unaccounted_bytes": 1851687168
+    }
+   ],
+   "host": {
+    "compute_bytes": 815599936,
+    "context_bytes": 0,
+    "model_bytes": 675430400
+   }
+  }
+ },
+ "memory": {
+  "available_after_startup_bytes": 451936256,
+  "available_after_weights_bytes": 12874769408,
+  "cuda_graph_allowance_bytes": 0,
+  "cuda_graph_observed_bytes": 0,
+  "device": 0,
+  "dflash_kv_bytes": 0,
+  "gdn_state_bytes": 0,
+  "kv_capacity": 376832,
+  "kv_capacity_max_page_groups": 376832,
+  "kv_capacity_page_groups": 376832,
+  "kv_payload_bytes": 9516007424,
+  "lora_bank_bytes": 0,
+  "max_context": 262144,
+  "mtp_kv_bytes": 530579456,
+  "replay_records_bytes": 0,
+  "request_transient": {
+   "capacity_bytes": 0,
+   "peak_used_bytes": 0,
+   "used_bytes": 0
+  },
+  "sequence": {
+   "capacity_bytes": 10046586880,
+   "peak_used_bytes": 10046586880,
+   "used_bytes": 10046586880
+  },
+  "text_kv_bytes": 9516007424,
+  "weights": {
+   "capacity_bytes": 12396633088,
+   "peak_used_bytes": 12396633088,
+   "used_bytes": 12396633088
+  },
+  "workspace": {
+   "capacity_bytes": 1055138560,
+   "peak_used_bytes": 1055138560,
+   "used_bytes": 1055138560
+  }
+ },
+ "model_id": "qwen3.8-27b",
+ "scheduler": {
+  "admitted_requests": 0,
+  "decode_ready": 0,
+  "decode_rounds": 0,
+  "decode_rounds_abandoned": 0,
+  "decode_row_rounds": 0,
+  "max_concurrency": 6,
+  "max_pending_requests": 0,
+  "prefilling": 0,
+  "queue_seconds_total": 0.0,
+  "rejected_overloaded": 0,
+  "rejected_queue_timeout": 0,
+  "running": 0,
+  "waiting": 0,
+  "worker_admission": {
+   "calls": 0,
+   "commit_seconds": 0.0,
+   "plan_seconds": 0.0,
+   "restore_seconds": 0.0
+  },
+  "worker_decode_rounds": 0,
+  "worker_prefill_steps": 0,
+  "worker_seconds": {
+   "admission": 0.0,
+   "decode": 0.0,
+   "prefill": 0.0,
+   "publish": 0.0,
+   "upkeep": 0.0
+  }
+ },
+ "server_instance_id": "3fd82f3554e8f332",
+ "slots": [
+  {
+   "cached_tokens": 0,
+   "checkpoints": 0,
+   "processing": false,
+   "prompt_tokens": 0,
+   "retained": false,
+   "session_digest": ""
+  },
+  {
+   "cached_tokens": 0,
+   "checkpoints": 0,
+   "processing": false,
+   "prompt_tokens": 0,
+   "retained": false,
+   "session_digest": ""
+  },
+  {
+   "cached_tokens": 0,
+   "checkpoints": 0,
+   "processing": false,
+   "prompt_tokens": 0,
+   "retained": false,
+   "session_digest": ""
+  },
+  {
+   "cached_tokens": 0,
+   "checkpoints": 0,
+   "processing": false,
+   "prompt_tokens": 0,
+   "retained": false,
+   "session_digest": ""
+  },
+  {
+   "cached_tokens": 0,
+   "checkpoints": 0,
+   "processing": false,
+   "prompt_tokens": 0,
+   "retained": false,
+   "session_digest": ""
+  },
+  {
+   "cached_tokens": 0,
+   "checkpoints": 0,
+   "processing": false,
+   "prompt_tokens": 0,
+   "retained": false,
+   "session_digest": ""
+  }
+ ],
+ "timestamp_unix_ms": 1790746300815,
+ "uptime_seconds": 1.466
+}

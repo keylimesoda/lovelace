@@ -1,0 +1,24 @@
+{
+ "aliases": [
+  "qwen3.8-27b"
+ ],
+ "context_window": 262144,
+ "created": 1790746300,
+ "id": "qwen3.8-27b",
+ "meta": {
+  "ftype": "(guessed) all F32",
+  "n_ctx": 262144,
+  "n_ctx_train": 262144,
+  "n_embd": 5120,
+  "n_params": 27320697856,
+  "n_vocab": 248320,
+  "size": 13072057344,
+  "vocab_type": 2
+ },
+ "modalities": {
+  "vision": false
+ },
+ "object": "model",
+ "owned_by": "llamacpp",
+ "tags": []
+}
