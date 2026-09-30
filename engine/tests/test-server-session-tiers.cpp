@@ -107,6 +107,22 @@ int main() {
             fprintf(stderr, "FAIL: the new head was not promoted\n");
             rc = 1;
         }
+
+        // the old head changed (a turn ran) and is parked again, not queued; the arena has no room for another
+        // mirror: the store writes it ahead, it stays in the arena, and making room then needs no write
+        a.file_current = false;
+        for (int i = 0; i < 2000 && !a.file_current; i++) {
+            store.poll({ b.id });
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        if (!a.file_current || a.tier != SERVER_SESSION_RAM) {
+            fprintf(stderr, "FAIL: the next victim was not written ahead (tier %s)\n", server_session_tier_name(a.tier));
+            rc = 1;
+        }
+        if (!store.make_room(10, /* wait */ false) || a.tier != SERVER_SESSION_DISK) {
+            fprintf(stderr, "FAIL: making room waited for a write\n");
+            rc = 1;
+        }
     }
     std::filesystem::remove_all(dir);
 

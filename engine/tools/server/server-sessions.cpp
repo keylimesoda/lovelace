@@ -354,7 +354,8 @@ server_session_store::server_session_store(common_state_arena & arena, llama_con
     : arena(arena), ctx_tgt(ctx_tgt), ctx_dft(ctx_dft), params(std::move(params)), wake(std::move(wake)) {
     if (!this->params.dir.empty()) {
         std::filesystem::create_directories(this->params.dir);
-        worker = std::thread([this]() { run_worker(); });
+        worker_rd = std::thread([this]() { run_worker(true); });
+        worker_wr = std::thread([this]() { run_worker(false); });
     }
 }
 
@@ -367,8 +368,10 @@ server_session_store::~server_session_store() {
         }
     }
     cv.notify_all();
-    if (worker.joinable()) {
-        worker.join();
+    for (auto * w : { &worker_rd, &worker_wr }) {
+        if (w->joinable()) {
+            w->join();
+        }
     }
     // the transfers of the mirrors complete before the arena goes
     for (auto & it : sessions) {
@@ -592,6 +595,7 @@ int32_t server_session_store::restore(server_session & s, llama_seq_id seq, std:
     GGML_ASSERT(s.tier == SERVER_SESSION_RAM && s.restore_xfers.empty() && (s.id_slot < 0 || s.id_slot == seq));
 
     sync_wait(s);
+    stop_write_ahead(s);
 
     // the recurrent state bounds the usable prefix: the snapshot at n_kv, else the newest checkpoint below
     int32_t n = s.n_kv;
@@ -764,33 +768,29 @@ void server_session_store::submit(std::shared_ptr<job> j) {
     {
         std::lock_guard<std::mutex> lock(mutex);
         jobs[j->id] = j;
-        queue.push_back(std::move(j));
+        (j->kind == job::READ ? queue_rd : queue_wr).push_back(std::move(j));
     }
-    cv.notify_one();
+    cv.notify_all();
 }
 
-bool server_session_store::demote(server_session & s) {
-    if (params.dir.empty() || s.id_slot >= 0 || s.tier != SERVER_SESSION_RAM) {
-        return false;
-    }
+std::shared_ptr<server_session_store::job> server_session_store::job_of(uint64_t id) {
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto it = jobs.find(id);
+    return it == jobs.end() ? nullptr : it->second;
+}
 
+// start writing the mirror to its file: a demotion (DEMOTING, the arena is freed once written), or a write-ahead (the
+// session stays in the arena and usable, its file is current once written unless it changed meanwhile)
+bool server_session_store::write_file(server_session & s, bool ahead) {
     sync_wait(s);
     restore_wait(s);
 
-    if (s.file_current) {
-        release_ram(s);
-        s.tier = SERVER_SESSION_DISK;
-        s.n_demote++;
-        n_demote_total++;
-        SRV_INF("session %llu dropped from RAM (its file is current)\n", (unsigned long long) s.id);
-        return true;
-    }
-
     auto j = std::make_shared<job>();
-    j->kind = job::WRITE;
-    j->id   = s.id;
-    j->path = path_of(s.id);
-    j->head = session_encode_head(s);
+    j->kind  = job::WRITE;
+    j->id    = s.id;
+    j->path  = path_of(s.id);
+    j->head  = session_encode_head(s);
+    j->ahead = ahead;
 
     auto add = [&](const std::vector<llama_state_chunk> & v) {
         for (const auto & c : v) {
@@ -809,10 +809,85 @@ bool server_session_store::demote(server_session & s) {
         add(c.data_dft.views());
     }
 
-    s.file_head = j->head.size();
-    s.tier = SERVER_SESSION_DEMOTING;
+    if (!ahead) {
+        s.file_head = j->head.size();
+        s.tier = SERVER_SESSION_DEMOTING;
+    }
     submit(std::move(j));
     return true;
+}
+
+bool server_session_store::demote(server_session & s) {
+    if (params.dir.empty() || s.id_slot >= 0 || s.tier != SERVER_SESSION_RAM) {
+        return false;
+    }
+
+    if (const auto j = job_of(s.id)) {
+        // a write-ahead in flight becomes the demotion, unless it was stopped (it no longer matches the session)
+        if (!j->ahead || j->cancel.load()) {
+            return false;
+        }
+        s.file_head = j->head.size();
+        s.tier = SERVER_SESSION_DEMOTING;
+        return true;
+    }
+
+    sync_wait(s);
+    restore_wait(s);
+
+    if (s.file_current) {
+        release_ram(s);
+        s.tier = SERVER_SESSION_DISK;
+        s.n_demote++;
+        n_demote_total++;
+        SRV_INF("session %llu dropped from RAM (its file is current)\n", (unsigned long long) s.id);
+        return true;
+    }
+
+    return write_file(s, /* ahead */ false);
+}
+
+void server_session_store::write_ahead() {
+    if (params.dir.empty()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        for (const auto & it : jobs) {
+            if (it.second->kind == job::WRITE) {
+                return; // one write at a time
+            }
+        }
+    }
+
+    // short: the room free beyond the reserve does not hold the largest mirror, so the next promotion or sync demotes
+    size_t n_mirror = 0;
+    for (const auto & it : sessions) {
+        n_mirror = std::max(n_mirror, arena.n_chunks(it.second->bytes()));
+    }
+    if (arena.n_free() >= arena.n_chunks(params.reserve) + n_mirror) {
+        return;
+    }
+
+    server_session * s = pick_victim(KEEP_QUEUED, 0, /* dirty */ true);
+    if (s != nullptr) {
+        n_write_ahead++;
+        write_file(*s, /* ahead */ true);
+    }
+}
+
+void server_session_store::stop_write_ahead(server_session & s) {
+    const auto j = job_of(s.id);
+    if (!j) {
+        return;
+    }
+    GGML_ASSERT(j->kind == job::WRITE && j->ahead && s.tier == SERVER_SESSION_RAM);
+    j->cancel = true;
+    // the worker stops reading the buffers within a piece (64 MiB); the rest of the job (fdatasync) goes on, and
+    // its file does not count as current (see finish_job)
+    while (!j->written.load() && j->state.load() == 0) {
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
 }
 
 bool server_session_store::promote(server_session & s) {
@@ -900,19 +975,29 @@ void server_session_store::finish_job(server_session & s, job & j) {
             }
             io_bytes_written += size;
             disk_bytes = disk_bytes - std::min(disk_bytes, s.file_bytes) + size;
-            s.file_bytes   = size;
-            s.file_current = true;
-            release_ram(s);
-            s.tier = SERVER_SESSION_DISK;
-            s.n_demote++;
-            n_demote_total++;
-            SRV_INF("session %llu demoted to disk: %.1f MiB in %.2f s\n", (unsigned long long) s.id, size / 1048576.0, j.t_us / 1e6);
+            s.file_bytes = size;
+            if (s.tier == SERVER_SESSION_DEMOTING) {
+                s.file_current = true;
+                release_ram(s);
+                s.tier = SERVER_SESSION_DISK;
+                s.n_demote++;
+                n_demote_total++;
+                SRV_INF("session %llu demoted to disk: %.1f MiB in %.2f s%s\n", (unsigned long long) s.id, size / 1048576.0,
+                        j.t_us / 1e6, j.ahead ? " (written ahead)" : "");
+            } else if (!j.cancel.load()) {
+                // a write-ahead of a session that did not change: its demotion is free now
+                s.file_current = true;
+                s.file_head    = j.head.size();
+                SRV_INF("session %llu written ahead: %.1f MiB in %.2f s\n", (unsigned long long) s.id, size / 1048576.0, j.t_us / 1e6);
+            }
             enforce_disk_limit(s.id);
         } else {
             if (!j.cancel.load()) {
                 SRV_ERR("session %llu: failed to write %s (%s), it stays in RAM\n", (unsigned long long) s.id, j.path.c_str(), j.error.c_str());
             }
-            s.tier = SERVER_SESSION_RAM;
+            if (s.tier == SERVER_SESSION_DEMOTING) {
+                s.tier = SERVER_SESSION_RAM;
+            }
         }
     } else {
         io_read_us += j.t_us;
@@ -937,7 +1022,8 @@ void server_session_store::finish_job(server_session & s, job & j) {
     }
 }
 
-void server_session_store::run_worker() {
+void server_session_store::run_worker(bool reads) {
+    auto & queue = reads ? queue_rd : queue_wr;
     while (true) {
         std::shared_ptr<job> j;
         {
@@ -977,6 +1063,7 @@ void server_session_store::run_job(job & j) {
         for (const auto & sp : j.spans) {
             ok = ok && write_all(fd, sp.first, sp.second, j.cancel);
         }
+        j.written = true;
         ok = ok && ::fdatasync(fd) == 0;
         if (ok) {
             // the data is on disk, the page cache would only compete with the pinned arena
@@ -1015,33 +1102,47 @@ void server_session_store::run_job(job & j) {
     j.state = 1;
 }
 
-bool server_session_store::make_room(size_t n_chunks, bool wait, uint64_t except, size_t keep) {
-    // the least recently used parked mirror goes; the sessions of queued requests last, farthest first, and the first
-    // `keep` of the queue not at all (unless the room is a must: wait)
-    auto pick = [&](size_t n_keep) {
-        server_session * victim = nullptr;
-        int victim_rank = -1;
-        for (auto & it : sessions) {
-            auto & s = *it.second;
-            if (s.id == except || s.id_slot >= 0 || s.tier != SERVER_SESSION_RAM || !s.restore_xfers.empty()) {
-                continue;
-            }
-            const auto w = std::find(wanted.begin(), wanted.end(), s.id);
-            if (w != wanted.end() && (size_t) (w - wanted.begin()) < n_keep) {
-                continue;
-            }
-            const int rank = w == wanted.end() ? -1 : (int) (wanted.end() - w); // 1 = last in the queue
-            const bool better = victim == nullptr ||
-                (rank < 0 && victim_rank >= 0) ||
-                (rank < 0 && victim_rank < 0 && s.t_used_us < victim->t_used_us) ||
-                (rank >= 0 && victim_rank >= 0 && rank < victim_rank);
-            if (better) {
-                victim = &s;
-                victim_rank = rank;
+// the least recently used parked mirror goes; the sessions of queued requests last, farthest first, and the first
+// `keep` of the queue not at all
+server_session * server_session_store::pick_victim(size_t keep, uint64_t except, bool dirty) {
+    std::vector<uint64_t> busy; // sessions with a file job that demote() cannot take over
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        for (const auto & it : jobs) {
+            if (dirty || !it.second->ahead || it.second->cancel.load()) {
+                busy.push_back(it.first);
             }
         }
-        return victim;
-    };
+    }
+
+    server_session * victim = nullptr;
+    int victim_rank = -1;
+    for (auto & it : sessions) {
+        auto & s = *it.second;
+        if (s.id == except || s.id_slot >= 0 || s.tier != SERVER_SESSION_RAM || !s.restore_xfers.empty() ||
+                (dirty && s.file_current) || std::find(busy.begin(), busy.end(), s.id) != busy.end()) {
+            continue;
+        }
+        const auto w = std::find(wanted.begin(), wanted.end(), s.id);
+        if (w != wanted.end() && (size_t) (w - wanted.begin()) < keep) {
+            continue;
+        }
+        const int rank = w == wanted.end() ? -1 : (int) (wanted.end() - w); // 1 = last in the queue
+        const bool better = victim == nullptr ||
+            (rank < 0 && victim_rank >= 0) ||
+            (rank < 0 && victim_rank < 0 && s.t_used_us < victim->t_used_us) ||
+            (rank >= 0 && victim_rank >= 0 && rank < victim_rank);
+        if (better) {
+            victim = &s;
+            victim_rank = rank;
+        }
+    }
+    return victim;
+}
+
+bool server_session_store::make_room(size_t n_chunks, bool wait, uint64_t except, size_t keep) {
+    // the first `keep` of the queue stay, unless the room is a must (wait)
+    auto pick = [&](size_t n_keep) { return pick_victim(n_keep, except, /* dirty */ false); };
 
     while (arena.n_free() < n_chunks) {
         size_t incoming = 0;
@@ -1159,6 +1260,9 @@ bool server_session_store::poll(const std::vector<uint64_t> & wanted_ids) {
     if (arena.n_free() < reserve) {
         make_room(reserve, false);
     }
+
+    // with a full arena, the next demotion is written while the disk is idle, off the critical path
+    write_ahead();
 
     return changed;
 }
@@ -1361,6 +1465,7 @@ server_session_store::stats_t server_session_store::stats() const {
     st.n_sync_stale     = n_sync_stale;
     st.n_prefetch       = n_prefetch_total;
     st.n_prefetch_hit   = n_prefetch_hit_total;
+    st.n_write_ahead    = n_write_ahead;
     st.io_bytes_written = io_bytes_written;
     st.io_bytes_read    = io_bytes_read;
     st.io_write_s       = io_write_us / 1e6;

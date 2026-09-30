@@ -232,7 +232,7 @@ struct server_session_store {
         size_t ram_bytes = 0, disk_bytes = 0;
         size_t n_sessions = 0, n_gpu = 0, n_ram = 0, n_disk = 0, n_io = 0;
         uint64_t n_demote = 0, n_promote = 0, n_deleted = 0, n_sync_stale = 0;
-        uint64_t n_prefetch = 0, n_prefetch_hit = 0;
+        uint64_t n_prefetch = 0, n_prefetch_hit = 0, n_write_ahead = 0;
         uint64_t io_bytes_written = 0, io_bytes_read = 0;
         double   io_write_s = 0.0, io_read_s = 0.0;
     };
@@ -253,7 +253,7 @@ private:
     // the sessions of queued requests, in queue order (see poll)
     std::vector<uint64_t> wanted;
 
-    // file jobs, run by the worker thread
+    // file jobs, run by two worker threads: reads (promotions) never wait behind writes
     struct job {
         enum kind_t { WRITE, READ } kind = WRITE;
         uint64_t id = 0;
@@ -261,16 +261,20 @@ private:
         std::vector<uint8_t> head;                         // WRITE: header and tables
         size_t head_size = 0;                              // READ: bytes to skip
         std::vector<std::pair<uint8_t *, size_t>> spans;   // the bytes after the head, in file order
-        std::atomic<bool> cancel { false };
-        std::atomic<int>  state  { 0 };                    // 0 pending, 1 ok, 2 failed
+        bool ahead = false;                                // WRITE: a write-ahead, the session stays in the arena
+        std::atomic<bool> cancel  { false };
+        std::atomic<bool> written { false };               // WRITE: the spans are no longer read
+        std::atomic<int>  state   { 0 };                   // 0 pending, 1 ok, 2 failed
         std::string error;
         int64_t t_us = 0;
     };
 
-    std::thread                       worker;
+    std::thread                       worker_rd;
+    std::thread                       worker_wr;
     std::mutex                        mutex;
     std::condition_variable           cv;
-    std::deque<std::shared_ptr<job>>  queue;
+    std::deque<std::shared_ptr<job>>  queue_rd;
+    std::deque<std::shared_ptr<job>>  queue_wr;
     bool                              stop = false;
     std::unordered_map<uint64_t, std::shared_ptr<job>> jobs; // by session
     std::function<void()>             wake;
@@ -278,15 +282,24 @@ private:
     uint64_t io_bytes_written = 0, io_bytes_read = 0;
     int64_t  io_write_us = 0, io_read_us = 0;
     size_t   disk_bytes = 0;
+    uint64_t n_write_ahead = 0;
 
-    void run_worker();
+    void run_worker(bool reads);
     void run_job(job & j);
     void submit(std::shared_ptr<job> j);
+    std::shared_ptr<job> job_of(uint64_t id);
 
     std::filesystem::path path_of(uint64_t id) const;
 
     void truncate(server_session & s, int32_t keep, int32_t keep_dft);
+    // the parked session that making room demotes next (see make_room); dirty: only one whose file is not current
+    server_session * pick_victim(size_t keep, uint64_t except, bool dirty);
+    bool write_file(server_session & s, bool ahead);
     bool demote(server_session & s);
+    // while the arena is short, write the next victim to its file ahead of time: its demotion is then free
+    void write_ahead();
+    // the session is about to change (restored): a write-ahead of it stops using its buffers, and does not count
+    void stop_write_ahead(server_session & s);
     bool reap_jobs();
     void finish_job(server_session & s, job & j);
     void release_ram(server_session & s);
