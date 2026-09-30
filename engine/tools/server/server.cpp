@@ -2,6 +2,7 @@
 #include "server-http.h"
 #include "server-models.h"
 #include "server-cors-proxy.h"
+#include "server-observe.h"
 #include "server-stream.h"
 #include "server-tools.h"
 
@@ -118,6 +119,9 @@ int llama_server(int argc, char ** argv) {
 
 int llama_server(common_params & params, int argc, char ** argv) {
     bool is_run_by_cli = (argv == nullptr);
+    if (argv != nullptr) {
+        server_obs_set_argv(argc, argv); // server_start.argv of the request log
+    }
 
     common_models_handler models_handler;
 
@@ -259,6 +263,9 @@ int llama_server(common_params & params, int argc, char ** argv) {
     ctx_http.post("/props",                    ex_wrapper(routes.post_props));
     ctx_http.get ("/models",                   ex_wrapper(routes.get_models));
     ctx_http.get ("/v1/models",                ex_wrapper(routes.get_models));
+    if (!is_router_server) {
+        ctx_http.get ("/v1/models/:model",     ex_wrapper(routes.get_model));
+    }
     ctx_http.post("/completion",               ex_wrapper(routes.post_completions)); // legacy
     ctx_http.post("/completions",              ex_wrapper(routes.post_completions));
     ctx_http.post("/v1/completions",           ex_wrapper(routes.post_completions_oai));

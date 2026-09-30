@@ -174,7 +174,6 @@ struct server_task {
 
     // used by SERVER_TASK_TYPE_METRICS
     bool metrics_reset_bucket = false;
-    bool metrics_telemetry    = false; // also fill server_task_result_metrics::telemetry (GET /telemetry)
 
     // used by SERVER_TASK_TYPE_SET_LORA
     std::map<int, float> set_lora; // mapping adapter ID -> scale
@@ -501,9 +500,6 @@ struct server_task_result_metrics : server_task_result {
     int n_tasks_deferred = 0;
 
     server_metrics metrics;
-
-    // the server loop's view for GET /telemetry, only set when requested
-    json telemetry;
 
     virtual json to_json() override;
 
