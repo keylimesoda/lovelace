@@ -2,10 +2,11 @@
 
 lovelace serves **tensorninja/ninfer-4090's observability API** (pinned at `f408990`, request-log schema 20) as a
 superset: the same paths, field names, JSON types and units, so tensorninja's dashboard (`apps/web`) and clients such
-as the omarchy-ninfer widget work unchanged. lovelace-only data is under a `lovelace` key (**`lovelace.schema_version`
-2**) in every record and in `/telemetry`; Prometheus additions use the `lovelace:` prefix. The field-by-field mapping
-(same / mapped / N/A) is in [observability-parity.md](observability-parity.md); this page describes how the data is
-produced and the lovelace extension.
+as the Omarchy widget ([integrations/omarchy](../integrations/omarchy)) work unchanged. lovelace-only data is under a
+`lovelace` key (**`lovelace.schema_version` 2**) in every record and in `/telemetry`; Prometheus additions use the
+`lovelace:` prefix. The field-by-field mapping (same / mapped / N/A) is in
+[observability-parity.md](observability-parity.md); this page describes how the data is produced and the lovelace
+extension.
 
 `llama-server` flags (engine/tools/server, implemented in `server-observe.{h,cpp}`):
 
@@ -115,7 +116,7 @@ unaccounted_bytes}], host: {model_bytes, context_bytes, compute_bytes}}`; `conte
 ## GET /telemetry
 
 tensorninja's snapshot (`gpu`, `scheduler`, `cache`, `slots`, `adapters`, `memory`, `events`; mapping in the parity
-doc), plus the keys of keylimesoda/ninfer-4090-lin-hybrid's `cache` that the omarchy-ninfer widget reads, plus:
+doc), plus the keys of keylimesoda/ninfer-4090-lin-hybrid's `cache` that the Omarchy widget reads, plus:
 
 ```
 lovelace: {

@@ -141,6 +141,25 @@ deploy/serve.sh balanced        # also: quality, vision; status | logs | stop
 
 Profiles, state directories, the GPU lock and the benchmark scripts: [docs/README-dev.md](docs/README-dev.md).
 
+## Desktop monitor (Omarchy)
+
+<img alt="lovelace monitor panel" src="docs/img/omarchy-monitor.png" width="300" align="right">
+
+An [Omarchy](https://omarchy.org) bar widget in [integrations/omarchy](integrations/omarchy): the model as headline
+with a runtime tag (runtime, spec method and draft tokens, KV type) read from `/v1/models` and `/telemetry`, live
+throughput, GPU and context-cache state, a start/stop switch driving `deploy/serve.sh`, the vision profile toggle, and
+links to the dashboard and logs. `omarchy plugin add` only installs repository roots, so install it from a checkout:
+
+```sh
+integrations/omarchy/install.sh --enable      # --uninstall to remove
+```
+
+The script links the plugin folder into `~/.config/omarchy/plugins/keylimesoda.lovelace` and its helper to
+`~/.local/bin/lovelace-monitor`; `git pull` updates it. Details and the ninfer fallback engine:
+[integrations/omarchy/README.md](integrations/omarchy/README.md).
+
+<br clear="right">
+
 ## Limits and status
 
 Tracked against [docs/CHARTER.md](docs/CHARTER.md) (acceptance table) and [docs/STATUS.md](docs/STATUS.md).
