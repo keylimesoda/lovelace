@@ -1,0 +1,46 @@
+[
+ {
+  "checkpoints": [],
+  "id": 0,
+  "is_processing": false,
+  "n_ctx": 65536,
+  "n_prompt_tokens": 89,
+  "n_prompt_tokens_cache": 89,
+  "retained": true,
+  "session_digest": "6acbced6302413f9",
+  "speculative": true
+ },
+ {
+  "checkpoints": [],
+  "id": 1,
+  "is_processing": false,
+  "n_ctx": 65536,
+  "n_prompt_tokens": 0,
+  "n_prompt_tokens_cache": 0,
+  "retained": false,
+  "session_digest": "",
+  "speculative": true
+ },
+ {
+  "checkpoints": [],
+  "id": 2,
+  "is_processing": false,
+  "n_ctx": 65536,
+  "n_prompt_tokens": 89,
+  "n_prompt_tokens_cache": 89,
+  "retained": true,
+  "session_digest": "78a8a797a6e61e8d",
+  "speculative": true
+ },
+ {
+  "checkpoints": [],
+  "id": 3,
+  "is_processing": false,
+  "n_ctx": 65536,
+  "n_prompt_tokens": 0,
+  "n_prompt_tokens_cache": 0,
+  "retained": false,
+  "session_digest": "",
+  "speculative": true
+ }
+]

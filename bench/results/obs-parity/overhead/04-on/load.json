@@ -1,0 +1,20 @@
+{
+ "telemetry": {
+  "ok": 201,
+  "err": 0,
+  "p50_ms": 5.82,
+  "max_ms": 33.19
+ },
+ "metrics": {
+  "ok": 51,
+  "err": 0,
+  "p50_ms": 0.47,
+  "max_ms": 5.62
+ },
+ "events": {
+  "bytes": 257103,
+  "frames": 89,
+  "err": 0
+ },
+ "seconds": 200.0
+}

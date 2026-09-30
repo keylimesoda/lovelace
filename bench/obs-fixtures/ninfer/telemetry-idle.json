@@ -1,0 +1,184 @@
+{
+ "adapters": {
+  "count": 0,
+  "device_bytes": 0,
+  "file_bytes": 0,
+  "model_ids": [],
+  "names": [],
+  "rank": 0,
+  "slots": 0
+ },
+ "attached": true,
+ "cache": {
+  "kv_growth": {
+   "attempts": 2,
+   "curtailed": 0,
+   "forced_spills": 0
+  },
+  "kv_restore_reclaimed_lanes": 0,
+  "l1": {
+   "bytes": 309092352,
+   "capacity_bytes": 805306368,
+   "demotions": 0,
+   "entries": 1,
+   "evictions": 0
+  },
+  "l2": {
+   "bytes": 155145405,
+   "capacity_bytes": 4294967296,
+   "entries": 1,
+   "evicted_bytes": 0,
+   "evictions": 0
+  },
+  "l3": {
+   "bytes": 0,
+   "capacity_bytes": 8589934592,
+   "entries": 0,
+   "evicted_bytes": 0,
+   "evictions": 0
+  },
+  "lookup_hits": 0,
+  "lookup_misses": 2,
+  "persistence_failures": 0,
+  "persistence_successes": 0,
+  "publication_failures": 0,
+  "publication_successes": 1,
+  "restore_deferrals": 0,
+  "restore_failures": 0,
+  "restore_successes": 0
+ },
+ "events": {
+  "jsonl_enabled": true,
+  "subscribers": 0
+ },
+ "gpu": {
+  "available": true,
+  "driver_version": "610.57.04",
+  "energy_available": true,
+  "energy_joules_total": 7766149.463,
+  "fan_percent": 66,
+  "idle_watts": null,
+  "memory_clock_mhz": 10501,
+  "memory_total_bytes": 25757220864,
+  "memory_used_bytes": 24351080448,
+  "name": "NVIDIA GeForce RTX 4090",
+  "pcie_rx_bytes_per_second": 6640000,
+  "pcie_tx_bytes_per_second": 191748000,
+  "power_limit_watts": 450.0,
+  "power_watts": 113.937,
+  "server_energy_joules": null,
+  "sm_clock_max_mhz": 3120,
+  "sm_clock_mhz": 2745,
+  "temperature_c": 49,
+  "throttle_reasons": [],
+  "utilization_gpu_percent": 63,
+  "utilization_memory_percent": 55,
+  "uuid": "GPU-594fd862-7952-37ca-5fb9-c849e3330141"
+ },
+ "memory": {
+  "available_after_startup_bytes": 1399652352,
+  "available_after_weights_bytes": 6328156160,
+  "cuda_graph_allowance_bytes": 360710144,
+  "cuda_graph_observed_bytes": 33751040,
+  "device": 0,
+  "dflash_kv_bytes": 0,
+  "gdn_state_bytes": 1231552512,
+  "kv_capacity": 185216,
+  "kv_capacity_max_page_groups": 4096,
+  "kv_capacity_page_groups": 2894,
+  "kv_payload_bytes": 3426033664,
+  "lora_bank_bytes": 0,
+  "max_context": 65536,
+  "mtp_kv_bytes": 201793536,
+  "replay_records_bytes": 28606464,
+  "request_transient": {
+   "capacity_bytes": 0,
+   "peak_used_bytes": 0,
+   "used_bytes": 0
+  },
+  "sequence": {
+   "capacity_bytes": 4711658752,
+   "peak_used_bytes": 4711658752,
+   "used_bytes": 4711658752
+  },
+  "text_kv_bytes": 3224240128,
+  "weights": {
+   "capacity_bytes": 17901798400,
+   "peak_used_bytes": 17901798400,
+   "used_bytes": 17901798400
+  },
+  "workspace": {
+   "capacity_bytes": 180953088,
+   "peak_used_bytes": 5005824,
+   "used_bytes": 0
+  }
+ },
+ "model_id": "qwen3.8-27b",
+ "scheduler": {
+  "admitted_requests": 1,
+  "decode_ready": 0,
+  "decode_rounds": 2,
+  "decode_rounds_abandoned": 0,
+  "decode_row_rounds": 2,
+  "max_concurrency": 4,
+  "max_pending_requests": 16,
+  "prefilling": 0,
+  "queue_seconds_total": 6.9241e-05,
+  "rejected_overloaded": 0,
+  "rejected_queue_timeout": 0,
+  "running": 0,
+  "waiting": 0,
+  "worker_admission": {
+   "calls": 1,
+   "commit_seconds": 0.112109218,
+   "plan_seconds": 6.3519999999999995e-06,
+   "restore_seconds": 9.72e-07
+  },
+  "worker_decode_rounds": 1,
+  "worker_prefill_steps": 2,
+  "worker_seconds": {
+   "admission": 0.112117994,
+   "decode": 0.023250432,
+   "prefill": 0.09162447400000001,
+   "publish": 1.2264e-05,
+   "upkeep": 6.633000000000001e-06
+  }
+ },
+ "server_instance_id": "serve-1-1790748495769181",
+ "slots": [
+  {
+   "cached_tokens": 57,
+   "checkpoints": 0,
+   "processing": false,
+   "prompt_tokens": 57,
+   "retained": true,
+   "session_digest": ""
+  },
+  {
+   "cached_tokens": 0,
+   "checkpoints": 0,
+   "processing": false,
+   "prompt_tokens": 0,
+   "retained": false,
+   "session_digest": ""
+  },
+  {
+   "cached_tokens": 0,
+   "checkpoints": 0,
+   "processing": false,
+   "prompt_tokens": 0,
+   "retained": false,
+   "session_digest": ""
+  },
+  {
+   "cached_tokens": 0,
+   "checkpoints": 0,
+   "processing": false,
+   "prompt_tokens": 0,
+   "retained": false,
+   "session_digest": ""
+  }
+ ],
+ "timestamp_unix_ms": 1790748508370,
+ "uptime_seconds": 12.582982722
+}
