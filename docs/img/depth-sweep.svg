@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="330" viewBox="0 0 820 330" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="lovelace vs ninfer: single-stream decode and prefill by context depth">
+<title>lovelace vs ninfer: single-stream decode and prefill by context depth</title>
+<text x="20.0" y="26.0" font-size="15" text-anchor="start" font-weight="600" fill="#8b949e">One agent: speed vs context depth (same prompts on both engines)</text>
+<text x="20.0" y="60.0" font-size="14" text-anchor="start" font-weight="600" fill="#8b949e">Decode</text>
+<text x="20.0" y="78.0" font-size="12" text-anchor="start" font-weight="normal" fill="#8b949e">tokens/s, warm cache, MTP speculation</text>
+<line x1="64.0" y1="270.0" x2="396.0" y2="270.0" stroke="#8b949e" stroke-opacity="0.25" stroke-width="1"/>
+<text x="58.0" y="274.0" font-size="11" text-anchor="end" font-weight="normal" fill="#8b949e">0</text>
+<line x1="64.0" y1="226.5" x2="396.0" y2="226.5" stroke="#8b949e" stroke-opacity="0.25" stroke-width="1"/>
+<text x="58.0" y="230.5" font-size="11" text-anchor="end" font-weight="normal" fill="#8b949e">40</text>
+<line x1="64.0" y1="183.0" x2="396.0" y2="183.0" stroke="#8b949e" stroke-opacity="0.25" stroke-width="1"/>
+<text x="58.0" y="187.0" font-size="11" text-anchor="end" font-weight="normal" fill="#8b949e">80</text>
+<line x1="64.0" y1="139.5" x2="396.0" y2="139.5" stroke="#8b949e" stroke-opacity="0.25" stroke-width="1"/>
+<text x="58.0" y="143.5" font-size="11" text-anchor="end" font-weight="normal" fill="#8b949e">120</text>
+<line x1="64.0" y1="96.0" x2="396.0" y2="96.0" stroke="#8b949e" stroke-opacity="0.25" stroke-width="1"/>
+<text x="58.0" y="100.0" font-size="11" text-anchor="end" font-weight="normal" fill="#8b949e">160</text>
+<text x="64.0" y="288.0" font-size="11" text-anchor="middle" font-weight="normal" fill="#8b949e">0k</text>
+<text x="147.0" y="288.0" font-size="11" text-anchor="middle" font-weight="normal" fill="#8b949e">50k</text>
+<text x="230.0" y="288.0" font-size="11" text-anchor="middle" font-weight="normal" fill="#8b949e">100k</text>
+<text x="313.0" y="288.0" font-size="11" text-anchor="middle" font-weight="normal" fill="#8b949e">150k</text>
+<text x="396.0" y="288.0" font-size="11" text-anchor="middle" font-weight="normal" fill="#8b949e">200k</text>
+<text x="230.0" y="304.0" font-size="11" text-anchor="middle" font-weight="normal" fill="#8b949e">prompt depth (tokens)</text>
+<path d="M73.0,125.8 L113.0,118.5 L166.1,142.9 L272.6,163.9 L392.1,146.8" fill="none" stroke="#4493f8" stroke-width="2.5" stroke-linejoin="round"/>
+<circle cx="73.0" cy="125.8" r="3.5" fill="#4493f8"/>
+<text x="73.0" y="116.8" font-size="11" text-anchor="middle" font-weight="600" fill="#4493f8">132.6</text>
+<circle cx="113.0" cy="118.5" r="3.5" fill="#4493f8"/>
+<text x="113.0" y="109.5" font-size="11" text-anchor="middle" font-weight="600" fill="#4493f8">139.3</text>
+<circle cx="166.1" cy="142.9" r="3.5" fill="#4493f8"/>
+<text x="166.1" y="133.9" font-size="11" text-anchor="middle" font-weight="600" fill="#4493f8">116.9</text>
+<circle cx="272.6" cy="163.9" r="3.5" fill="#4493f8"/>
+<text x="272.6" y="154.9" font-size="11" text-anchor="middle" font-weight="600" fill="#4493f8">97.6</text>
+<circle cx="392.1" cy="146.8" r="3.5" fill="#4493f8"/>
+<text x="392.1" y="137.8" font-size="11" text-anchor="middle" font-weight="600" fill="#4493f8">113.3</text>
+<path d="M73.1,151.8 L113.2,149.5 L166.2,172.6 L272.7,184.2 L392.2,182.3" fill="none" stroke="#e0823d" stroke-width="2.5" stroke-linejoin="round"/>
+<circle cx="73.1" cy="151.8" r="3.5" fill="#e0823d"/>
+<text x="73.1" y="168.8" font-size="11" text-anchor="middle" font-weight="600" fill="#e0823d">108.7</text>
+<circle cx="113.2" cy="149.5" r="3.5" fill="#e0823d"/>
+<text x="113.2" y="166.5" font-size="11" text-anchor="middle" font-weight="600" fill="#e0823d">110.8</text>
+<circle cx="166.2" cy="172.6" r="3.5" fill="#e0823d"/>
+<text x="166.2" y="189.6" font-size="11" text-anchor="middle" font-weight="600" fill="#e0823d">89.6</text>
+<circle cx="272.7" cy="184.2" r="3.5" fill="#e0823d"/>
+<text x="272.7" y="201.2" font-size="11" text-anchor="middle" font-weight="600" fill="#e0823d">78.9</text>
+<circle cx="392.2" cy="182.3" r="3.5" fill="#e0823d"/>
+<text x="392.2" y="199.3" font-size="11" text-anchor="middle" font-weight="600" fill="#e0823d">80.6</text>
+<text x="430.0" y="60.0" font-size="14" text-anchor="start" font-weight="600" fill="#8b949e">Prefill</text>
+<text x="430.0" y="78.0" font-size="12" text-anchor="start" font-weight="normal" fill="#8b949e">tokens/s, cold prompt</text>
+<line x1="474.0" y1="270.0" x2="806.0" y2="270.0" stroke="#8b949e" stroke-opacity="0.25" stroke-width="1"/>
+<text x="468.0" y="274.0" font-size="11" text-anchor="end" font-weight="normal" fill="#8b949e">0</text>
+<line x1="474.0" y1="245.1" x2="806.0" y2="245.1" stroke="#8b949e" stroke-opacity="0.25" stroke-width="1"/>
+<text x="468.0" y="249.1" font-size="11" text-anchor="end" font-weight="normal" fill="#8b949e">500</text>
+<line x1="474.0" y1="220.3" x2="806.0" y2="220.3" stroke="#8b949e" stroke-opacity="0.25" stroke-width="1"/>
+<text x="468.0" y="224.3" font-size="11" text-anchor="end" font-weight="normal" fill="#8b949e">1,000</text>
+<line x1="474.0" y1="195.4" x2="806.0" y2="195.4" stroke="#8b949e" stroke-opacity="0.25" stroke-width="1"/>
+<text x="468.0" y="199.4" font-size="11" text-anchor="end" font-weight="normal" fill="#8b949e">1,500</text>
+<line x1="474.0" y1="170.6" x2="806.0" y2="170.6" stroke="#8b949e" stroke-opacity="0.25" stroke-width="1"/>
+<text x="468.0" y="174.6" font-size="11" text-anchor="end" font-weight="normal" fill="#8b949e">2,000</text>
+<line x1="474.0" y1="145.7" x2="806.0" y2="145.7" stroke="#8b949e" stroke-opacity="0.25" stroke-width="1"/>
+<text x="468.0" y="149.7" font-size="11" text-anchor="end" font-weight="normal" fill="#8b949e">2,500</text>
+<line x1="474.0" y1="120.9" x2="806.0" y2="120.9" stroke="#8b949e" stroke-opacity="0.25" stroke-width="1"/>
+<text x="468.0" y="124.9" font-size="11" text-anchor="end" font-weight="normal" fill="#8b949e">3,000</text>
+<line x1="474.0" y1="96.0" x2="806.0" y2="96.0" stroke="#8b949e" stroke-opacity="0.25" stroke-width="1"/>
+<text x="468.0" y="100.0" font-size="11" text-anchor="end" font-weight="normal" fill="#8b949e">3,500</text>
+<text x="474.0" y="288.0" font-size="11" text-anchor="middle" font-weight="normal" fill="#8b949e">0k</text>
+<text x="557.0" y="288.0" font-size="11" text-anchor="middle" font-weight="normal" fill="#8b949e">50k</text>
+<text x="640.0" y="288.0" font-size="11" text-anchor="middle" font-weight="normal" fill="#8b949e">100k</text>
+<text x="723.0" y="288.0" font-size="11" text-anchor="middle" font-weight="normal" fill="#8b949e">150k</text>
+<text x="806.0" y="288.0" font-size="11" text-anchor="middle" font-weight="normal" fill="#8b949e">200k</text>
+<text x="640.0" y="304.0" font-size="11" text-anchor="middle" font-weight="normal" fill="#8b949e">prompt depth (tokens)</text>
+<path d="M483.0,140.6 L523.0,143.0 L576.1,152.9 L682.6,169.3 L802.1,200.7" fill="none" stroke="#4493f8" stroke-width="2.5" stroke-linejoin="round"/>
+<circle cx="483.0" cy="140.6" r="3.5" fill="#4493f8"/>
+<text x="483.0" y="157.6" font-size="11" text-anchor="middle" font-weight="600" fill="#4493f8">2,603</text>
+<circle cx="523.0" cy="143.0" r="3.5" fill="#4493f8"/>
+<text x="523.0" y="134.0" font-size="11" text-anchor="middle" font-weight="600" fill="#4493f8">2,554</text>
+<circle cx="576.1" cy="152.9" r="3.5" fill="#4493f8"/>
+<text x="576.1" y="143.9" font-size="11" text-anchor="middle" font-weight="600" fill="#4493f8">2,356</text>
+<circle cx="682.6" cy="169.3" r="3.5" fill="#4493f8"/>
+<text x="682.6" y="160.3" font-size="11" text-anchor="middle" font-weight="600" fill="#4493f8">2,025</text>
+<circle cx="802.1" cy="200.7" r="3.5" fill="#4493f8"/>
+<text x="802.1" y="191.7" font-size="11" text-anchor="middle" font-weight="600" fill="#4493f8">1,394</text>
+<path d="M483.1,114.8 L523.2,175.6 L576.2,169.7 L682.7,189.5 L802.2,227.7" fill="none" stroke="#e0823d" stroke-width="2.5" stroke-linejoin="round"/>
+<circle cx="483.1" cy="114.8" r="3.5" fill="#e0823d"/>
+<text x="483.1" y="105.8" font-size="11" text-anchor="middle" font-weight="600" fill="#e0823d">3,122</text>
+<circle cx="523.2" cy="175.6" r="3.5" fill="#e0823d"/>
+<text x="523.2" y="192.6" font-size="11" text-anchor="middle" font-weight="600" fill="#e0823d">1,899</text>
+<circle cx="576.2" cy="169.7" r="3.5" fill="#e0823d"/>
+<text x="576.2" y="186.7" font-size="11" text-anchor="middle" font-weight="600" fill="#e0823d">2,018</text>
+<circle cx="682.7" cy="189.5" r="3.5" fill="#e0823d"/>
+<text x="682.7" y="206.5" font-size="11" text-anchor="middle" font-weight="600" fill="#e0823d">1,619</text>
+<circle cx="802.2" cy="227.7" r="3.5" fill="#e0823d"/>
+<text x="802.2" y="244.7" font-size="11" text-anchor="middle" font-weight="600" fill="#e0823d">851</text>
+<rect x="640.0" y="16.0" width="12" height="12" rx="2" fill="#4493f8" fill-opacity="1.0"/>
+<text x="658.0" y="26.0" font-size="12" text-anchor="start" font-weight="normal" fill="#8b949e">lovelace</text>
+<rect x="723.6" y="16.0" width="12" height="12" rx="2" fill="#e0823d" fill-opacity="1.0"/>
+<text x="741.6" y="26.0" font-size="12" text-anchor="start" font-weight="normal" fill="#8b949e">ninfer</text>
+<text x="20.0" y="322.0" font-size="11" text-anchor="start" font-weight="normal" fill="#8b949e">RTX 4090 24 GB, Qwen3.8-27B. Sources: bench/results/final/sweep.sweep.out, bench/results/h2h/ninfer-sweep.sweep.out (bench/depth_sweep.py).</text>
+</svg>
