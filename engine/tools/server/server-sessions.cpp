@@ -723,6 +723,18 @@ void server_session_store::park(server_session & s, std::list<common_prompt_chec
     // a checkpoint past the mirror belongs to tokens the mirror does not hold
     ckpts.remove_if([&](const common_prompt_checkpoint & c) { return c.n_tokens > s.n_kv || c.empty(); });
     s.checkpoints.splice(s.checkpoints.end(), ckpts);
+    // only the newest checkpoints stay (--session-ckpts): a restore starts at the recurrent snapshot, and the next
+    // turn rolls back to the end of the previous prompt, i.e. to the newest checkpoint; the older ones (~163 MiB
+    // each at 27B) would only serve an edit deep in the history, and cost arena room that keeps other mirrors off disk
+    if (params.n_ckpt > 0 && s.checkpoints.size() > params.n_ckpt) {
+        std::vector<int64_t> pos;
+        for (const auto & c : s.checkpoints) {
+            pos.push_back(c.n_tokens);
+        }
+        std::nth_element(pos.begin(), pos.begin() + (params.n_ckpt - 1), pos.end(), std::greater<int64_t>());
+        const int64_t lo = pos[params.n_ckpt - 1];
+        s.checkpoints.remove_if([&](const common_prompt_checkpoint & c) { return c.n_tokens < lo; });
+    }
     s.id_slot      = -1;
     s.stale        = false; // the cells the mirror lags are gone
     s.file_current = false;
@@ -770,6 +782,7 @@ bool server_session_store::demote(server_session & s) {
         s.tier = SERVER_SESSION_DISK;
         s.n_demote++;
         n_demote_total++;
+        SRV_INF("session %llu dropped from RAM (its file is current)\n", (unsigned long long) s.id);
         return true;
     }
 
@@ -827,7 +840,11 @@ bool server_session_store::promote(server_session & s) {
     for (const auto & c : s.file_ckpt) {
         need += buf_chunks(c.first) + buf_chunks(c.second);
     }
-    if (arena.n_free() < need && !make_room(need, false, s.id)) {
+    // a session never pushes out one that is ahead of it in the queue (else two queued sessions evict each other in
+    // turn, and the head never stays in the arena long enough to be admitted)
+    const auto w = std::find(wanted.begin(), wanted.end(), s.id);
+    const size_t keep = w == wanted.end() ? KEEP_QUEUED : (size_t) (w - wanted.begin());
+    if (arena.n_free() < need && !make_room(need, false, s.id, keep)) {
         return false;
     }
 
@@ -998,7 +1015,34 @@ void server_session_store::run_job(job & j) {
     j.state = 1;
 }
 
-bool server_session_store::make_room(size_t n_chunks, bool wait, uint64_t except) {
+bool server_session_store::make_room(size_t n_chunks, bool wait, uint64_t except, size_t keep) {
+    // the least recently used parked mirror goes; the sessions of queued requests last, farthest first, and the first
+    // `keep` of the queue not at all (unless the room is a must: wait)
+    auto pick = [&](size_t n_keep) {
+        server_session * victim = nullptr;
+        int victim_rank = -1;
+        for (auto & it : sessions) {
+            auto & s = *it.second;
+            if (s.id == except || s.id_slot >= 0 || s.tier != SERVER_SESSION_RAM || !s.restore_xfers.empty()) {
+                continue;
+            }
+            const auto w = std::find(wanted.begin(), wanted.end(), s.id);
+            if (w != wanted.end() && (size_t) (w - wanted.begin()) < n_keep) {
+                continue;
+            }
+            const int rank = w == wanted.end() ? -1 : (int) (wanted.end() - w); // 1 = last in the queue
+            const bool better = victim == nullptr ||
+                (rank < 0 && victim_rank >= 0) ||
+                (rank < 0 && victim_rank < 0 && s.t_used_us < victim->t_used_us) ||
+                (rank >= 0 && victim_rank >= 0 && rank < victim_rank);
+            if (better) {
+                victim = &s;
+                victim_rank = rank;
+            }
+        }
+        return victim;
+    };
+
     while (arena.n_free() < n_chunks) {
         size_t incoming = 0;
         for (const auto & it : sessions) {
@@ -1008,24 +1052,9 @@ bool server_session_store::make_room(size_t n_chunks, bool wait, uint64_t except
         }
 
         if (arena.n_free() + incoming < n_chunks) {
-            // the least recently used parked mirror goes; the sessions of queued requests last, farthest first
-            server_session * victim = nullptr;
-            int victim_rank = -1;
-            for (auto & it : sessions) {
-                auto & s = *it.second;
-                if (s.id == except || s.id_slot >= 0 || s.tier != SERVER_SESSION_RAM || !s.restore_xfers.empty()) {
-                    continue;
-                }
-                const auto w = std::find(wanted.begin(), wanted.end(), s.id);
-                const int rank = w == wanted.end() ? -1 : (int) (wanted.end() - w); // 1 = last in the queue
-                const bool better = victim == nullptr ||
-                    (rank < 0 && victim_rank >= 0) ||
-                    (rank < 0 && victim_rank < 0 && s.t_used_us < victim->t_used_us) ||
-                    (rank >= 0 && victim_rank >= 0 && rank < victim_rank);
-                if (better) {
-                    victim = &s;
-                    victim_rank = rank;
-                }
+            server_session * victim = pick(keep);
+            if (victim == nullptr && wait && keep > 0) {
+                victim = pick(0);
             }
             if (victim != nullptr && demote(*victim)) {
                 continue;

@@ -1695,6 +1695,7 @@ private:
             }
             sp.disk_limit = (size_t) params_base.session_disk_max_gib << 30;
             sp.ttl_s      = (uint64_t) params_base.session_ttl_sec;
+            sp.n_ckpt     = (size_t) params_base.session_ckpts;
             sp.reserve    = std::min<size_t>(state_arena->n_total() * state_arena->chunk_size() / 8, (size_t) 2 << 30);
 
             try {

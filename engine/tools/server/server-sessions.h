@@ -156,6 +156,7 @@ struct server_session_store {
         size_t      disk_limit = 0;   // bytes, 0 = unlimited
         uint64_t    ttl_s      = 0;   // 0 = never expire
         size_t      reserve    = 0;   // bytes kept free in the arena for syncs and checkpoints
+        size_t      n_ckpt     = 0;   // context checkpoints a parked mirror keeps (the newest), 0 = all
     };
 
     // wake: called from the worker thread when a file job completes, to run the server loop
@@ -204,8 +205,13 @@ struct server_session_store {
     // no transfer of the session is in flight
     bool idle(server_session & s) { return sync_done(s) && restore_done(s); }
 
-    // arena room for n chunks: demotes parked sessions (their chunks free once written); wait: until they are
-    bool make_room(size_t n_chunks, bool wait, uint64_t except = 0);
+    // the first sessions of the queue that making room never demotes (unless the room is a must): the head and the
+    // next in line stay in the arena, ready to restore
+    static constexpr size_t KEEP_QUEUED = 2;
+
+    // arena room for n chunks: demotes parked sessions (their chunks free once written), except the first `keep` of
+    // the queue; wait: until they are written, demoting any parked session if it has to
+    bool make_room(size_t n_chunks, bool wait, uint64_t except = 0, size_t keep = KEEP_QUEUED);
 
     // start reading a demoted session back; true if it is in the arena already
     bool promote(server_session & s);

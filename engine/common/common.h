@@ -641,6 +641,7 @@ struct common_params {
     std::string session_dir           = "~/.local/state/lovelace/sessions";             // NVMe tier
     int32_t     session_disk_max_gib   = 0;                                              // 0 = unlimited
     int32_t     session_ttl_sec        = 86400;                                          // 0 = disable expiration
+    int32_t     session_ckpts          = 2;                                              // newest checkpoints a parked mirror keeps; 0 = all
 
     // KV budget scheduling (unified KV only): admission by cell reservation, parking of idle sessions
     bool    kv_budget           = true;  // admit tasks by KV reservation, park idle slots instead of failing

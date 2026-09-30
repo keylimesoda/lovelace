@@ -1,0 +1,4 @@
+head: ram, next: disk, promotions: 1
+PASS
+all server-sched tests passed
+all server-wakeup tests passed

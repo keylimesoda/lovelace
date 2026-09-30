@@ -33,7 +33,12 @@ lost to eviction. Agents swap between GPU and host fast enough that the switch c
 4. **Tiering, never dropping.** The pinned arena is sized by `--session-ram MiB` (default ~30 GB). When full, the
    least-recently-used session's mirror is demoted to `--session-dir` (NVMe) in large sequential writes, and
    promoted back on use. A session is deleted only after `--session-ttl` of inactivity (default 24 h) or when
-   the disk budget is exceeded, and that is logged.
+   the disk budget is exceeded, and that is logged. Queued sessions come back in queue order and the head and next
+   in line are never pushed out again (without that, two queued sessions evicted each other in turn: 691 promotions
+   in the 6 x 150k run, bench/results/c3-seats). A parked mirror keeps only its newest `--session-ckpts` context
+   checkpoints (default 2, ~1 GB less per 160k session). Tried and dropped (bench/results/c3-seats): separate
+   read/write workers with write-ahead of the next victim, and promoting only the head and next in line; the seats
+   stayed busier but the runs were ~5% slower.
 5. **Shared prefix pinned in VRAM.** The longest prefix shared by at least 2 sessions (the system prompt + tools)
    is kept resident as cells shared by all sequences (llama_memory_seq_cp semantics). Its recurrent-state
    checkpoint sits at the prefix end. Mirrors store only cells after the shared prefix. A new subagent starts

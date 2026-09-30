@@ -1767,6 +1767,17 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_SESSION_TTL").set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--session-ckpts"}, "N",
+        string_format("context checkpoints a parked session keeps in its mirror, the newest ones (restores and the usual "
+                      "rollback use those; default: %d, 0 = all)", params.session_ckpts),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("session-ckpts must be non-negative");
+            }
+            params.session_ckpts = value;
+        }
+    ).set_env("LLAMA_ARG_SESSION_CKPTS").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"-kvu", "--kv-unified"},
         {"-no-kvu", "--no-kv-unified"},
         "use single unified KV buffer shared across all sequences (default: enabled if number of slots is auto)",

@@ -3,6 +3,7 @@
 # greedy requests (sequential, then all concurrent), then bench/greedy_check.py compare.
 #   bench/greedy_gate.sh OUT_DIR BIN_A BIN_B [DEPTHS] [-- extra server args for B]
 #   deploy/draft-vocab is mounted at /draft-vocab (e.g. -- --spec-draft-vocab /draft-vocab/qwen3.8-27b.txt)
+#   env SERVER_ARGS: server args for both sides (e.g. the session store: --session-ram 24576)
 # A side that already has results in OUT_DIR is not rerun. NO_SPEC=1 serves without MTP (top_logprobs then cover
 # every token, so the compare reports the baseline's top-1/top-2 margin at each divergence).
 # DEPTHS default: six distinct sessions at ~20k (a ~120k-cell unified cache with six live sequences).
@@ -14,6 +15,7 @@ if (($#)) && [[ $1 != -- ]]; then DEPTHS=$1; shift; fi
 (($#)) && shift
 EXTRA=("$@")
 mkdir -p "$OUT"
+export SERVER_ARGS=${SERVER_ARGS:-}
 for side in A B; do
   BIN=${!side}
   [[ -f $OUT/$side.par.json ]] && continue   # already measured (rerun after an interrupted hold)
@@ -30,7 +32,7 @@ for side in A B; do
       lovelace-engine-runtime:cuda13.1 /e/llama-server -m /models/byteshape/Qwen3.8-27B-IQ4_XS-3.84bpw.gguf -ngl 99 \
       -np 6 --kv-unified -c 327680 -ctk q5_0 -ctv q5_0 $SPEC_ARGS \
       -fa on -ub 1024 -b 2048 --jinja --reasoning-preserve -ctxcp 8 --kv-budget --prefill-chunk-gen 1024 \
-      --alias qwen3.8-27b --host 127.0.0.1 --port $PORT "$@" >/dev/null
+      --alias qwen3.8-27b --host 127.0.0.1 --port $PORT $SERVER_ARGS "$@" >/dev/null
     ok=0
     for i in $(seq 300); do
       [ "$(docker inspect -f {{.State.Running}} $C 2>/dev/null)" = true ] || break
