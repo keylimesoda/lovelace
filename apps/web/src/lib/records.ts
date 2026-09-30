@@ -1,3 +1,4 @@
+// Modified from tensorninja/ninfer-4090 (f408990) by lovelace.
 // Record shapes, as emitted by src/serve/request_log.cpp (schema 17).
 //
 // GET /events streams these live and `--request-log-jsonl` appends the identical lines, so one
@@ -7,6 +8,14 @@
 //
 // Records are discriminated on `event`, never on `schema_version`, so an older log still
 // replays: fields added by a later schema are declared optional and read as absent.
+
+import type {
+  LovelaceRequestDone,
+  LovelaceRequestError,
+  LovelaceRequestStart,
+  LovelaceServerStart,
+  LovelaceThroughput,
+} from './lovelace'
 
 export interface RequestContext {
   request_id: number
@@ -181,11 +190,14 @@ export interface ServerStartRecord extends RecordEnvelope {
     cors_enabled: boolean
     api_key_configured: boolean
   }
+  /** lovelace's extension (docs/observability-parity.md); absent on a ninfer server or log. */
+  lovelace?: LovelaceServerStart
 }
 
 export interface RequestStartRecord extends RecordEnvelope {
   event: 'request_start'
   request: RequestContext
+  lovelace?: LovelaceRequestStart
 }
 
 export interface RequestDoneRecord extends RecordEnvelope {
@@ -209,12 +221,14 @@ export interface RequestDoneRecord extends RecordEnvelope {
   timings_seconds: RequestTimings
   continuation_cache: ContinuationDiagnostics
   speculative?: SpeculativeStats
+  lovelace?: LovelaceRequestDone
 }
 
 export interface RequestErrorRecord extends RecordEnvelope {
   event: 'request_error'
   request: RequestContext
   error: { message: string }
+  lovelace?: LovelaceRequestError
 }
 
 /**
@@ -319,6 +333,7 @@ export interface ThroughputRecord extends RecordEnvelope {
     tiers: ContinuationTierTotals
     miss_reasons: Record<string, number>
   }
+  lovelace?: LovelaceThroughput
 }
 
 export type EngineRecord =

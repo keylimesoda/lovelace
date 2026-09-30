@@ -1,8 +1,10 @@
+// Modified from tensorninja/ninfer-4090 (f408990) by lovelace.
 // GET /telemetry payload, as built by HttpServer::handle_telemetry.
 //
 // This is a complete snapshot rather than a delta, which is what lets the dashboard resynchronize
 // after dropped stream records without replaying anything.
 
+import type { LovelaceTelemetry } from './lovelace'
 import type { AdapterInventory, ServerStartRecord, ThroughputRecord } from './records'
 
 export interface GpuTelemetry {
@@ -158,6 +160,8 @@ export interface Telemetry {
   slots: SlotTelemetry[]
   events: { jsonl_enabled: boolean; subscribers: number }
   adapters: AdapterInventory
+  /** lovelace's extension (docs/observability-parity.md); absent on a ninfer server. */
+  lovelace?: LovelaceTelemetry
 }
 
 /**

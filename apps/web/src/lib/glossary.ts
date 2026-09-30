@@ -1,8 +1,11 @@
+// Modified from tensorninja/ninfer-4090 (f408990) by lovelace.
 // Definitions for every term the dashboard shows.
 //
 // One place so a reading and its explanation cannot drift, and so the wording stays specific to
 // this engine rather than generic inference vocabulary. Each entry says what the number measures,
 // and where it is useful, what to conclude when it moves.
+
+import { LOVELACE_GLOSSARY } from './glossary-lovelace'
 
 export interface Definition {
   title: string
@@ -339,6 +342,7 @@ export const GLOSSARY = {
     title: 'Live data',
     body: 'Levels come from GET /telemetry polled once a second; history comes from the GET /events record stream. The stream is bounded and drops its oldest records under backpressure rather than stalling the engine, so the poll is authoritative for current state.',
   },
+  ...LOVELACE_GLOSSARY,
 } as const satisfies Record<string, Definition>
 
 export type GlossaryKey = keyof typeof GLOSSARY

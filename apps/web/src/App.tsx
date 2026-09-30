@@ -1,3 +1,4 @@
+// Modified from tensorninja/ninfer-4090 (f408990) by lovelace.
 import { useMemo, useRef } from 'react'
 
 import { Pill, StatusDot, type Tone } from './components/ui'
@@ -12,10 +13,13 @@ import { ChurnPanel } from './panels/ChurnPanel'
 import { EnergyPanel } from './panels/EnergyPanel'
 import { GpuPanel } from './panels/GpuPanel'
 import { Headline } from './panels/Headline'
+import { KvPoolPanel } from './panels/KvPoolPanel'
 import { LatencyPanel } from './panels/LatencyPanel'
 import { MemoryPanel } from './panels/MemoryPanel'
+import { QueuePanel } from './panels/QueuePanel'
 import { RequestsPanel } from './panels/RequestsPanel'
 import { SchedulerPanel } from './panels/SchedulerPanel'
+import { SessionsPanel } from './panels/SessionsPanel'
 import { SlotsPanel } from './panels/SlotsPanel'
 import { ThroughputPanel } from './panels/ThroughputPanel'
 
@@ -54,7 +58,7 @@ export function App() {
       <header className="topbar">
         <div className="topbar__identity">
           <StatusDot tone={CONNECTION_TONE[state.connection]} />
-          <strong>{state.telemetry?.model_id ?? server?.public_model_id ?? 'ninfer'}</strong>
+          <strong>{state.telemetry?.model_id ?? server?.public_model_id ?? 'lovelace'}</strong>
           {engine ? (
             <span className="topbar__config">
               {engine.kv_cache} · {engine.max_concurrency} lanes ·{' '}
@@ -117,6 +121,24 @@ export function App() {
         />
         <RequestsPanel requests={state.requests} active={state.active} />
         <AdaptersPanel inventory={adapters} requests={state.requests} />
+        <SessionsPanel
+          ext={state.telemetry?.lovelace}
+          records={state.throughput}
+          serverStart={state.serverStart}
+          replay={replay}
+        />
+        <QueuePanel
+          ext={state.telemetry?.lovelace}
+          records={state.throughput}
+          requests={state.requests}
+          replay={replay}
+        />
+        <KvPoolPanel
+          ext={state.telemetry?.lovelace}
+          records={state.throughput}
+          serverStart={state.serverStart}
+          replay={replay}
+        />
       </main>
     </div>
   )
