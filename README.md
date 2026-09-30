@@ -4,7 +4,7 @@
 coding agents from a single 24 GB card, each agent with its own context of up to 262k tokens, without giving up
 accuracy for speed.
 
-![GPU: RTX 4090 24 GB](https://img.shields.io/badge/GPU-RTX%204090%2024%20GB%20(sm__89)-4493f8) ![Model: Qwen3.8-27B](https://img.shields.io/badge/model-Qwen3.8--27B-e0823d) ![Engine: llama.cpp](https://img.shields.io/badge/engine-llama.cpp%20b11223-8b949e) ![License: not yet chosen](https://img.shields.io/badge/license-not%20yet%20chosen-8b949e)
+![GPU: RTX 4090 24 GB](https://img.shields.io/badge/GPU-RTX%204090%2024%20GB%20(sm__89)-4493f8) ![Model: Qwen3.8-27B](https://img.shields.io/badge/model-Qwen3.8--27B-e0823d) ![Engine: llama.cpp](https://img.shields.io/badge/engine-llama.cpp%20b11223-8b949e) [![License: MIT](https://img.shields.io/badge/license-MIT-3fb950)](LICENSE)
 
 ![6 agents at 60k+ tokens each: lovelace 153.6 tok/s aggregate vs ninfer 40.9; time to first token p50/p90 8.7/16.7 s vs 62.0/158.7 s](docs/img/multi-agent.svg)
 
@@ -212,6 +212,6 @@ lovelace stands on other people's work.
 
 ## License
 
-A license for lovelace's own code has not been chosen yet. Third-party components keep their licenses:
+lovelace's own code is under the [MIT License](LICENSE). Third-party components keep their licenses:
 `engine/` is llama.cpp under MIT ([engine/LICENSE](engine/LICENSE)), and `apps/web` contains Apache-2.0 code from
 ninfer-4090. Details: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
