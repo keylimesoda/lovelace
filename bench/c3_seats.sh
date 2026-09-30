@@ -19,7 +19,9 @@ if [[ -s $OUT/$LABEL/requests.jsonl ]]; then echo "skip $LABEL"; exit 0; fi
   done ) &
 SAMPLER=$!
 ( while :; do
-    if t=$(curl -sf --max-time 2 127.0.0.1:18300/telemetry); then
+    # only the server of this run (an earlier run may still hold the GPU lock and the port)
+    if docker inspect -f '{{range .Mounts}}{{.Source}} {{end}}' h2h 2>/dev/null | grep -q "$(realpath "$BIN") " &&
+       t=$(curl -sf --max-time 2 127.0.0.1:18300/telemetry); then
       printf '{"t_unix":%s,"telemetry":%s}\n' "$(date +%s.%N)" "$t" >> "$OUT/$LABEL.telemetry.jsonl"
     fi
     sleep 5

@@ -916,10 +916,12 @@ bool server_session_store::promote(server_session & s) {
         need += buf_chunks(c.first) + buf_chunks(c.second);
     }
     // a session never pushes out one that is ahead of it in the queue (else two queued sessions evict each other in
-    // turn, and the head never stays in the arena long enough to be admitted)
+    // turn, and the head never stays in the arena long enough to be admitted); only the head may use the reserve of
+    // the arena, which the syncs of the running sessions need (a sync without room makes a later park wait for it)
     const auto w = std::find(wanted.begin(), wanted.end(), s.id);
-    const size_t keep = w == wanted.end() ? KEEP_QUEUED : (size_t) (w - wanted.begin());
-    if (arena.n_free() < need && !make_room(need, false, s.id, keep)) {
+    const size_t pos  = w == wanted.end() ? KEEP_QUEUED : (size_t) (w - wanted.begin());
+    const size_t room = need + (pos > 0 ? arena.n_chunks(params.reserve) : 0);
+    if (arena.n_free() < room && !make_room(room, false, s.id, pos)) {
         return false;
     }
 
@@ -1223,7 +1225,15 @@ size_t server_session_store::arena_chunks(const server_session & s) const {
 }
 
 bool server_session_store::poll(const std::vector<uint64_t> & wanted_ids) {
-    wanted = wanted_ids;
+    // the queue as the arena sees it: the sessions that are not bound to a slot (the others need no promotion and
+    // are never demoted), each once
+    wanted.clear();
+    for (uint64_t id : wanted_ids) {
+        const server_session * s = get(id);
+        if (s != nullptr && s->id_slot < 0 && std::find(wanted.begin(), wanted.end(), id) == wanted.end()) {
+            wanted.push_back(id);
+        }
+    }
 
     const bool changed = reap_jobs();
 
@@ -1234,13 +1244,14 @@ bool server_session_store::poll(const std::vector<uint64_t> & wanted_ids) {
         }
     }
 
-    // the sessions of queued requests come back first, in order, one read at a time
+    // the sessions of queued requests come back first, in order, one read at a time; only the head and the next in
+    // line (the ones making room does not push out again: farther ones would be read only to be dropped)
     bool reading = false;
     for (const auto & it : sessions) {
         reading = reading || it.second->tier == SERVER_SESSION_PROMOTING;
     }
-    for (uint64_t id : wanted) {
-        server_session * s = get(id);
+    for (size_t i = 0; i < wanted.size() && i < KEEP_QUEUED; i++) {
+        server_session * s = get(wanted[i]);
         if (s == nullptr || s->tier == SERVER_SESSION_RAM) {
             continue;
         }
