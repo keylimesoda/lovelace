@@ -19,3 +19,60 @@ ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24100 MiB):
 | model                          |       size |     params | backend    | ngl | n_ubatch | type_k | type_v |  fa |            test |                  t/s |
 | ------------------------------ | ---------: | ---------: | ---------- | --: | -------: | -----: | -----: | --: | --------------: | -------------------: |
 | qwen35 27B (guessed) all F32   |  12.17 GiB |    27.32 B | CUDA       |  99 |     1024 |   q5_0 |   q5_0 |   1 |          pp2048 |      3000.28 ± 58.53 |
+| qwen35 27B (guessed) all F32   |  12.17 GiB |    27.32 B | CUDA       |  99 |     1024 |   q5_0 |   q5_0 |   1 | pp2048 @ d65536 |      1865.04 ± 33.97 |
+| qwen35 27B (guessed) all F32   |  12.17 GiB |    27.32 B | CUDA       |  99 |     1024 |   q5_0 |   q5_0 |   1 | pp2048 @ d131072 |      1358.72 ± 11.17 |
+| qwen35 27B (guessed) all F32   |  12.17 GiB |    27.32 B | CUDA       |  99 |     1024 |   q5_0 |   q5_0 |   1 | pp2048 @ d196608 |       1032.11 ± 1.79 |
+
+build: unknown (0)
+== /home/ric/Work/lovelace-wt/bins/head-8ea46e9d0 (2026-09-29T03:15:19-07:00)
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.1.2
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24100 MiB):
+  Device 0: NVIDIA GeForce RTX 4090, compute capability 8.9, VMM: yes, VRAM: 24100 MiB
+| model                          |       size |     params | backend    | ngl | n_ubatch | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -------: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35 27B (guessed) all F32   |  12.17 GiB |    27.32 B | CUDA       |  99 |     1024 |   q5_0 |   q5_0 |   1 |          pp2048 |      2917.49 ± 60.85 |
+| qwen35 27B (guessed) all F32   |  12.17 GiB |    27.32 B | CUDA       |  99 |     1024 |   q5_0 |   q5_0 |   1 | pp2048 @ d65536 |       1828.15 ± 0.42 |
+| qwen35 27B (guessed) all F32   |  12.17 GiB |    27.32 B | CUDA       |  99 |     1024 |   q5_0 |   q5_0 |   1 | pp2048 @ d131072 |      1316.28 ± 11.14 |
+| qwen35 27B (guessed) all F32   |  12.17 GiB |    27.32 B | CUDA       |  99 |     1024 |   q5_0 |   q5_0 |   1 | pp2048 @ d196608 |       1055.71 ± 2.65 |
+
+build: unknown (0)
+== /home/ric/Work/lovelace-wt/bins/pf-v7 (2026-09-29T03:19:21-07:00)
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.1.2
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24100 MiB):
+  Device 0: NVIDIA GeForce RTX 4090, compute capability 8.9, VMM: yes, VRAM: 24100 MiB
+| model                          |       size |     params | backend    | ngl | n_ubatch | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -------: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35 27B (guessed) all F32   |  12.17 GiB |    27.32 B | CUDA       |  99 |     1024 |   q5_0 |   q5_0 |   1 |          pp2048 |      3057.70 ± 42.46 |
+| qwen35 27B (guessed) all F32   |  12.17 GiB |    27.32 B | CUDA       |  99 |     1024 |   q5_0 |   q5_0 |   1 | pp2048 @ d65536 |      2160.11 ± 26.74 |
+| qwen35 27B (guessed) all F32   |  12.17 GiB |    27.32 B | CUDA       |  99 |     1024 |   q5_0 |   q5_0 |   1 | pp2048 @ d131072 |      1646.94 ± 12.26 |
+| qwen35 27B (guessed) all F32   |  12.17 GiB |    27.32 B | CUDA       |  99 |     1024 |   q5_0 |   q5_0 |   1 | pp2048 @ d196608 |       1346.89 ± 6.70 |
+
+build: unknown (0)
