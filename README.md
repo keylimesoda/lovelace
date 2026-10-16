@@ -2,7 +2,7 @@
 
 **One RTX 4090, one strong model, a whole team of coding agents.** lovelace serves Qwen3.8-27B to 4–6 concurrent
 coding agents from a single 24 GB card, each agent with its own context of up to 262k tokens, without giving up
-accuracy for speed.
+accuracy for speed. It pulls in concepts from llama, ninfer, and tensorflow runtimes, and optimizes everything for a 4090.
 
 ![GPU: RTX 4090 24 GB](https://img.shields.io/badge/GPU-RTX%204090%2024%20GB%20(sm__89)-4493f8) ![Model: Qwen3.8-27B](https://img.shields.io/badge/model-Qwen3.8--27B-e0823d) ![Engine: llama.cpp](https://img.shields.io/badge/engine-llama.cpp%20b11223-8b949e) [![License: MIT](https://img.shields.io/badge/license-MIT-3fb950)](LICENSE)
 
