@@ -12,9 +12,13 @@ Updated: 2026-09-29 ~12:00 local.
   812043c2e; test-server-wakeup; bench/wakeup_repro.sh).
 
 ## Production
-- **Running** main 72da4555f since 2026-09-30 ~01:05: `deploy/serve.sh balanced` (engine :8090, capture proxy and
-  dashboard :8080), CTX 376832, 24 GiB arena, `--session-ckpts 2` (default), 34 GiB cap. Smoke: chat through :8080 OK,
-  live obs conformance 0 failures. Gates on this build: test-server-sched, -wakeup, -session-tiers, byte-exact restore.
+- **Running** main 72da4555f since 2026-09-30 ~01:48: `deploy/serve.sh balanced` (engine :8090, capture proxy and
+  dashboard :8080), CTX 262144, 24 GiB arena, `--session-ckpts 2` (default), 34 GiB cap. Smoke: an 8k-token omp
+  agent prompt through :8080 OK, 0 restarts, 21.2 of 24.0 GiB VRAM. Gates on this build: test-server-sched, -wakeup,
+  -session-tiers, byte-exact restore.
+- **CTX 376832 crash loop** (2026-09-30 01:42-01:45): with ~0.5 GB VRAM free, an 8k-token prefill aborted with CUDA
+  OOM in `cudaGraphInstantiate`; the client's retries crashed the engine 8 times (exit 134). The balanced default is
+  now 262144.
 - The Omarchy widget now lives in `integrations/omarchy` (plugin `keylimesoda.lovelace`, helper `lovelace-monitor`)
   and drives lovelace through `deploy/serve.sh` (profile `balanced`, or `vision` with its vision toggle on).
   The old ninfer container `ninfer-qwen` is stopped and kept only for comparison.

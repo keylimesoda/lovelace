@@ -53,6 +53,18 @@ function tps(x) {
   return x.toFixed(1) + " tok/s"
 }
 
+// Windowed tok/s from the request log's throughput sample: the feed key holds
+// the rate, rate_epoch_ms the sample's wall time. Reads "—" when the sample is
+// missing or older than the staleness cap — the engine idles its reporter
+// while quiet, so an old sample means there is nothing to show.
+var RATE_STALE_MS = 30000
+function rateLabel(info, key) {
+  if (!info || info[key] === undefined || info[key] === "") return "—"
+  var age = Date.now() - Number(info.rate_epoch_ms || 0)
+  if (!(age >= 0) || age > RATE_STALE_MS) return "—"
+  return tps(Number(info[key]))
+}
+
 function watts(x) {
   x = Number(x)
   if (!isFinite(x) || x <= 0) return "—"
@@ -273,6 +285,7 @@ if (typeof module !== "undefined") {
     group: group,
     human: human,
     tps: tps,
+    rateLabel: rateLabel,
     watts: watts,
     uptime: uptime,
     modelName: modelName,

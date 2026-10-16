@@ -18,6 +18,12 @@ action=${1:-status}
 # keylimesoda/ninfer-4090-lin-hybrid, the ninfer fallback engine. Other ninfer
 # builds (e.g. tensorninja/ninfer-4090) expose the same /metrics names but not
 # the /telemetry context-cache schema, so those panel sections read empty.
+# The live tok/s rates come from the request log's windowed `throughput`
+# samples (the engine writes one every ~5 s with --request-log-jsonl while it
+# is busy), not from /metrics: llamacpp:tokens_predicted_total only advances
+# when a request completes, so a rate between scrapes reads completion bursts
+# instead of the decode rate. The /metrics counters still feed the panel's
+# cumulative totals.
 
 # ninfer serving configuration, kept in sync with the launch arguments below
 # (lovelace reads its facts from the API and the running container's args).
@@ -379,6 +385,49 @@ telemetry_runtime_lines() {
   python3 -c "$_runtime_py" <<<"$1" 2>/dev/null || true
 }
 
+# request log CHUNK -> shell lines for the live rates. The engine appends a
+# windowed `throughput` sample to its --request-log-jsonl every ~5 s while it
+# is busy (quiet time folds into the next sample), so the newest sample in the
+# tail is the panel's Generation / Prefill rate; rate_epoch_ms is its wall
+# time, which the panel uses as a freshness check. Emits nothing when the log
+# is absent or unreadable, which the panel renders as dashes.
+_rate_py=$(cat <<'PYEOF'
+import sys, json
+last = None
+for line in sys.stdin:
+    line = line.strip()
+    if not line or '"throughput"' not in line:
+        continue
+    try:
+        d = json.loads(line)
+    except Exception:
+        continue
+    if d.get("event") == "throughput":
+        last = d
+if last is None:
+    sys.exit(0)
+tp = last.get("throughput_tokens_per_second") or {}
+ts = last.get("timestamp_unix_ms")
+if not isinstance(tp, dict) or not isinstance(ts, (int, float)):
+    sys.exit(0)
+print(f"decode_tps={tp.get('decode', 0)}")
+print(f"prefill_tps={tp.get('prefill', 0)}")
+print(f"rate_epoch_ms={int(ts)}")
+PYEOF
+)
+
+rate_lines() {
+  local path chunk
+  case "$engine" in
+    lovelace) path=/var/log/lovelace/requests.jsonl ;;
+    ninfer)   path=/var/cache/ninfer/request-log.jsonl ;;
+    *) return 0 ;;
+  esac
+  chunk=$(docker exec "$container" tail -c 16384 "$path" 2>/dev/null || true)
+  [[ -n "$chunk" ]] || return 0
+  python3 -c "$_rate_py" <<<"$chunk" 2>/dev/null || true
+}
+
 info() {
   local state
   state=$(status)
@@ -506,6 +555,9 @@ except Exception:
       # Context-cache state from /telemetry (the paged-KV cache keys of the
       # hybrid runtime, which lovelace serves as well).
       telemetry_cache_lines "$telemetry"
+
+      # Live rates from the request log's windowed throughput sample.
+      rate_lines
     fi
   fi
 }

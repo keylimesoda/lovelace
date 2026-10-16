@@ -17,6 +17,7 @@
 --reasoning-preserve
 --session-ram 24576
 --session-dir /var/lib/lovelace/sessions
+--session-disk-max 32
 -ctxcp 8
 --kv-budget
 --prefill-chunk-gen 1024

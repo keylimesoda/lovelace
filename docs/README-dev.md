@@ -11,7 +11,7 @@ development workflow. Current state and open work: [STATUS.md](STATUS.md); goals
 | Weights | ShapeLearn `Qwen3.8-27B-IQ4_XS-3.84bpw.gguf` ("GPU-5", embedded MTP head) | lowest KL vs Q8_0 of the candidates that fit ([quality-kld.md](quality-kld.md)) |
 | KV cache | q5_0 / q5_0 | KL 0.00155 vs f16 KV through 250k, ~10% of the weight-quant error ([quality-kld.md](quality-kld.md)) |
 | Speculation | MTP, 3 draft tokens, 32k-token draft vocabulary | DFlash2 acceptance 0.27 vs MTP 0.55 ([CHARTER.md](CHARTER.md) D1); draft vocab +0.11 pt held-out acceptance, +3.9% summed decode ([step-costs](../bench/results/step-costs/REPORT.md)) |
-| GPU KV pool | 376,832 unified cells shared by 6 slots (`balanced`) | one 8k step below the largest `-c` that starts, 393,216 ([prefill-depth](../bench/results/prefill-depth/REPORT.md)) |
+| GPU KV pool | 262,144 unified cells shared by 6 slots (`balanced`) | 376,832 starts (largest is 393,216, [prefill-depth](../bench/results/prefill-depth/REPORT.md)) but leaves ~0.5 GB free; long prefills then abort with CUDA OOM in `cudaGraphInstantiate` |
 | Sessions | every agent keeps its full context; 24 GiB pinned-RAM mirror arena, NVMe overflow, engine container capped at 34 GiB | [session-store.md](design/session-store.md), [STATUS.md](STATUS.md) incidents |
 
 ## Engine changes (`engine/`)
@@ -58,7 +58,7 @@ Profiles (`deploy/profiles/*.args`, default pool from `deploy/serve.sh`):
 
 | profile | KV K / V | pool (cells) | extra |
 |---|---|---:|---|
-| `balanced` | q5_0 / q5_0 | 376,832 | |
+| `balanced` | q5_0 / q5_0 | 262,144 | |
 | `quality` | q8_0 / q5_0 | 262,144 | |
 | `vision` | q5_0 / q5_0 | 294,912 | `--mmproj` (ggml-org Q8_0 projector) |
 

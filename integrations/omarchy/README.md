@@ -15,7 +15,7 @@ lovelace server: start/stop, the model and runtime at a glance, live throughput,
     comes from `/telemetry` (lovelace reports a `lovelace` block, including its KV cache types); spec method and
     draft tokens, which the API does not expose, come from the engine container's launch arguments.
   - a power switch with starting/stopping transitions
-  - generation / prefill tok/s and board power
+  - generation / prefill tok/s, windowed over the engine's ~5 s throughput samples (from its request log), and board power
   - model facts: context window, KV cache, spec decode, GPU and VRAM, uptime, endpoint, image
   - throughput: prefix-cache hit rate, draft acceptance, requests
   - context cache: device KV occupancy, host (RAM) spill, sessions, pressure
@@ -31,7 +31,8 @@ its data plane. The widget runs the helper next to its manifest:
 - `lovelace-monitor status` every 5 s: `off` / `starting` / `ready` / `failed` from the container state and
   `/v1/models`
 - `lovelace-monitor info` every 4 s while the panel is open: `key=value` lines from `/v1/models`, `/telemetry`,
-  `/metrics`, the container's launch arguments, and `nvidia-smi` as a GPU fallback
+  `/metrics`, the request log's windowed throughput samples (the live tok/s — the `/metrics` counters only advance
+  when a request completes), the container's launch arguments, and `nvidia-smi` as a GPU fallback
 - `on` / `off` / `toggle` / `restart`, `vision [on|off|toggle]`, `logs`
 
 It drives one of two engines, both serving the API on `127.0.0.1:8080`:

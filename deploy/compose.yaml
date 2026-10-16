@@ -34,7 +34,7 @@ services:
       - "6"
       - --kv-unified
       - -c
-      - ${CTX:-327680}
+      - ${CTX:-262144}
       - -ctk
       - q5_0
       - -ctv
@@ -43,6 +43,8 @@ services:
       - draft-mtp
       - --spec-draft-n-max
       - "3"
+      - --spec-draft-vocab
+      - /opt/lovelace/draft-vocab/qwen3.8-27b.txt
       - -ctkd
       - q5_0
       - -ctvd

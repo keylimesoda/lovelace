@@ -32,10 +32,7 @@ Panel {
   property bool actionRunning: false
   property var info: ({})
 
-  // ---- live rates derived between `info` samples ----
-  property var lastSample: null
-  property real genTps: -1
-  property real promptTps: -1
+  // ---- live rates from the request log's windowed throughput sample (feed) ----
 
   readonly property bool on: root.serviceState === "ready"
   readonly property bool starting: root.serviceState === "starting"
@@ -87,30 +84,6 @@ Panel {
     const parsed = Model.parseInfo(text)
     root.info = parsed
     root.serviceState = parsed.state
-    if (parsed.state === "ready") {
-      const sample = {
-        epoch: Number(parsed.epoch || 0),
-        predicted: Number(parsed.predicted_tokens || 0),
-        prompt: Number(parsed.prompt_tokens || 0),
-        t: Date.now()
-      }
-      const prev = root.lastSample
-      if (prev && prev.epoch === sample.epoch && sample.t > prev.t) {
-        const dt = (sample.t - prev.t) / 1000
-        if (dt >= 2) {
-          root.genTps = Math.max(0, sample.predicted - prev.predicted) / dt
-          root.promptTps = Math.max(0, sample.prompt - prev.prompt) / dt
-        }
-      } else {
-        root.genTps = -1
-        root.promptTps = -1
-      }
-      root.lastSample = sample
-    } else {
-      root.lastSample = null
-      root.genTps = -1
-      root.promptTps = -1
-    }
   }
 
   function toggleService() {
@@ -339,8 +312,8 @@ Panel {
             width: parent.width
             spacing: Style.space(12)
 
-            StatCell { label: "Generation"; value: root.on ? Model.tps(root.genTps) : "—" }
-            StatCell { label: "Prefill"; value: root.on ? Model.tps(root.promptTps) : "—" }
+            StatCell { label: "Generation"; value: root.on ? Model.rateLabel(root.info, "decode_tps") : "—" }
+            StatCell { label: "Prefill"; value: root.on ? Model.rateLabel(root.info, "prefill_tps") : "—" }
             StatCell { label: "Power"; value: root.on ? Model.watts(root.info.power_watts) : "—" }
           }
 
